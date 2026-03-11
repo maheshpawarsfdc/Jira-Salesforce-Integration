@@ -2,6 +2,6 @@
 <ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>PriceMustBePositive</fullName>
     <active>true</active>
-    <errorConditionFormula>ISBLANK(Price__c) || Price__c &lt;= 0</errorConditionFormula>
-    <errorMessage>Price must be provided and must be greater than 0.</errorMessage>
+    <errorConditionFormula>Price__c &lt;= 0</errorConditionFormula>
+    <errorMessage>Price must be greater than 0.</errorMessage>
 </ValidationRule>

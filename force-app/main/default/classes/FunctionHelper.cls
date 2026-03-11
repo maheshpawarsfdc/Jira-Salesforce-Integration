@@ -322,6 +322,40 @@ public class FunctionHelper {
         return SUCCESS_RESPONSE;
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // CUSTOM LABEL METHODS
+    // ─────────────────────────────────────────────────────────────
+
+    public static String callListCustomLabels(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListCustomLabels() called');
+        return JSON.serialize(CustomLabelHelper.listCustomLabels(args));
+    }
+
+    public static String callCreateCustomLabel(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCreateCustomLabel() called');
+        System.debug('args = ' + args);
+        CustomLabelHelper.createCustomLabel(args);
+        System.debug('FunctionHelper: custom label created successfully');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callUpdateCustomLabel(Map<String, Object> args) {
+        System.debug('FunctionHelper.callUpdateCustomLabel() called');
+        System.debug('args = ' + args);
+        CustomLabelHelper.updateCustomLabel(args);
+        System.debug('FunctionHelper: custom label updated successfully');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteCustomLabel(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteCustomLabel() called');
+        System.debug('args = ' + args);
+        CustomLabelHelper.deleteCustomLabel(args);
+        System.debug('FunctionHelper: custom label queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+
     public static String runToolingApiQuery(Map<String, Object> args) {
         String query = getRequiredArg(args, new List<String>{ 'query', 'soql' });
         System.debug('         ── FunctionHelper: running Tooling API query: ' + query);

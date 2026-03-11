@@ -19,6 +19,7 @@ public class ToolDefinitions {
         tools.addAll(getSObjectTools());
         tools.addAll(getFieldTools());
         tools.addAll(getPermissionSetTools());
+        tools.addAll(getCustomLabelTools());
         tools.add(getQueryTool());
         return tools;
     }
@@ -510,6 +511,63 @@ public class ToolDefinitions {
                         strProp('ruleName',   'API name of the rule to delete (e.g. PriceMustBePositive)')
                     },
                     new List<String>{ 'objectName', 'ruleName' }
+                )
+            )
+        };
+    }
+
+
+    // ─────────────────────────────────────────────────────────────
+    // CUSTOM LABEL TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getCustomLabelTools() {
+        return new List<Map<String, Object>>{
+            buildTool(
+                'custom_label_list',
+                'List all custom labels in the org.',
+                buildParams(new List<Map<String, Object>>{}, new List<String>{})
+            ),
+            buildTool(
+                'custom_label_create',
+                'Create a new custom label. '
+                + 'Custom labels are org-wide text values referenced in Apex, Visualforce, and Lightning components using $Label.Name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('name',             'API name for the label — no spaces (e.g. Welcome_Message)'),
+                        strProp('value',            'The text value of the label (e.g. Welcome to our app!)'),
+                        strProp('language',         'Language code (default: en_US)'),
+                        strProp('shortDescription', 'Optional short description of what this label is used for'),
+                        strProp('protected',        'true or false — whether label is protected (default false)')
+                    },
+                    new List<String>{ 'name', 'value' }
+                )
+            ),
+            buildTool(
+                'custom_label_update',
+                'Update an existing custom label — change its value, description, or other properties. '
+                + 'Always call custom_label_list first to confirm the exact label name. '
+                + 'Only include parameters you want to change.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('name',             'API name of the existing label (e.g. Welcome_Message)'),
+                        strProp('value',            'New text value — only include if changing'),
+                        strProp('masterLabel',      'New master label (display name) — only include if changing'),
+                        strProp('shortDescription', 'New short description — only include if changing'),
+                        strProp('language',         'New language code — only include if changing'),
+                        strProp('protected',        'true or false — only include if changing')
+                    },
+                    new List<String>{ 'name' }
+                )
+            ),
+            buildTool(
+                'custom_label_delete',
+                'Delete a custom label permanently via destructive deploy. '
+                + 'Always call custom_label_list first to confirm the exact label name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('name', 'API name of the label to delete (e.g. Welcome_Message)')
+                    },
+                    new List<String>{ 'name' }
                 )
             )
         };

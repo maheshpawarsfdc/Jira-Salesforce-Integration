@@ -49,6 +49,12 @@ public class FunctionRouter {
         else if (functionName == 'validation_rule_set_active') result = FunctionHelper.callSetValidationRuleActive(args);
         else if (functionName == 'validation_rule_delete')     result = FunctionHelper.callDeleteValidationRule(args);
 
+        // ── CUSTOM LABEL OPERATIONS ──────────────────────────────
+        else if (functionName == 'custom_label_list')   result = FunctionHelper.callListCustomLabels(args);
+        else if (functionName == 'custom_label_create') result = FunctionHelper.callCreateCustomLabel(args);
+        else if (functionName == 'custom_label_update') result = FunctionHelper.callUpdateCustomLabel(args);
+        else if (functionName == 'custom_label_delete') result = FunctionHelper.callDeleteCustomLabel(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 
