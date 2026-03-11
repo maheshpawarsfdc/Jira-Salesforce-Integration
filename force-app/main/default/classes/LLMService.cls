@@ -271,6 +271,7 @@ public class LLMService {
             + '\n18. BEFORE updating or deleting a validation rule: call validation_rule_list first to confirm the exact rule name.'
             + '\n19. When writing a validation rule formula: write it in plain Salesforce formula syntax. Do NOT XML-escape it — the system handles that automatically. The formula must return TRUE when the record should be BLOCKED.'
             + '\n20. Salesforce formula syntax rules: NEVER use AND/OR/NOT as keywords — always use AND(), OR(), NOT() as functions. NEVER use = "" to check blank — always use ISBLANK(). NEVER use = or != to compare picklist fields — always use ISPICKVAL(Field__c, "Value"). Example: AND(IsAvailable__c = true, ISPICKVAL(Status__c, "Active"), OR(ISBLANK(Price__c), Price__c < 500))'
+            + '\n21. BEFORE updating or deleting a custom label: call custom_label_list first to confirm the exact label name.'
 
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
             + '\nCurrent User: ' + UserInfo.getUserName();
