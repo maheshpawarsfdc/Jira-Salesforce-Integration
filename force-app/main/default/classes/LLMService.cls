@@ -272,6 +272,12 @@ public class LLMService {
             + '\n19. When writing a validation rule formula: write it in plain Salesforce formula syntax. Do NOT XML-escape it — the system handles that automatically. The formula must return TRUE when the record should be BLOCKED.'
             + '\n20. Salesforce formula syntax rules: NEVER use AND/OR/NOT as keywords — always use AND(), OR(), NOT() as functions. NEVER use = "" to check blank — always use ISBLANK(). NEVER use = or != to compare picklist fields — always use ISPICKVAL(Field__c, "Value"). Example: AND(IsAvailable__c = true, ISPICKVAL(Status__c, "Active"), OR(ISBLANK(Price__c), Price__c < 500))'
             + '\n21. BEFORE updating or deleting a custom label: call custom_label_list first to confirm the exact label name.'
+            + '\n22. BEFORE adding, updating, or deleting a custom setting field: call custom_setting_list first to confirm the exact setting API name.'
+            + '\n23. Custom setting type must be Hierarchy or List — default to Hierarchy if not specified.'
+            + '\n24. CRITICAL DISTINCTION — Custom Label vs Custom Setting:'
+            + '\n    - Custom LABEL = a translatable text string used in UI via $Label.Name. Tool: custom_label_create. Has: name, value, language.'
+            + '\n    - Custom SETTING = a configuration object with typed fields (Text, Number, Checkbox etc) accessed in Apex via getInstance(). Tool: custom_setting_create. Has: apiName, label, type (Hierarchy/List).'
+            + '\n    - NEVER use custom_label_create for a custom setting, and NEVER use custom_setting_create for a custom label.'
 
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
             + '\nCurrent User: ' + UserInfo.getUserName();

@@ -19,7 +19,10 @@ public class ToolDefinitions {
         tools.addAll(getSObjectTools());
         tools.addAll(getFieldTools());
         tools.addAll(getPermissionSetTools());
+        tools.addAll(getProfileTools());
+        tools.addAll(getValidationRuleTools());
         tools.addAll(getCustomLabelTools());
+        tools.addAll(getCustomSettingTools());
         tools.add(getQueryTool());
         return tools;
     }
@@ -230,13 +233,11 @@ public class ToolDefinitions {
     // ─────────────────────────────────────────────────────────────
     private static List<Map<String, Object>> getPermissionSetTools() {
         return new List<Map<String, Object>>{
-
             buildTool(
                 'permission_set_list',
                 'List all permission sets in the org.',
                 buildParams(new List<Map<String, Object>>{}, new List<String>{})
             ),
-
             buildTool(
                 'permission_set_create',
                 'Create a new permission set. '
@@ -251,7 +252,6 @@ public class ToolDefinitions {
                     new List<String>{ 'apiName', 'label' }
                 )
             ),
-
             buildTool(
                 'permission_set_delete',
                 'Delete a permission set permanently. '
@@ -263,7 +263,6 @@ public class ToolDefinitions {
                     new List<String>{ 'permissionSetName' }
                 )
             ),
-
             buildTool(
                 'permission_set_grant_object_access',
                 'Grant object level access to a permission set. '
@@ -283,7 +282,6 @@ public class ToolDefinitions {
                     new List<String>{ 'permissionSetName', 'objectName' }
                 )
             ),
-
             buildTool(
                 'permission_set_grant_field_access',
                 'Grant access to a specific field on a permission set.',
@@ -298,7 +296,6 @@ public class ToolDefinitions {
                     new List<String>{ 'permissionSetName', 'objectName', 'fieldName' }
                 )
             ),
-
             buildTool(
                 'permission_set_grant_all_fields_access',
                 'Grant access to ALL custom fields on an object in one call. '
@@ -313,7 +310,6 @@ public class ToolDefinitions {
                     new List<String>{ 'permissionSetName', 'objectName' }
                 )
             ),
-
             buildTool(
                 'permission_set_assign_to_user',
                 'Assign a permission set to a user.',
@@ -325,7 +321,6 @@ public class ToolDefinitions {
                     new List<String>{ 'permissionSetName', 'username' }
                 )
             ),
-
             buildTool(
                 'permission_set_remove_from_user',
                 'Remove a specific permission set from a user. '
@@ -337,7 +332,15 @@ public class ToolDefinitions {
                     },
                     new List<String>{ 'permissionSetName', 'username' }
                 )
-            ),
+            )
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PROFILE TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getProfileTools() {
+        return new List<Map<String, Object>>{
             buildTool(
                 'profile_list',
                 'List all profiles in the org. Call this first before any profile operation to confirm the exact profile name.',
@@ -438,7 +441,15 @@ public class ToolDefinitions {
                     },
                     new List<String>{ 'profileName', 'objectName' }
                 )
-            ),
+            )
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // VALIDATION RULE TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getValidationRuleTools() {
+        return new List<Map<String, Object>>{
             buildTool(
                 'validation_rule_list',
                 'List all validation rules on a given object. Call this before update/delete to confirm the rule name exists.',
@@ -551,10 +562,8 @@ public class ToolDefinitions {
                     new List<Map<String, Object>>{
                         strProp('name',             'API name of the existing label (e.g. Welcome_Message)'),
                         strProp('value',            'New text value — only include if changing'),
-                        strProp('masterLabel',      'New master label (display name) — only include if changing'),
                         strProp('shortDescription', 'New short description — only include if changing'),
-                        strProp('language',         'New language code — only include if changing'),
-                        strProp('protected',        'true or false — only include if changing')
+                        strProp('language',         'New language code — only include if changing')
                     },
                     new List<String>{ 'name' }
                 )
@@ -568,6 +577,94 @@ public class ToolDefinitions {
                         strProp('name', 'API name of the label to delete (e.g. Welcome_Message)')
                     },
                     new List<String>{ 'name' }
+                )
+            )
+        };
+    }
+
+
+    // ─────────────────────────────────────────────────────────────
+    // CUSTOM SETTING TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getCustomSettingTools() {
+        return new List<Map<String, Object>>{
+            buildTool(
+                'custom_setting_list',
+                'List all custom settings in the org.',
+                buildParams(new List<Map<String, Object>>{}, new List<String>{})
+            ),
+            buildTool(
+                'custom_setting_create',
+                'Create a new custom setting (Hierarchy or List type). '
+                + 'Custom settings are org-wide configuration objects accessible in Apex via CustomSettingName__c.getInstance(). '
+                + 'Always add fields separately with custom_setting_add_field after creating.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',     'API name for the setting (e.g. MyConfig). __c will be added automatically.'),
+                        strProp('label',       'Human-readable label (e.g. My Config)'),
+                        strProp('type',        'Hierarchy (default) or List'),
+                        strProp('visibility',  'Public (default) or Protected'),
+                        strProp('description', 'Optional description of what this setting is used for')
+                    },
+                    new List<String>{ 'apiName', 'label' }
+                )
+            ),
+            buildTool(
+                'custom_setting_add_field',
+                'Add a new field to an existing custom setting. '
+                + 'Always call custom_setting_list first to confirm the exact setting API name. '
+                + 'Supported field types: Checkbox, Currency, Date, DateTime, Email, Number, Percent, Phone, Text, TextArea, Url. DO NOT use LongTextArea, Picklist, Lookup or any other type.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',     'API name of the existing setting (e.g. MyConfig__c)'),
+                        strProp('fieldName',   'API name for the new field (e.g. IsEnabled). __c added automatically.'),
+                        strProp('fieldLabel',  'Human-readable label for the field'),
+                        strProp('fieldType',   'Must be one of: Checkbox, Currency, Date, DateTime, Email, Number, Percent, Phone, Text, TextArea, Url'),
+                        strProp('length',      'For Text/TextArea: max length (default 255). For LongTextArea: default 32768.'),
+                        strProp('precision',   'For Number/Currency/Percent: total digits (default 18)'),
+                        strProp('scale',       'For Number/Currency/Percent: decimal places (default 0)'),
+                        strProp('required',    'true or false (default false)')
+                    },
+                    new List<String>{ 'apiName', 'fieldName', 'fieldLabel', 'fieldType' }
+                )
+            ),
+            buildTool(
+                'custom_setting_update_field',
+                'Update an existing field on a custom setting — change its label, length, or other properties. '
+                + 'Always call custom_setting_list first to confirm the exact setting and field names. '
+                + 'Only include the parameters you want to change.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',    'API name of the setting (e.g. MyConfig__c)'),
+                        strProp('fieldName',  'API name of the field to update (e.g. IsEnabled__c)'),
+                        strProp('fieldLabel', 'New label — only include if changing'),
+                        strProp('length',     'New length — only include if changing'),
+                        strProp('required',   'true or false — only include if changing')
+                    },
+                    new List<String>{ 'apiName', 'fieldName' }
+                )
+            ),
+            buildTool(
+                'custom_setting_delete_field',
+                'Delete a field from a custom setting via destructive deploy. '
+                + 'Always call custom_setting_list first to confirm the exact setting and field names.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',   'API name of the setting (e.g. MyConfig__c)'),
+                        strProp('fieldName', 'API name of the field to delete (e.g. IsEnabled__c)')
+                    },
+                    new List<String>{ 'apiName', 'fieldName' }
+                )
+            ),
+            buildTool(
+                'custom_setting_delete',
+                'Delete an entire custom setting and all its fields via destructive deploy. '
+                + 'Always call custom_setting_list first to confirm the exact setting name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName', 'API name of the setting to delete (e.g. MyConfig__c)')
+                    },
+                    new List<String>{ 'apiName' }
                 )
             )
         };

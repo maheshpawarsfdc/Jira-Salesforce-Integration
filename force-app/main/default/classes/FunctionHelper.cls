@@ -34,7 +34,12 @@ public class FunctionHelper {
     // ─────────────────────────────────────────────────────────────
 
     public static String callListSObjects(Map<String, Object> args) {
-        Boolean customOnly = Boolean.valueOf(String.valueOf(args.get('customObjectsOnly')));
+        // Safely default to false if not passed
+        Object val = args != null ? args.get('customObjectsOnly') : null;
+        Boolean customOnly = (val != null && String.valueOf(val) != 'null')
+            ? Boolean.valueOf(String.valueOf(val))
+            : true;
+        
         System.debug('         ── FunctionHelper: listing objects (customOnly=' + customOnly + ')');
         return JSON.serialize(MetadataHelper.getSObjects(customOnly));
     }
@@ -355,6 +360,56 @@ public class FunctionHelper {
         return SUCCESS_RESPONSE;
     }
 
+
+
+    // ─────────────────────────────────────────────────────────────
+    // CUSTOM SETTING METHODS
+    // ─────────────────────────────────────────────────────────────
+
+    public static String callListCustomSettings(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListCustomSettings() called');
+        return JSON.serialize(CustomSettingHelper.listCustomSettings(args));
+    }
+
+    public static String callCreateCustomSetting(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCreateCustomSetting() called');
+        System.debug('args = ' + args);
+        CustomSettingHelper.createCustomSetting(args);
+        System.debug('FunctionHelper: custom setting queued for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callAddFieldToCustomSetting(Map<String, Object> args) {
+        System.debug('FunctionHelper.callAddFieldToCustomSetting() called');
+        System.debug('args = ' + args);
+        CustomSettingHelper.addFieldToCustomSetting(args);
+        System.debug('FunctionHelper: custom setting field queued for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callUpdateCustomSettingField(Map<String, Object> args) {
+        System.debug('FunctionHelper.callUpdateCustomSettingField() called');
+        System.debug('args = ' + args);
+        CustomSettingHelper.updateCustomSettingField(args);
+        System.debug('FunctionHelper: custom setting field update queued');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteCustomSettingField(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteCustomSettingField() called');
+        System.debug('args = ' + args);
+        CustomSettingHelper.deleteCustomSettingField(args);
+        System.debug('FunctionHelper: custom setting field queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteCustomSetting(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteCustomSetting() called');
+        System.debug('args = ' + args);
+        CustomSettingHelper.deleteCustomSetting(args);
+        System.debug('FunctionHelper: custom setting queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
 
     public static String runToolingApiQuery(Map<String, Object> args) {
         String query = getRequiredArg(args, new List<String>{ 'query', 'soql' });

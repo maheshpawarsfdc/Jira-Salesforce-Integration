@@ -163,6 +163,18 @@ public class Zippex
     // Returns a Blob that contains the entire Zip archive.
     public Blob getZipArchive()
     {
+        // ADD THIS 👇 — dump all staged files before zipping
+            System.debug('══════════ FINAL ZIP CONTENTS ══════════');
+            for (String fileName : zipFileMap.keySet()) {
+                FileObject fo = zipFileMap.get(fileName);
+                String content = EncodingUtil.convertFromHex(fo.compressedFileData).toString();
+                System.debug('── FILE: ' + fileName);
+                System.debug('── CONTENT: \n' + content);
+                System.debug('────────────────────────────────────');
+            }
+            System.debug('══════════ END ZIP ══════════');
+
+
         Integer zipFileSize;
 
         // delete central directory and end of Central directory
@@ -230,6 +242,11 @@ public class Zippex
     //  Adds a new file to the current Zip archive.
     public void addFile(String fileName, Blob fileData, String crc32)
     {
+        // ADD THIS 👇 — log file name and its XML content
+            System.debug('══ ZipBuilder.addFile ══');
+            System.debug('► FileName: ' + fileName);
+            System.debug('► FileContent: \n' + fileData.toString());
+            System.debug('════════════════════════');
 
         if(zipFileMap.containsKey(fileName)){
             removeFile(fileName);

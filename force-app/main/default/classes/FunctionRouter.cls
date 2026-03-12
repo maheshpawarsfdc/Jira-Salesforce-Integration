@@ -55,6 +55,14 @@ public class FunctionRouter {
         else if (functionName == 'custom_label_update') result = FunctionHelper.callUpdateCustomLabel(args);
         else if (functionName == 'custom_label_delete') result = FunctionHelper.callDeleteCustomLabel(args);
 
+        // ── CUSTOM SETTING OPERATIONS ────────────────────────────
+        else if (functionName == 'custom_setting_list')               result = FunctionHelper.callListCustomSettings(args);
+        else if (functionName == 'custom_setting_create')             result = FunctionHelper.callCreateCustomSetting(args);
+        else if (functionName == 'custom_setting_add_field')          result = FunctionHelper.callAddFieldToCustomSetting(args);
+        else if (functionName == 'custom_setting_update_field')       result = FunctionHelper.callUpdateCustomSettingField(args);
+        else if (functionName == 'custom_setting_delete_field')       result = FunctionHelper.callDeleteCustomSettingField(args);
+        else if (functionName == 'custom_setting_delete')             result = FunctionHelper.callDeleteCustomSetting(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 
