@@ -21,6 +21,7 @@ public class ToolDefinitions {
         tools.addAll(getPermissionSetTools());
         tools.addAll(getProfileTools());
         tools.addAll(getValidationRuleTools());
+        tools.addAll(getTranslationTools());
         tools.addAll(getCustomLabelTools());
         tools.addAll(getCustomSettingTools());
         tools.add(getQueryTool());
@@ -527,6 +528,57 @@ public class ToolDefinitions {
         };
     }
 
+
+
+    // ─────────────────────────────────────────────────────────────
+    // TRANSLATION TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getTranslationTools() {
+        return new List<Map<String, Object>>{
+            buildTool(
+                'translation_list_languages',
+                'List all active languages enabled in the org.',
+                buildParams(new List<Map<String, Object>>{}, new List<String>{})
+            ),
+            buildTool(
+                'translation_upsert',
+                'Create or update a translation for a field label, picklist value, custom label, validation rule error message, or custom object label. '
+                + 'Always call translation_list_languages first to confirm the language code is enabled. '
+                + 'The translationType parameter controls what is being translated: '
+                + '"field" = custom field label (needs objectName, fieldName, translation). '
+                + '"picklist" = picklist value (needs objectName, fieldName, masterLabel, translation). '
+                + '"label" = custom label value (needs labelName, translation). '
+                + '"validationRule" = validation rule error message (needs objectName, ruleName, translation). '
+                + '"object" = custom object label (needs objectName, translation). '
+                + 'Existing translations for the language are preserved — only the specified entry is added/updated.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('language',       'Language ISO code (e.g. fr, de, ja, zh_CN, pt_BR)'),
+                        strProp('translationType','What to translate: field, picklist, label, validationRule, object'),
+                        strProp('objectName',     'API name of the object (e.g. Car__c) — required for field, picklist, validationRule, object types'),
+                        strProp('fieldName',      'API name of the field (e.g. Price__c) — required for field and picklist types'),
+                        strProp('masterLabel',    'The original English picklist value (e.g. Active) — required for picklist type'),
+                        strProp('labelName',      'API name of the custom label (e.g. Welcome_Message) — required for label type'),
+                        strProp('ruleName',       'API name of the validation rule (e.g. PriceMustBePositive) — required for validationRule type'),
+                        strProp('translation',    'The translated text in the target language')
+                    },
+                    new List<String>{ 'language', 'translationType', 'translation' }
+                )
+            ),
+            buildTool(
+                'translation_delete',
+                'Delete a specific custom label translation using the Tooling API. '
+                + 'Always call custom_label_list first to confirm the label name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('language',  'Language ISO code (e.g. fr, de, ja)'),
+                        strProp('labelName', 'API name of the custom label (e.g. Welcome_Message)')
+                    },
+                    new List<String>{ 'language', 'labelName' }
+                )
+            )
+        };
+    }
 
     // ─────────────────────────────────────────────────────────────
     // CUSTOM LABEL TOOLS

@@ -55,6 +55,11 @@ public class FunctionRouter {
         else if (functionName == 'custom_label_update') result = FunctionHelper.callUpdateCustomLabel(args);
         else if (functionName == 'custom_label_delete') result = FunctionHelper.callDeleteCustomLabel(args);
 
+        // ── TRANSLATION OPERATIONS ───────────────────────────────
+        else if (functionName == 'translation_list_languages')        result = FunctionHelper.callListSupportedLanguages(args);
+        else if (functionName == 'translation_upsert')                result = FunctionHelper.callUpsertTranslation(args);
+        else if (functionName == 'translation_delete')                result = FunctionHelper.callDeleteTranslation(args);
+
         // ── CUSTOM SETTING OPERATIONS ────────────────────────────
         else if (functionName == 'custom_setting_list')               result = FunctionHelper.callListCustomSettings(args);
         else if (functionName == 'custom_setting_create')             result = FunctionHelper.callCreateCustomSetting(args);
