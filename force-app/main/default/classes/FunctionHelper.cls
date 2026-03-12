@@ -359,7 +359,31 @@ public class FunctionHelper {
         System.debug('FunctionHelper: custom label queued for destructive deploy');
         return SUCCESS_RESPONSE;
     }
+    
+    // ─────────────────────────────────────────────────────────────
+    // TRANSLATION METHODS
+    // ─────────────────────────────────────────────────────────────
 
+    public static String callListSupportedLanguages(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListSupportedLanguages() called');
+        return JSON.serialize(TranslationHelper.listSupportedLanguages(args));
+    }
+
+    public static String callUpsertTranslation(Map<String, Object> args) {
+        System.debug('FunctionHelper.callUpsertTranslation() called');
+        System.debug('args = ' + args);
+        TranslationHelper.upsertTranslation(args);
+        System.debug('FunctionHelper: translation queued for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteTranslation(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteTranslation() called');
+        System.debug('args = ' + args);
+        TranslationHelper.deleteTranslation(args);
+        System.debug('FunctionHelper: translation queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
 
 
     // ─────────────────────────────────────────────────────────────
