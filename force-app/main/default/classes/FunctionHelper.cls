@@ -450,6 +450,37 @@ public class FunctionHelper {
             });
         }
     }
+    // ─────────────────────────────────────────────────────────────
+    // NAMED CREDENTIAL METHODS
+    // ─────────────────────────────────────────────────────────────
+    public static String callListNamedCredentials(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListNamedCredentials() called');
+        return JSON.serialize(NamedCredentialHelper.listNamedCredentials(args));
+    }
+
+    public static String callCreateNamedCredential(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCreateNamedCredential() called');
+        System.debug('args = ' + args);
+        NamedCredentialHelper.createNamedCredential(args);
+        System.debug('FunctionHelper: named credential staged for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callUpdateNamedCredential(Map<String, Object> args) {
+        System.debug('FunctionHelper.callUpdateNamedCredential() called');
+        System.debug('args = ' + args);
+        NamedCredentialHelper.updateNamedCredential(args);
+        System.debug('FunctionHelper: named credential update staged for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteNamedCredential(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteNamedCredential() called');
+        System.debug('args = ' + args);
+        NamedCredentialHelper.deleteNamedCredential(args);
+        System.debug('FunctionHelper: named credential queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
 
     // ─────────────────────────────────────────────────────────────
     // PARAMETER EXTRACTION HELPERS

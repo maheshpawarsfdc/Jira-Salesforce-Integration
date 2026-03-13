@@ -274,14 +274,15 @@ public class LLMService {
             + '\n21. BEFORE updating or deleting a custom label: call custom_label_list first to confirm the exact label name.'
             + '\n22. BEFORE adding, updating, or deleting a custom setting field: call custom_setting_list first to confirm the exact setting API name.'
             + '\n23. Custom setting type must be Hierarchy or List — default to Hierarchy if not specified.'
-            + '\n25. Translations: always call translation_list_languages first to confirm the language code is enabled in the org.'
-            + '\n26. For translation_upsert the translationType must exactly match one of: field, picklist, label, validationRule, object — no other values accepted.'
-            + '\n27. translation_delete removes ALL translations for a language — warn the user before doing this.'
             + '\n24. CRITICAL DISTINCTION — Custom Label vs Custom Setting:'
             + '\n    - Custom LABEL = a translatable text string used in UI via $Label.Name. Tool: custom_label_create. Has: name, value, language.'
             + '\n    - Custom SETTING = a configuration object with typed fields (Text, Number, Checkbox etc) accessed in Apex via getInstance(). Tool: custom_setting_create. Has: apiName, label, type (Hierarchy/List).'
             + '\n    - NEVER use custom_label_create for a custom setting, and NEVER use custom_setting_create for a custom label.'
-
+            + '\n25. Translations: always call translation_list_languages first to confirm the language code is enabled in the org.'
+            + '\n26. For translation_upsert the translationType must exactly match one of: field, picklist, label, validationRule, object — no other values accepted.'
+            + '\n27. translation_delete removes ALL translations for a language — warn the user before doing this.'
+            + '\n28. BEFORE updating or deleting a Named Credential: call named_credential_list first to confirm the exact API name.'
+            + '\n29. Named Credentials created here are anonymous (NoAuthentication) — no OAuth, no passwords, endpoint URL only.'            
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
             + '\nCurrent User: ' + UserInfo.getUserName();
     }
