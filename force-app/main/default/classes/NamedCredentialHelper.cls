@@ -67,7 +67,12 @@ public class NamedCredentialHelper {
 
         System.debug('NamedCredentialHelper.createNamedCredential(): ' + apiName);
 
-        String xml      = buildXml(apiName, label, endpointUrl);
+        String xml = buildXml(
+            apiName, label, endpointUrl,
+            getOptional(args, 'allowMergeFieldsInBody',      'false'),
+            getOptional(args, 'allowMergeFieldsInHeader',    'false'),
+            getOptional(args, 'generateAuthorizationHeader', 'false')
+        );
         String filePath = 'namedCredentials/' + apiName + '.namedCredential';
         ZipBuilder.addFile('NamedCredential', apiName, filePath, xml);
 
@@ -120,7 +125,12 @@ public class NamedCredentialHelper {
         String newLabel    = getOptional(args, 'label',    currentLabel);
         String newEndpoint = getOptional(args, 'endpoint', currentEndpoint);
 
-        String xml      = buildXml(apiName, newLabel, newEndpoint);
+        String xml = buildXml(
+            apiName, newLabel, newEndpoint,
+            getOptional(args, 'allowMergeFieldsInBody',      'false'),
+            getOptional(args, 'allowMergeFieldsInHeader',    'false'),
+            getOptional(args, 'generateAuthorizationHeader', 'false')
+        );
         String filePath = 'namedCredentials/' + apiName + '.namedCredential';
         ZipBuilder.addFile('NamedCredential', apiName, filePath, xml);
 
@@ -162,17 +172,20 @@ public class NamedCredentialHelper {
     // ─────────────────────────────────────────────────────────────
     // PRIVATE — XML builder
     // ─────────────────────────────────────────────────────────────
-    private static String buildXml(String apiName, String label, String endpointUrl) {
+    private static String buildXml(String apiName, String label, String endpointUrl,
+        String allowBody, String allowHeader, String generateAuth) {
+
         return '<?xml version="1.0" encoding="UTF-8"?>'
             + '<NamedCredential xmlns="' + NAMESPACE + '">'
-            + '<fullName>'    + escapeXml(apiName)     + '</fullName>'
-            + '<label>'       + escapeXml(label)       + '</label>'
+            + '<fullName>'                    + escapeXml(apiName)     + '</fullName>'
+            + '<label>'                       + escapeXml(label)       + '</label>'
             + '<protocol>NoAuthentication</protocol>'
-            + '<endpoint>'    + escapeXml(endpointUrl) + '</endpoint>'
+            + '<endpoint>'                    + escapeXml(endpointUrl) + '</endpoint>'
             + '<principalType>Anonymous</principalType>'
-            + '<allowMergeFieldsInBody>false</allowMergeFieldsInBody>'
-            + '<allowMergeFieldsInHeader>false</allowMergeFieldsInHeader>'
-            + '<generateAuthorizationHeader>false</generateAuthorizationHeader>'
+            + '<calloutStatus>Enabled</calloutStatus>'
+            + '<allowMergeFieldsInBody>'      + allowBody              + '</allowMergeFieldsInBody>'
+            + '<allowMergeFieldsInHeader>'    + allowHeader            + '</allowMergeFieldsInHeader>'
+            + '<generateAuthorizationHeader>' + generateAuth           + '</generateAuthorizationHeader>'
             + '</NamedCredential>';
     }
 
