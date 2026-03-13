@@ -474,6 +474,59 @@ public class FunctionHelper {
         return SUCCESS_RESPONSE;
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // CUSTOM METADATA TYPE METHODS
+    // ─────────────────────────────────────────────────────────────
+    public static String callListCustomMetadataTypes(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListCustomMetadataTypes() called');
+        return JSON.serialize(CustomMetadataHelper.listCustomMetadataTypes(args));
+    }
+
+    public static String callCreateCustomMetadataType(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCreateCustomMetadataType() called');
+        System.debug('args = ' + args);
+        CustomMetadataHelper.createCustomMetadataType(args);
+        System.debug('FunctionHelper: custom metadata type staged for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callAddFieldToCustomMetadataType(Map<String, Object> args) {
+        System.debug('FunctionHelper.callAddFieldToCustomMetadataType() called');
+        System.debug('args = ' + args);
+        CustomMetadataHelper.addFieldToCustomMetadataType(args);
+        System.debug('FunctionHelper: custom metadata type field staged for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteCustomMetadataType(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteCustomMetadataType() called');
+        System.debug('args = ' + args);
+        CustomMetadataHelper.deleteCustomMetadataType(args);
+        System.debug('FunctionHelper: custom metadata type queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callListCustomMetadataRecords(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListCustomMetadataRecords() called');
+        return JSON.serialize(CustomMetadataHelper.listCustomMetadataRecords(args));
+    }
+
+    public static String callUpsertCustomMetadataRecord(Map<String, Object> args) {
+        System.debug('FunctionHelper.callUpsertCustomMetadataRecord() called');
+        System.debug('args = ' + args);
+        CustomMetadataHelper.upsertCustomMetadataRecord(args);
+        System.debug('FunctionHelper: custom metadata record staged for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteCustomMetadataRecord(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteCustomMetadataRecord() called');
+        System.debug('args = ' + args);
+        CustomMetadataHelper.deleteCustomMetadataRecord(args);
+        System.debug('FunctionHelper: custom metadata record queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
+
     public static String callDeleteNamedCredential(Map<String, Object> args) {
         System.debug('FunctionHelper.callDeleteNamedCredential() called');
         System.debug('args = ' + args);

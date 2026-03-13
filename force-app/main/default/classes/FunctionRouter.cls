@@ -74,6 +74,15 @@ public class FunctionRouter {
         else if (functionName == 'named_credential_update') result = FunctionHelper.callUpdateNamedCredential(args);
         else if (functionName == 'named_credential_delete') result = FunctionHelper.callDeleteNamedCredential(args);
 
+        // ── CUSTOM METADATA TYPE OPERATIONS ─────────────────────────
+        else if (functionName == 'custom_metadata_type_list')       result = FunctionHelper.callListCustomMetadataTypes(args);
+        else if (functionName == 'custom_metadata_type_create')     result = FunctionHelper.callCreateCustomMetadataType(args);
+        else if (functionName == 'custom_metadata_type_add_field')  result = FunctionHelper.callAddFieldToCustomMetadataType(args);
+        else if (functionName == 'custom_metadata_type_delete')     result = FunctionHelper.callDeleteCustomMetadataType(args);
+        else if (functionName == 'custom_metadata_record_list')     result = FunctionHelper.callListCustomMetadataRecords(args);
+        else if (functionName == 'custom_metadata_record_upsert')   result = FunctionHelper.callUpsertCustomMetadataRecord(args);
+        else if (functionName == 'custom_metadata_record_delete')   result = FunctionHelper.callDeleteCustomMetadataRecord(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 

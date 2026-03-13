@@ -25,6 +25,7 @@ public class ToolDefinitions {
         tools.addAll(getCustomLabelTools());
         tools.addAll(getCustomSettingTools());
         tools.addAll(getNamedCredentialTools());
+        tools.addAll(getCustomMetadataTools());
         tools.add(getQueryTool());
         return tools;
     }
@@ -775,6 +776,108 @@ public class ToolDefinitions {
                         strProp('apiName', 'API name of the credential to delete (e.g. My_API)')
                     },
                     new List<String>{ 'apiName' }
+                )
+            )
+        };
+    }
+
+
+    // ─────────────────────────────────────────────────────────────
+    // CUSTOM METADATA TYPE TOOLS
+    // ─────────────────────────────────────────────────────────────
+
+    private static List<Map<String, Object>> getCustomMetadataTools() {
+        return new List<Map<String, Object>>{
+            buildTool(
+                'custom_metadata_type_list',
+                'List all Custom Metadata Types in the org.',
+                buildParams(new List<Map<String, Object>>{}, new List<String>{})
+            ),
+            buildTool(
+                'custom_metadata_type_create',
+                'Create a new Custom Metadata Type. After creating, add fields with custom_metadata_type_add_field.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',      'API name without __mdt (e.g. My_Config)'),
+                        strProp('label',        'Singular label (e.g. My Config)'),
+                        strProp('pluralLabel',  'Plural label (e.g. My Configs)'),
+                        strProp('description',  'Optional description'),
+                        enumProp('visibility',  'Visibility setting',
+                            new List<String>{ 'Public', 'Protected', 'PackageProtected' })
+                    },
+                    new List<String>{ 'apiName', 'label', 'pluralLabel' }
+                )
+            ),
+            buildTool(
+                'custom_metadata_type_add_field',
+                'Add a field to an existing Custom Metadata Type. '
+                + 'Always call custom_metadata_type_list first to confirm the type exists. '
+                + 'Supported types: Checkbox, Date, DateTime, Email, Number, Percent, Phone, Picklist, Text, TextArea, LongTextArea, Url.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',        'API name of the type with __mdt (e.g. My_Config__mdt)'),
+                        strProp('fieldName',      'Field API name without __c (e.g. Timeout_Seconds)'),
+                        strProp('fieldLabel',     'Field label (e.g. Timeout Seconds)'),
+                        strProp('fieldType',      'Field type: Checkbox, Date, DateTime, Email, Number, Percent, Phone, Picklist, Text, TextArea, LongTextArea, Url'),
+                        strProp('length',         'For Text/TextArea: max length (default 255)'),
+                        strProp('precision',      'For Number/Percent: total digits (default 18)'),
+                        strProp('scale',          'For Number/Percent: decimal places (default 0)'),
+                        strProp('picklistValues', 'For Picklist: comma-separated values (e.g. "Active,Inactive,Pending")'),
+                        strProp('required',       'true or false (default false)'),
+                        strProp('defaultValue',   'For Checkbox only: true or false (default false)')
+                    },
+                    new List<String>{ 'apiName', 'fieldName', 'fieldLabel', 'fieldType' }
+                )
+            ),
+            buildTool(
+                'custom_metadata_type_delete',
+                'Delete a Custom Metadata Type and all its records via destructive deploy. '
+                + 'Always call custom_metadata_type_list first to confirm the exact API name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName', 'API name of the type with __mdt (e.g. My_Config__mdt)')
+                    },
+                    new List<String>{ 'apiName' }
+                )
+            ),
+            buildTool(
+                'custom_metadata_record_list',
+                'List all records of a Custom Metadata Type including their field values. '
+                + 'Always call this before upsert or delete to confirm record names.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName', 'API name of the type with __mdt (e.g. My_Config__mdt)')
+                    },
+                    new List<String>{ 'apiName' }
+                )
+            ),
+            buildTool(
+                'custom_metadata_record_upsert',
+                'Create or update a Custom Metadata record. '
+                + 'Always call custom_metadata_record_list first to check if the record already exists. '
+                + 'fieldValues must be a JSON object mapping field API names to values '
+                + 'e.g. {"Timeout_Seconds__c": 30, "Is_Active__c": true, "Label__c": "Default"}.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',      'API name of the type with __mdt (e.g. My_Config__mdt)'),
+                        strProp('recordName',   'Developer name of the record (e.g. Default) — no spaces'),
+                        strProp('label',        'Label for the record (e.g. Default Config)'),
+                        strProp('fieldValues',  'JSON object of field API names to values e.g. {"Field__c": "value"}'),
+                        strProp('protected',    'true or false — whether record is protected (default false)')
+                    },
+                    new List<String>{ 'apiName', 'recordName' }
+                )
+            ),
+            buildTool(
+                'custom_metadata_record_delete',
+                'Delete a Custom Metadata record via destructive deploy. '
+                + 'Always call custom_metadata_record_list first to confirm the exact record name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',    'API name of the type with __mdt (e.g. My_Config__mdt)'),
+                        strProp('recordName', 'Developer name of the record to delete (e.g. Default)')
+                    },
+                    new List<String>{ 'apiName', 'recordName' }
                 )
             )
         };
