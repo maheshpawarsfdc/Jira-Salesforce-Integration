@@ -282,7 +282,11 @@ public class LLMService {
             + '\n26. For translation_upsert the translationType must exactly match one of: field, picklist, label, validationRule, object — no other values accepted.'
             + '\n27. translation_delete removes ALL translations for a language — warn the user before doing this.'
             + '\n28. BEFORE updating or deleting a Named Credential: call named_credential_list first to confirm the exact API name.'
-            + '\n29. Named Credentials created here are anonymous (NoAuthentication) — no OAuth, no passwords, endpoint URL only.'            
+            + '\n29. Named Credentials created here are anonymous (NoAuthentication) — no OAuth, no passwords, endpoint URL only.' 
+            + '\n30. BEFORE adding a field to or deleting a Custom Metadata Type: call custom_metadata_type_list first.'
+            + '\n31. BEFORE upserting or deleting a Custom Metadata record: call custom_metadata_record_list first to check existing records.'
+            + '\n32. custom_metadata_record_upsert handles both create and update — never call it twice for the same record.'
+            + '\n33. fieldValues in custom_metadata_record_upsert must be a valid JSON object string e.g. {"Field__c": "value", "Count__c": 10}.'           
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
             + '\nCurrent User: ' + UserInfo.getUserName();
     }
