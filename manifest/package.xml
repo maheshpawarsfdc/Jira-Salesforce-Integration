@@ -1,25 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
-	<types>
-		<members>Welcome_Message</members>
-		<members>test</members>
-		<name>CustomLabel</name>
-	</types>
-	<types>
-		<members>Car__c</members>
-		<name>CustomObject</name>
-	</types>
+	
 	<types>
 		<members>*</members>
-		<name>CustomTab</name>
+		<name>NamedCredential</name>
 	</types>
-	<types>
-		<members>AI_Conversation__c.Rating_Valid_Range</members>
-		<members>Diagnostic_Cache__c.Expiry_After_Refresh</members>
-		<members>Diagnostic_Request__c.Completed_Status_Requires_End_Time</members>
-		<members>Diagnostic_Request__c.Duration_Must_Be_Positive</members>
-		<members>Diagnostic_Request__c.End_Time_After_Start_Time</members>
-		<name>ValidationRule</name>
-	</types>
+	
 	<version>65.0</version>
 </Package>

@@ -68,6 +68,12 @@ public class FunctionRouter {
         else if (functionName == 'custom_setting_delete_field')       result = FunctionHelper.callDeleteCustomSettingField(args);
         else if (functionName == 'custom_setting_delete')             result = FunctionHelper.callDeleteCustomSetting(args);
 
+        // ── NAMED CREDENTIAL OPERATIONS ─────────────────────────────
+        else if (functionName == 'named_credential_list')   result = FunctionHelper.callListNamedCredentials(args);
+        else if (functionName == 'named_credential_create') result = FunctionHelper.callCreateNamedCredential(args);
+        else if (functionName == 'named_credential_update') result = FunctionHelper.callUpdateNamedCredential(args);
+        else if (functionName == 'named_credential_delete') result = FunctionHelper.callDeleteNamedCredential(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 

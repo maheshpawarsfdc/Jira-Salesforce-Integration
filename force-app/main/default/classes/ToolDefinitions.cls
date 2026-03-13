@@ -24,6 +24,7 @@ public class ToolDefinitions {
         tools.addAll(getTranslationTools());
         tools.addAll(getCustomLabelTools());
         tools.addAll(getCustomSettingTools());
+        tools.addAll(getNamedCredentialTools());
         tools.add(getQueryTool());
         return tools;
     }
@@ -715,6 +716,57 @@ public class ToolDefinitions {
                 buildParams(
                     new List<Map<String, Object>>{
                         strProp('apiName', 'API name of the setting to delete (e.g. MyConfig__c)')
+                    },
+                    new List<String>{ 'apiName' }
+                )
+            )
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // NAMED CREDENTIAL TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getNamedCredentialTools() {
+        return new List<Map<String, Object>>{
+            buildTool(
+                'named_credential_list',
+                'List all Named Credentials in the org.',
+                buildParams(new List<Map<String, Object>>{}, new List<String>{})
+            ),
+            buildTool(
+                'named_credential_create',
+                'Create a new anonymous Named Credential with a label and endpoint URL. '
+                + 'No authentication is configured — suitable for public APIs or internal endpoints.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',  'API name for the credential — no spaces, no __c (e.g. My_API)'),
+                        strProp('label',   'Human-readable label (e.g. My API)'),
+                        strProp('endpoint','Full endpoint URL (e.g. https://api.example.com)')
+                    },
+                    new List<String>{ 'apiName', 'label', 'endpoint' }
+                )
+            ),
+            buildTool(
+                'named_credential_update',
+                'Update an existing Named Credential — change its label or endpoint URL. '
+                + 'Always call named_credential_list first to confirm the exact API name. '
+                + 'Only include parameters you want to change.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',  'API name of the existing credential (e.g. My_API)'),
+                        strProp('label',   'New label — only include if changing'),
+                        strProp('endpoint','New endpoint URL — only include if changing')
+                    },
+                    new List<String>{ 'apiName' }
+                )
+            ),
+            buildTool(
+                'named_credential_delete',
+                'Delete a Named Credential permanently via destructive deploy. '
+                + 'Always call named_credential_list first to confirm the exact API name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName', 'API name of the credential to delete (e.g. My_API)')
                     },
                     new List<String>{ 'apiName' }
                 )
