@@ -741,7 +741,10 @@ public class ToolDefinitions {
                     new List<Map<String, Object>>{
                         strProp('apiName',  'API name for the credential — no spaces, no __c (e.g. My_API)'),
                         strProp('label',   'Human-readable label (e.g. My API)'),
-                        strProp('endpoint','Full endpoint URL (e.g. https://api.example.com)')
+                        strProp('endpoint','Full endpoint URL (e.g. https://api.example.com)'),
+                        strProp('allowMergeFieldsInBody',      'true or false — allow merge fields in body (default false)'),
+                        strProp('allowMergeFieldsInHeader',    'true or false — allow merge fields in header (default false)'),
+                        strProp('generateAuthorizationHeader', 'true or false — generate auth header (default false)')
                     },
                     new List<String>{ 'apiName', 'label', 'endpoint' }
                 )
@@ -755,7 +758,10 @@ public class ToolDefinitions {
                     new List<Map<String, Object>>{
                         strProp('apiName',  'API name of the existing credential (e.g. My_API)'),
                         strProp('label',   'New label — only include if changing'),
-                        strProp('endpoint','New endpoint URL — only include if changing')
+                        strProp('endpoint','New endpoint URL — only include if changing'),
+                        strProp('allowMergeFieldsInBody',      'true or false — allow merge fields in body (default false)'),
+                        strProp('allowMergeFieldsInHeader',    'true or false — allow merge fields in header (default false)'),
+                        strProp('generateAuthorizationHeader', 'true or false — generate auth header (default false)')
                     },
                     new List<String>{ 'apiName' }
                 )
