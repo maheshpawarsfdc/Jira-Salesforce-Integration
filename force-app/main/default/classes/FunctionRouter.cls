@@ -83,6 +83,14 @@ public class FunctionRouter {
         else if (functionName == 'custom_metadata_record_upsert')   result = FunctionHelper.callUpsertCustomMetadataRecord(args);
         else if (functionName == 'custom_metadata_record_delete')   result = FunctionHelper.callDeleteCustomMetadataRecord(args);
 
+        // ── PAGE LAYOUT OPERATIONS ─────────────────────────────
+        else if (functionName == 'page_layout_list')          result = FunctionHelper.callListPageLayouts(args);
+        else if (functionName == 'page_layout_create')        result = FunctionHelper.callCreatePageLayout(args);
+        else if (functionName == 'page_layout_add_fields')    result = FunctionHelper.callAddFieldsToLayout(args);
+        else if (functionName == 'page_layout_remove_fields') result = FunctionHelper.callRemoveFieldsFromLayout(args);
+        else if (functionName == 'page_layout_delete')        result = FunctionHelper.callDeletePageLayout(args);
+        else if (functionName == 'page_layout_assign')        result = FunctionHelper.callAssignPageLayout(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 

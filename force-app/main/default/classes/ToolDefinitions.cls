@@ -26,6 +26,7 @@ public class ToolDefinitions {
         tools.addAll(getCustomSettingTools());
         tools.addAll(getNamedCredentialTools());
         tools.addAll(getCustomMetadataTools());
+        tools.addAll(getPageLayoutTools());
         tools.add(getQueryTool());
         return tools;
     }
@@ -878,6 +879,88 @@ public class ToolDefinitions {
                         strProp('recordName', 'Developer name of the record to delete (e.g. Default)')
                     },
                     new List<String>{ 'apiName', 'recordName' }
+                )
+            )
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PAGE LAYOUT TOOLS
+    // ─────────────────────────────────────────────────────────────
+
+    private static List<Map<String, Object>> getPageLayoutTools() {
+        return new List<Map<String, Object>>{
+            buildTool('page_layout_list',
+                'List all page layouts for a given object.',
+                buildParams(
+                    new List<Map<String, Object>>{ strProp('objectApiName', 'API name of the object e.g. Car__c or Account') },
+                    new List<String>{ 'objectApiName' }
+                )
+            ),
+            buildTool('page_layout_create',
+                'Create a new page layout from scratch for any object (custom or standard). '
+                + 'sections is a JSON array of {label, fields[]} — fields alternate left/right automatically. '
+                + 'Required fields are always included in the first section automatically. '
+                + 'If sections is omitted, two default sections are created: Information and Additional Information.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName', 'API name of the object e.g. Car__c or Account'),
+                        strProp('layoutName',    'Name of the layout e.g. Car Layout'),
+                        strProp('sections',      'JSON array of sections: [{"label":"Basic Info","fields":["Name","Price__c"]},{"label":"Pricing","fields":["Cost__c"]}]')
+                    },
+                    new List<String>{ 'objectApiName', 'layoutName' }
+                )
+            ),
+            buildTool('page_layout_add_fields',
+                'Add fields to an existing page layout section. '
+                + 'Always call page_layout_list first to confirm the exact layout name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName', 'API name of the object e.g. Car__c'),
+                        strProp('layoutName',    'Exact layout name e.g. Car Layout'),
+                        strProp('sectionLabel',  'Section label to add fields to (default: Information)'),
+                        strProp('fields',        'JSON array of field API names e.g. ["Price__c","Status__c"]')
+                    },
+                    new List<String>{ 'objectApiName', 'layoutName', 'fields' }
+                )
+            ),
+            buildTool('page_layout_remove_fields',
+                'Remove fields from an existing page layout. '
+                + 'Always call page_layout_list first to confirm the exact layout name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName', 'API name of the object e.g. Car__c'),
+                        strProp('layoutName',    'Exact layout name e.g. Car Layout'),
+                        strProp('fields',        'JSON array of field API names to remove e.g. ["OldField__c"]')
+                    },
+                    new List<String>{ 'objectApiName', 'layoutName', 'fields' }
+                )
+            ),
+            buildTool('page_layout_delete',
+                'Delete a page layout via destructive deploy. '
+                + 'Always call page_layout_list first to confirm the exact layout name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName', 'API name of the object e.g. Car__c'),
+                        strProp('layoutName',    'Exact layout name e.g. Car Layout')
+                    },
+                    new List<String>{ 'objectApiName', 'layoutName' }
+                )
+            ),
+            buildTool('page_layout_assign',
+                'Assign a page layout to profiles. '
+                + 'If profiles is blank → assigns to System Administrator only. '
+                + 'If profiles is "All" → assigns to all profiles. '
+                + 'Otherwise pass a JSON array of profile names e.g. ["Sales User","Standard User"]. '
+                + 'Always call after page_layout_create.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName', 'API name of the object e.g. Car__c'),
+                        strProp('layoutName',    'Exact layout name e.g. Car Layout'),
+                        strProp('profiles',      'Blank = System Admin, "All" = all profiles, or JSON array ["Profile1","Profile2"]'),
+                        strProp('recordType',    'Optional: record type API name if assigning per record type e.g. Car__c.Premium')
+                    },
+                    new List<String>{ 'objectApiName', 'layoutName' }
                 )
             )
         };

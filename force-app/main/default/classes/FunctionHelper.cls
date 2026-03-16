@@ -536,6 +536,45 @@ public class FunctionHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // PAGE LAYOUT METHODS
+    // ─────────────────────────────────────────────────────────────
+
+    public static String callListPageLayouts(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListPageLayouts() called');
+        return JSON.serialize(PageLayoutHelper.listPageLayouts(args));
+    }
+    public static String callCreatePageLayout(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCreatePageLayout() called');
+        System.debug('args = ' + args);
+        PageLayoutHelper.createPageLayout(args);
+        return SUCCESS_RESPONSE;
+    }
+    public static String callAddFieldsToLayout(Map<String, Object> args) {
+        System.debug('FunctionHelper.callAddFieldsToLayout() called');
+        System.debug('args = ' + args);
+        PageLayoutHelper.addFieldsToLayout(args);
+        return SUCCESS_RESPONSE;
+    }
+    public static String callRemoveFieldsFromLayout(Map<String, Object> args) {
+        System.debug('FunctionHelper.callRemoveFieldsFromLayout() called');
+        System.debug('args = ' + args);
+        PageLayoutHelper.removeFieldsFromLayout(args);
+        return SUCCESS_RESPONSE;
+    }
+    public static String callDeletePageLayout(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeletePageLayout() called');
+        System.debug('args = ' + args);
+        PageLayoutHelper.deletePageLayout(args);
+        return SUCCESS_RESPONSE;
+    }
+    public static String callAssignPageLayout(Map<String, Object> args) {
+        System.debug('FunctionHelper.callAssignPageLayout() called');
+        System.debug('args = ' + args);
+        PageLayoutHelper.assignPageLayout(args);
+        return SUCCESS_RESPONSE;
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // PARAMETER EXTRACTION HELPERS
     // ─────────────────────────────────────────────────────────────
 
