@@ -29,6 +29,7 @@ public class ZipBuilder {
     // Value = file XML content
     // ─────────────────────────────────────────────────────────────
     public static Map<String, String> files = new Map<String, String>();
+    public static Map<String, String> binaryFiles = new Map<String, String>();
 
     // Track which metadata types are included — needed for package.xml
     // Key   = metadata type  e.g. "CustomObject"
@@ -52,6 +53,15 @@ public class ZipBuilder {
         }
     }
 
+    public static void addBinaryFile(String metadataType, String memberName, String filePath, String base64Content) {
+        System.debug('ZipBuilder.addBinaryFile(): type=' + metadataType + ', member=' + memberName + ', path=' + filePath);
+        binaryFiles.put(filePath, base64Content);
+
+        if (!metadataTypes.containsKey(metadataType)) {
+            metadataTypes.put(metadataType, new Set<String>());
+        }
+        metadataTypes.get(metadataType).add(memberName);
+    }
     // ─────────────────────────────────────────────────────────────
     // BUILD BASE64 ZIP
     // Builds the complete ZIP and returns base64 encoded string
@@ -60,7 +70,7 @@ public class ZipBuilder {
     public static String buildBase64Zip() {
         System.debug('ZipBuilder.buildBase64Zip(): building ZIP with ' + files.size() + ' files');
 
-        if (files.isEmpty()) {
+        if (files.isEmpty() && binaryFiles.isEmpty()) {
             throw new ZipBuilderException('No files to deploy');
         }
 
@@ -78,6 +88,27 @@ public class ZipBuilder {
             System.debug('ZipBuilder: adding file [' + filePath + ']');
             zip.addFile(filePath, Blob.valueOf(content), null);
         }
+        
+        // Add all binary files (e.g. static resources)
+        for (String filePath : binaryFiles.keySet()) {
+            try {
+                String base64Content = binaryFiles.get(filePath);
+                System.debug('ZipBuilder: decoding binary file [' + filePath + '], base64 length=' + base64Content.length());
+                String cleanBase64   = base64Content
+                                        .replace('\n', '')
+                                        .replace('\r', '')
+                                        .replace(' ', '')
+                                        .replace('\t', '');
+                                        
+                Blob fileBlob = EncodingUtil.base64Decode(cleanBase64);
+                System.debug('ZipBuilder: adding binary file [' + filePath + '], size=' + fileBlob.size() + ' bytes');
+                zip.addFile(filePath, fileBlob, null);
+            } catch (Exception e) {
+                System.debug('ZipBuilder: ERROR with binary file [' + filePath + ']: ' + e.getMessage());
+                throw new ZipBuilderException('Failed to add binary file ' + filePath + ': ' + e.getMessage());
+            }
+        } 
+
 
         Blob zipBlob = zip.getZipArchive();
         String base64 = EncodingUtil.base64Encode(zipBlob);
@@ -112,7 +143,7 @@ public class ZipBuilder {
     // HAS FILES
     // ─────────────────────────────────────────────────────────────
     public static Boolean hasFiles() {
-        return !files.isEmpty();
+        return !files.isEmpty() || !binaryFiles.isEmpty();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -122,6 +153,7 @@ public class ZipBuilder {
     public static void clear() {
         files.clear();
         metadataTypes.clear();
+        binaryFiles.clear();
         System.debug('ZipBuilder.clear(): state reset');
     }
 

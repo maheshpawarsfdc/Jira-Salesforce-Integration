@@ -55,18 +55,16 @@ public class LLMService {
             FunctionHelper.permissionSetsToDelete.clear();
         }
 
-        // ── ZIP DEPLOY ────────────────────────────────────────
-        // All metadata changes were collected in ZipBuilder during tool execution.
-        // Now build the ZIP and deploy to Salesforce.
+        // ── ZIP DEPLOY (async) ────────────────────────────────
+        // ZIP build + MetadataAPI deploy moved to a Queueable.
+        // Reason: Zippex CRC32 on large binary files exceeds the 10s synchronous
+        // CPU limit. The Queueable gets 60s CPU in its own transaction.
         if (ZipBuilder.hasFiles()) {
-            System.debug('LLMService: ZipBuilder has ' + ZipBuilder.files.size() + ' file(s) — building ZIP...');
-            String base64Zip = ZipBuilder.buildBase64Zip();
-            ZipBuilder.clear();
-            System.debug('LLMService: deploying ZIP for issue [' + issueKey + ']...');
-            String jobId = DeployService.deploy(base64Zip, issueKey);
-            System.debug('LLMService: deploy started. jobId = ' + jobId);
-            // Return immediately — DeployPoller will post final result to Jira
-            return result + '⏳ Deploying to Salesforce... Job ID: ' + jobId;
+            System.debug('LLMService: ZipBuilder has ' + ZipBuilder.files.size()
+                + ' file(s) — enqueuing ZipDeployQueueable for issue [' + issueKey + ']');
+            System.enqueueJob(new ZipDeployQueueable(issueKey));
+            ZipBuilder.clear();  // clear static state — Queueable already captured a snapshot
+            return result + '\n⏳ Deploying to Salesforce asynchronously — DeployPoller will post the result to Jira when done.';
         }
 
         return result;
@@ -290,16 +288,29 @@ public class LLMService {
             + '\n34. BEFORE modifying or deleting a page layout: call page_layout_list first to confirm the exact layout name.'
             + '\n35. AFTER creating a page layout: always call page_layout_assign to assign it to at least System Administrator.'
             + '\n36. sections parameter in page_layout_create must be a valid JSON array string.'
-            + '\n37. fields parameter in page_layout_add_fields and page_layout_remove_fields must be a valid JSON array string.'           
+            + '\n37. fields parameter in page_layout_add_fields and page_layout_remove_fields must be a valid JSON array string.'
+            + '\n38. Static resources come from Jira ticket attachments. Always call static_resource_list first to see available files, then use the exact fileName returned.'
+            + '\n39. Use static_resource_deploy for both creating and updating a static resource — it handles both cases. Never call it twice for the same apiName.'
+            + '\n40. The apiName for a static resource must be alphanumeric with underscores only. Do not include the file extension in the apiName.'         
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
             + '\nCurrent User: ' + UserInfo.getUserName();
     }
 
     private static String buildUserPrompt(String issueKey, String summary, String description) {
-        return 'Jira Issue: ' + issueKey
+        String prompt = 'Jira Issue: ' + issueKey
             + '\nSummary: ' + summary
-            + '\nDescription: ' + (String.isBlank(description) ? '(no description)' : description)
-            + '\n\nExecute the required Salesforce action now.';
+            + '\nDescription: ' + (String.isBlank(description) ? '(no description)' : description);
+
+        if (!StaticResourceHelper.currentAttachments.isEmpty()) {
+            prompt += '\n\nATTACHMENTS ON THIS TICKET:';
+            for (String fileName : StaticResourceHelper.currentAttachments.keySet()) {
+                String mime = StaticResourceHelper.currentAttachments.get(fileName).get('mimeType');
+                prompt += '\n- ' + fileName + ' (' + mime + ')';
+            }
+        }
+
+        prompt += '\n\nExecute the required Salesforce action now.';
+        return prompt;
     }
 
     public class LLMException extends Exception {}

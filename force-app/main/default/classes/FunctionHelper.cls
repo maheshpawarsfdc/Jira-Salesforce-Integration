@@ -574,6 +574,32 @@ public class FunctionHelper {
         return SUCCESS_RESPONSE;
     }
 
+
+    // ─────────────────────────────────────────────────────────────
+    // STATIC RESOURCE HELPERS
+    // ─────────────────────────────────────────────────────────────
+
+    public static String callStaticResourceList(Map<String, Object> args) {
+        System.debug('FunctionHelper.callStaticResourceList() called');
+        return JSON.serialize(StaticResourceHelper.listStaticResources(args));
+    }
+
+    public static String callStaticResourceDeploy(Map<String, Object> args) {
+        System.debug('FunctionHelper.callStaticResourceDeploy() called');
+        System.debug('args = ' + args);
+        StaticResourceHelper.deployStaticResource(args);
+        System.debug('FunctionHelper: static resource staged for deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callStaticResourceDelete(Map<String, Object> args) {
+        System.debug('FunctionHelper.callStaticResourceDelete() called');
+        System.debug('args = ' + args);
+        StaticResourceHelper.deleteStaticResource(args);
+        System.debug('FunctionHelper: static resource queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
+
     // ─────────────────────────────────────────────────────────────
     // PARAMETER EXTRACTION HELPERS
     // ─────────────────────────────────────────────────────────────
