@@ -91,6 +91,11 @@ public class FunctionRouter {
         else if (functionName == 'page_layout_delete')        result = FunctionHelper.callDeletePageLayout(args);
         else if (functionName == 'page_layout_assign')        result = FunctionHelper.callAssignPageLayout(args);
 
+        // ── STATIC RESOURCE OPERATIONS ────────────────────────────
+        else if (functionName == 'static_resource_list')   result = FunctionHelper.callStaticResourceList(args);
+        else if (functionName == 'static_resource_deploy') result = FunctionHelper.callStaticResourceDeploy(args);
+        else if (functionName == 'static_resource_delete') result = FunctionHelper.callStaticResourceDelete(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 

@@ -27,6 +27,7 @@ public class ToolDefinitions {
         tools.addAll(getNamedCredentialTools());
         tools.addAll(getCustomMetadataTools());
         tools.addAll(getPageLayoutTools());
+        tools.addAll(getStaticResourceTools()); 
         tools.add(getQueryTool());
         return tools;
     }
@@ -965,6 +966,46 @@ public class ToolDefinitions {
             )
         };
     }
+
+
+    // ─────────────────────────────────────────────────────────────
+    // STATIC RESOURCE TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getStaticResourceTools() {
+        return new List<Map<String, Object>>{
+            buildTool(
+                'static_resource_list',
+                'List all attachments available from the Jira ticket. '
+                + 'Always call this first before deploying a static resource to confirm the exact fileName.',
+                buildParams(new List<Map<String, Object>>{}, new List<String>{})
+            ),
+            buildTool(
+                'static_resource_deploy',
+                'Deploy a static resource (create or update) using an attachment from the Jira ticket. '
+                + 'Handles both create and update — never call twice for the same apiName. '
+                + 'Always call static_resource_list first to confirm the exact fileName.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName',      'API name for the static resource — alphanumeric and underscores only, no file extension (e.g. my_logo)'),
+                        strProp('fileName',     'Exact fileName as returned by static_resource_list (e.g. logo.png)'),
+                        strProp('cacheControl', 'Public or Private — defaults to Public')
+                    },
+                    new List<String>{ 'apiName', 'fileName' }
+                )
+            ),
+            buildTool(
+                'static_resource_delete',
+                'Delete a static resource from the org by API name via destructive deploy.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('apiName', 'API name of the static resource to delete (e.g. my_logo)')
+                    },
+                    new List<String>{ 'apiName' }
+                )
+            )
+        };
+    }
+
 
     // ─────────────────────────────────────────────────────────────
     // BUILDER HELPERS
