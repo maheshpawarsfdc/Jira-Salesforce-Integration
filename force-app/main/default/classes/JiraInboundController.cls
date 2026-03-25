@@ -9,7 +9,7 @@ global class JiraInboundController {
 
         try {
             // ── STEP 1: Parse incoming Jira payload ──
-            // CRITICAL FIX: Use getBody() instead of toString() to avoid UTF-8 conversion errors
+            // Use getBody() instead of toString() to avoid UTF-8 conversion errors
             Blob bodyBlob = RestContext.request.requestBody;
             String body   = bodyBlob.toString();
             

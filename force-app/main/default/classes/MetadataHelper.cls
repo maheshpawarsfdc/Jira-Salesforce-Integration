@@ -41,7 +41,7 @@ public class MetadataHelper {
     // SOBJECT — DESCRIBE
     // ─────────────────────────────────────────────────────────────
     public static Map<String, Object> describeSObject(String objectName) {
-        objectName = addSuffix(objectName);
+        objectName = addObjectSuffix(objectName);
         System.debug('            ── MetadataHelper.describeSObject() called for [' + objectName + ']');
 
         Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
@@ -279,7 +279,7 @@ public class MetadataHelper {
     // FIELD — LIST
     // ─────────────────────────────────────────────────────────────
     public static List<Map<String, Object>> getSObjectFieldsList(String objectName) {
-        objectName = addSuffix(objectName);
+        objectName = addObjectSuffix(objectName);
         System.debug('            ── MetadataHelper.getSObjectFieldsList() called for [' + objectName + ']');
 
         Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
@@ -305,8 +305,8 @@ public class MetadataHelper {
     // FIELD — DESCRIBE
     // ─────────────────────────────────────────────────────────────
     public static Map<String, Object> describeSObjectField(String objectName, String fieldName) {
-        objectName = addSuffix(objectName);
-        fieldName  = addSuffix(fieldName);
+        objectName = addObjectSuffix(objectName);
+        fieldName  = addFieldSuffix(fieldName);
         System.debug('            ── MetadataHelper.describeSObjectField() called for [' + objectName + '.' + fieldName + ']');
 
         Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
@@ -334,8 +334,8 @@ public class MetadataHelper {
     // Multiple fields on same object are merged into a single object file.
     // ─────────────────────────────────────────────────────────────
     public static void createField(String objectName, String fieldName, Map<String, Object> args) {
-        objectName = addSuffix(objectName);
-        fieldName  = addSuffix(fieldName);
+        objectName = addObjectSuffix(objectName);
+        fieldName  = addFieldSuffix(fieldName);
         String fieldType = getRequired(args, 'type');
         String label     = getRequired(args, 'label');
 
@@ -366,6 +366,71 @@ public class MetadataHelper {
 
         ZipBuilder.addFile('CustomObject', objectName, filePath, objXml);
         System.debug('            ✔ MetadataHelper.createField(): [' + objectName + '.' + fieldName + '] queued for deploy');
+
+        // ── AUTO-ADD TO LOGGED-IN USER'S PAGE LAYOUT ──────────────
+        //autoAddFieldToUserLayout(objectName, fieldName);
+    }
+    
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Auto-add newly created field to the page layout
+    // assigned to the logged-in user's profile for this object.
+    // Reuses PageLayoutHelper.addFieldsToLayout() entirely.
+    // Non-fatal: field creation still succeeds if layout lookup fails.
+    // ─────────────────────────────────────────────────────────────
+    private static void autoAddFieldToUserLayout(String objectName, String fieldName) {
+        try {
+            System.debug('            ── MetadataHelper.autoAddFieldToUserLayout(): looking up layout for object [' + objectName + ']');
+
+            String fullName;
+
+            // Step 1 — try profile-specific layout assignment first
+            String profileId = UserInfo.getProfileId();
+            String query = 'SELECT Layout.FullName FROM ProfileLayout '
+                + 'WHERE ProfileId = \'' + profileId + '\' '
+                + 'AND TableEnumOrId = \'' + objectName + '\'';
+
+            Map<String, Object> response = runToolingApiQuery(query);
+            List<Object> records = (List<Object>) response.get('records');
+
+            if (records != null && !records.isEmpty()) {
+                Map<String, Object> record     = (Map<String, Object>) records[0];
+                Map<String, Object> layoutNode = (Map<String, Object>) record.get('Layout');
+                fullName = (String) layoutNode.get('FullName');
+                System.debug('            ── MetadataHelper.autoAddFieldToUserLayout(): found profile-assigned layout [' + fullName + ']');
+
+            } else {
+                // Step 2 — fallback: reuse PageLayoutHelper.listPageLayouts() directly
+                System.debug('            ── MetadataHelper.autoAddFieldToUserLayout(): no profile assignment found — falling back to PageLayoutHelper.listPageLayouts()');
+
+                List<Map<String, Object>> layouts = PageLayoutHelper.listPageLayouts(
+                    new Map<String, Object>{ 'objectApiName' => objectName }
+                );
+
+                if (layouts == null || layouts.isEmpty()) {
+                    System.debug('            ⚠ MetadataHelper.autoAddFieldToUserLayout(): no layout found at all for [' + objectName + '] — skipping');
+                    return;
+                }
+
+                fullName = (String) layouts[0].get('fullName');
+                System.debug('            ── MetadataHelper.autoAddFieldToUserLayout(): fallback layout [' + fullName + ']');
+            }
+
+            // Step 3 — extract layout name e.g. "Car__c-Car Layout" → "Car Layout"
+            String layoutName = fullName.contains('-') ? fullName.substringAfter('-') : fullName;
+
+            // Step 4 — reuse PageLayoutHelper.addFieldsToLayout()
+            PageLayoutHelper.addFieldsToLayout(new Map<String, Object>{
+                'objectApiName' => objectName,
+                'layoutName'    => layoutName,
+                'sectionLabel'  => 'Information',
+                'fields'        => '["' + fieldName + '"]'
+            });
+
+            System.debug('            ✔ MetadataHelper.autoAddFieldToUserLayout(): [' + fieldName + '] staged in layout [' + layoutName + ']');
+
+        } catch (Exception e) {
+            System.debug('            ⚠ MetadataHelper.autoAddFieldToUserLayout(): WARNING — could not auto-add to layout: ' + e.getMessage());
+        }
     }
 
     // Builds a minimal CustomObject XML wrapper with the object's real metadata.
@@ -483,8 +548,8 @@ public class MetadataHelper {
     // then deploys updated field embedded in MDAPI object XML wrapper.
     // ─────────────────────────────────────────────────────────────
     public static void updateField(String objectName, String fieldName, Map<String, Object> args) {
-        objectName = addSuffix(objectName);
-        fieldName  = addSuffix(fieldName);
+        objectName = addObjectSuffix(objectName);
+        fieldName  = addFieldSuffix(fieldName);
         String fullName = objectName + '.' + fieldName;
 
         System.debug('            ── MetadataHelper.updateField() called for [' + fullName + ']');
@@ -565,8 +630,8 @@ public class MetadataHelper {
     // CustomField type with full member name ObjectName__c.FieldName__c.
     // ─────────────────────────────────────────────────────────────
     public static void deleteField(String objectName, String fieldName) {
-        objectName = addSuffix(objectName);
-        fieldName  = addSuffix(fieldName);
+        objectName = addObjectSuffix(objectName);
+        fieldName  = addFieldSuffix(fieldName);
         String fullName = objectName + '.' + fieldName;
         System.debug('            ── MetadataHelper.deleteField() called for [' + fullName + ']');
 
@@ -652,24 +717,24 @@ public class MetadataHelper {
         }
     }
 
-    private static void checkDeleteResults(MetadataService.DeleteResult[] results) {
-        if (results == null || results.isEmpty()) {
-            throw new MetadataHelperException('No results returned from Metadata API');
-        }
-        for (MetadataService.DeleteResult result : results) {
-            if (!result.success) {
-                String errors = '';
-                if (result.errors != null) {
-                    for (MetadataService.Error err : result.errors) {
-                        errors += err.message + ' (' + err.statusCode + '). ';
-                    }
-                }
-                System.debug('            ✖ MetadataHelper: delete FAILED for [' + result.fullName + ']: ' + errors);
-                throw new MetadataHelperException('Delete error on ' + result.fullName + ': ' + errors);
-            }
-            System.debug('            ✔ MetadataHelper: Salesforce confirmed delete for [' + result.fullName + ']');
-        }
-    }
+    // private static void checkDeleteResults(MetadataService.DeleteResult[] results) {
+    //     if (results == null || results.isEmpty()) {
+    //         throw new MetadataHelperException('No results returned from Metadata API');
+    //     }
+    //     for (MetadataService.DeleteResult result : results) {
+    //         if (!result.success) {
+    //             String errors = '';
+    //             if (result.errors != null) {
+    //                 for (MetadataService.Error err : result.errors) {
+    //                     errors += err.message + ' (' + err.statusCode + '). ';
+    //                 }
+    //             }
+    //             System.debug('            ✖ MetadataHelper: delete FAILED for [' + result.fullName + ']: ' + errors);
+    //             throw new MetadataHelperException('Delete error on ' + result.fullName + ': ' + errors);
+    //         }
+    //         System.debug('            ✔ MetadataHelper: Salesforce confirmed delete for [' + result.fullName + ']');
+    //     }
+    // }
 
     // ─────────────────────────────────────────────────────────────
     // PRIVATE — Session ID
@@ -701,6 +766,31 @@ public class MetadataHelper {
     }
 
     private static String addSuffix(String name) {
+        if (String.isBlank(name)) return name;
+        name = name.trim();
+        return name.endsWith('__c') ? name : name + '__c';
+    }
+    // For OBJECT names — only add __c if the object isn't already in the schema as-is
+    private static String addObjectSuffix(String name) {
+        if (String.isBlank(name)) return name;
+        name = name.trim();
+        
+        // Already has __c — return as-is
+        if (name.endsWith('__c')) return name;
+        
+        // Check if it exists as a standard object (no suffix)
+        if (Schema.getGlobalDescribe().containsKey(name) || 
+            Schema.getGlobalDescribe().containsKey(name.toLowerCase())) {
+            return name; // Standard object — don't add __c
+        }
+        
+        // Not found without suffix — assume custom, add __c
+        return name + '__c';
+    }
+
+    // For FIELD names — new fields are always custom, always need __c
+    // UNLESS it's a standard field (for read/describe only, not for create)
+    private static String addFieldSuffix(String name) {
         if (String.isBlank(name)) return name;
         name = name.trim();
         return name.endsWith('__c') ? name : name + '__c';

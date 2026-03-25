@@ -8,7 +8,7 @@ public class FunctionRouter {
         String result;
 
         // ── SOBJECT OPERATIONS ────────────────────────────────
-        if      (functionName == 'sobjects_list')          result = FunctionHelper.callListSObjects(args);
+        if      (functionName == 'sobjects_list')           result = FunctionHelper.callListSObjects(args);
         else if (functionName == 'sobject_describe')        result = FunctionHelper.callDescribeSObject(args);
         else if (functionName == 'sobject_create')          result = FunctionHelper.callCreateSObject(args);
         else if (functionName == 'sobject_update')          result = FunctionHelper.callUpdateSObject(args);
@@ -23,24 +23,24 @@ public class FunctionRouter {
         else if (functionName == 'sobject_field_delete')    result = FunctionHelper.callDeleteSObjectField(args);
 
         // ── PERMISSION SET OPERATIONS ─────────────────────────
-        else if (functionName == 'permission_set_list')                  result = FunctionHelper.callListPermissionSets(args);
-        else if (functionName == 'permission_set_create')                result = FunctionHelper.callCreatePermissionSet(args);
-        else if (functionName == 'permission_set_grant_object_access')   result = FunctionHelper.callGrantObjectAccess(args);
-        else if (functionName == 'permission_set_grant_field_access')    result = FunctionHelper.callGrantFieldAccess(args);
-        else if (functionName == 'permission_set_grant_all_fields_access') result = FunctionHelper.callGrantAllFieldsAccess(args);
-        else if (functionName == 'permission_set_delete')                    return FunctionHelper.callDeletePermissionSet(args);
-        else if (functionName == 'permission_set_assign_to_user')          return FunctionHelper.callAssignPermissionSetToUser(args);
-        else if (functionName == 'permission_set_remove_from_user')         return FunctionHelper.callRemovePermissionSetFromUser(args);
+        else if (functionName == 'permission_set_list')                      result = FunctionHelper.callListPermissionSets(args);
+        else if (functionName == 'permission_set_create')                    result = FunctionHelper.callCreatePermissionSet(args);
+        else if (functionName == 'permission_set_grant_object_access')       result = FunctionHelper.callGrantObjectAccess(args);
+        else if (functionName == 'permission_set_grant_field_access')        result = FunctionHelper.callGrantFieldAccess(args);
+        else if (functionName == 'permission_set_grant_all_fields_access')   result = FunctionHelper.callGrantAllFieldsAccess(args);
+        else if (functionName == 'permission_set_delete')                    result = FunctionHelper.callDeletePermissionSet(args);
+        else if (functionName == 'permission_set_assign_to_user')            result = FunctionHelper.callAssignPermissionSetToUser(args);
+        else if (functionName == 'permission_set_remove_from_user')          result = FunctionHelper.callRemovePermissionSetFromUser(args);
 
         // ── PROFILE OPERATIONS ───────────────────────────────────
-        else if (functionName == 'profile_list')                     return FunctionHelper.callListProfiles(args);
-        else if (functionName == 'profile_clone')                    return FunctionHelper.callProfileClone(args);
-        else if (functionName == 'profile_delete')                   return FunctionHelper.callProfileDelete(args);
-        else if (functionName == 'profile_grant_object_access')      return FunctionHelper.callProfileGrantObjectAccess(args);
-        else if (functionName == 'profile_revoke_object_access')     return FunctionHelper.callProfileRevokeObjectAccess(args);
-        else if (functionName == 'profile_grant_field_access')       return FunctionHelper.callProfileGrantFieldAccess(args);
-        else if (functionName == 'profile_revoke_field_access')      return FunctionHelper.callProfileRevokeFieldAccess(args);
-        else if (functionName == 'profile_grant_all_fields_access')  return FunctionHelper.callProfileGrantAllFieldsAccess(args);
+        else if (functionName == 'profile_list')                     result = FunctionHelper.callListProfiles(args);
+        else if (functionName == 'profile_clone')                    result = FunctionHelper.callProfileClone(args);
+        else if (functionName == 'profile_delete')                   result = FunctionHelper.callProfileDelete(args);
+        else if (functionName == 'profile_grant_object_access')      result = FunctionHelper.callProfileGrantObjectAccess(args);
+        else if (functionName == 'profile_revoke_object_access')     result = FunctionHelper.callProfileRevokeObjectAccess(args);
+        else if (functionName == 'profile_grant_field_access')       result = FunctionHelper.callProfileGrantFieldAccess(args);
+        else if (functionName == 'profile_revoke_field_access')      result = FunctionHelper.callProfileRevokeFieldAccess(args);
+        else if (functionName == 'profile_grant_all_fields_access')  result = FunctionHelper.callProfileGrantAllFieldsAccess(args);
 
         // ── VALIDATION RULE OPERATIONS ───────────────────────────
         else if (functionName == 'validation_rule_list')       result = FunctionHelper.callListValidationRules(args);
