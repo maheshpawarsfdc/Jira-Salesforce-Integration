@@ -65,19 +65,7 @@ public class DeployService {
         MetadataService.AsyncResult asyncResult = port.deploy(base64Zip, options);
         String jobId = asyncResult.id;
 
-        System.debug('DeployService: deploy started. jobId = ' + jobId);
-
-        // Enqueue poller using Type.forName to avoid circular compile dependency
-        Type pollerType = Type.forName('DeployPoller');
-        if (pollerType == null) {
-            throw new DeployServiceException('DeployPoller class not found — ensure it is deployed');
-        }
-        DeployPoller poller = (DeployPoller) pollerType.newInstance();
-        poller.jobId    = jobId;
-        poller.issueKey = issueKey;
-        poller.attempt  = 1;
-        System.enqueueJob(poller);
-        System.debug('DeployService: DeployPoller enqueued for jobId = ' + jobId);
+        System.debug('DeployService: deploy started. jobId = ' + jobId + '. Caller is responsible for polling.');
 
         return jobId;
     }

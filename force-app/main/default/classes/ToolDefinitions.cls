@@ -175,7 +175,7 @@ public class ToolDefinitions {
                         nullableStrProp('scale',            'For Number/Currency/Percent only: decimal places. Send null for other types.'),
                         nullableStrProp('picklistValues',   'For Picklist or MultiselectPicklist only: comma-separated values e.g. "Open,Closed,Pending". Send null for other types.'),
                         nullableStrProp('referenceTo',      'For Lookup/MasterDetail only: parent object API name. Send null for other types.'),
-                        nullableStrProp('relationshipName', 'For Lookup/MasterDetail only: relationship name. Send null for other types.'),
+                        nullableStrProp('relationshipName', 'For Lookup/MasterDetail only: the child relationship name seen from the parent side. Combine CHILD object name and field name without __c, joined by underscore. Example: Lookup field Account__c on Reservation__c → use "Reservation_Account". NEVER use just the parent object name or a pluralized version of it — both cause deployment conflicts.'),
                         nullableStrProp('description',      'Optional description. Send null if not needed.'),
                         nullableStrProp('helpText',         'Optional help text. Send null if not needed.')
                     },

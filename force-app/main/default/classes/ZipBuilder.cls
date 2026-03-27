@@ -84,11 +84,14 @@ public class ZipBuilder {
 
         // Add all metadata files
         for (String filePath : files.keySet()) {
-            String content = files.get(filePath);
+            String content   = files.get(filePath);
+            Blob   fileBlob  = Blob.valueOf(content);
+            // Pre-compute CRC32 from Blob to avoid the expensive hex-string CRC loop in Zippex
+            String crc32     = HexUtil.intToHexLE(HexUtil.CRC32Table(fileBlob), 4);
             System.debug('ZipBuilder: adding file [' + filePath + ']');
-            zip.addFile(filePath, Blob.valueOf(content), null);
+            zip.addFile(filePath, fileBlob, crc32);
         }
-        
+
         // Add all binary files (e.g. static resources)
         for (String filePath : binaryFiles.keySet()) {
             try {
@@ -99,15 +102,18 @@ public class ZipBuilder {
                                         .replace('\r', '')
                                         .replace(' ', '')
                                         .replace('\t', '');
-                                        
+
                 Blob fileBlob = EncodingUtil.base64Decode(cleanBase64);
                 System.debug('ZipBuilder: adding binary file [' + filePath + '], size=' + fileBlob.size() + ' bytes');
-                zip.addFile(filePath, fileBlob, null);
+                // Pre-compute CRC32 from the decoded Blob — this uses the fast Blob-based CRC path
+                // and avoids iterating over the 2x-larger hex string representation inside Zippex
+                String crc32 = HexUtil.intToHexLE(HexUtil.CRC32Table(fileBlob), 4);
+                zip.addFile(filePath, fileBlob, crc32);
             } catch (Exception e) {
                 System.debug('ZipBuilder: ERROR with binary file [' + filePath + ']: ' + e.getMessage());
                 throw new ZipBuilderException('Failed to add binary file ' + filePath + ': ' + e.getMessage());
             }
-        } 
+        }
 
 
         Blob zipBlob = zip.getZipArchive();

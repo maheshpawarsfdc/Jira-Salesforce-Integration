@@ -76,7 +76,8 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
                 // Use System.schedule instead of System.enqueueJob to avoid
                 // Salesforce queueable stack depth limit (max 5 chained queueables).
                 // Each scheduled job starts a fresh stack — no depth accumulation.
-                String cronExp = buildCronIn5Seconds();
+                Integer waitSecs = (attempt <= 2) ? 2 : 3;
+                String cronExp = buildCronInSeconds(waitSecs);
                 String jobName = 'DeployPoller_' + jobId + '_' + attempt;
                 System.schedule(jobName, cronExp, new Deploypollerscheduler(jobId, issueKey, attempt + 1));
             }
@@ -97,9 +98,9 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
     // ─────────────────────────────────────────────────────────────
     // PARSE RESULT — human readable deploy outcome
     // ─────────────────────────────────────────────────────────────
-    // Returns a cron expression for ~5 seconds from now
-    private String buildCronIn5Seconds() {
-        Datetime dt = Datetime.now().addSeconds(5);
+    // Returns a cron expression for ~3 seconds from now
+    private String buildCronInSeconds(Integer seconds) {
+        Datetime dt = Datetime.now().addSeconds(seconds);
         return dt.second() + ' ' + dt.minute() + ' ' + dt.hour()
             + ' ' + dt.day() + ' ' + dt.month() + ' ? ' + dt.year();
     }

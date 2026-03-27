@@ -351,7 +351,7 @@ public class MetadataHelper {
             }
         }
 
-        String fieldXml = buildFieldXmlBlock(fieldName, fieldType, label, args);
+        String fieldXml = buildFieldXmlBlock(objectName, fieldName, fieldType, label, args);
         String filePath = 'objects/' + objectName + '.object';
 
         // If another field on the same object is already queued, merge into that file
@@ -419,7 +419,7 @@ public class MetadataHelper {
     }
 
     // Builds the inner <fields>...</fields> XML block for a field (no root element)
-    private static String buildFieldXmlBlock(String fieldName, String fieldType, String label, Map<String, Object> args) {
+    private static String buildFieldXmlBlock(String objectName, String fieldName, String fieldType, String label, Map<String, Object> args) {
         String xml = '<fields>';
         xml += '<fullName>' + fieldName + '</fullName>';
         xml += '<label>' + escapeXml(label) + '</label>';
@@ -466,7 +466,7 @@ public class MetadataHelper {
             }
         } else if (fieldType == 'Lookup' || fieldType == 'MasterDetail') {
             String refTo   = getRequired(args, 'referenceTo');
-            String defaultRelName = fieldName.replace('__c', '');
+            String defaultRelName = objectName.replace('__c', '') + '_' + fieldName.replace('__c', '');
             String relName = getOptional(args, 'relationshipName', defaultRelName);
             xml += '<referenceTo>' + refTo + '</referenceTo>';
             xml += '<relationshipName>' + relName + '</relationshipName>';
@@ -633,64 +633,6 @@ public class MetadataHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Result checkers
-    // ─────────────────────────────────────────────────────────────
-
-    private static void checkUpsertResults(MetadataService.UpsertResult[] results) {
-        if (results == null || results.isEmpty()) {
-            throw new MetadataHelperException('No results returned from Metadata API');
-        }
-        for (MetadataService.UpsertResult result : results) {
-            if (!result.success) {
-                String errors = '';
-                if (result.errors != null) {
-                    for (MetadataService.Error err : result.errors) {
-                        errors += err.message + ' (' + err.statusCode + '). ';
-                    }
-                }
-                System.debug('            ✖ MetadataHelper: upsert FAILED for [' + result.fullName + ']: ' + errors);
-                throw new MetadataHelperException('Metadata API error on ' + result.fullName + ': ' + errors);
-            }
-            System.debug('            ✔ MetadataHelper: Salesforce confirmed success for [' + result.fullName + ']');
-        }
-    }
-
-    // private static void checkDeleteResults(MetadataService.DeleteResult[] results) {
-    //     if (results == null || results.isEmpty()) {
-    //         throw new MetadataHelperException('No results returned from Metadata API');
-    //     }
-    //     for (MetadataService.DeleteResult result : results) {
-    //         if (!result.success) {
-    //             String errors = '';
-    //             if (result.errors != null) {
-    //                 for (MetadataService.Error err : result.errors) {
-    //                     errors += err.message + ' (' + err.statusCode + '). ';
-    //                 }
-    //             }
-    //             System.debug('            ✖ MetadataHelper: delete FAILED for [' + result.fullName + ']: ' + errors);
-    //             throw new MetadataHelperException('Delete error on ' + result.fullName + ': ' + errors);
-    //         }
-    //         System.debug('            ✔ MetadataHelper: Salesforce confirmed delete for [' + result.fullName + ']');
-    //     }
-    // }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Session ID
-    // ─────────────────────────────────────────────────────────────
-    private static String getSessionId() {
-        if (Test.isRunningTest()) return UserInfo.getSessionId();
-        try {
-            PageReference vfPage = Page.SessionId;
-            String content = vfPage.getContent().toString();
-            Integer s = content.indexOf('Start_Of_Session_Id') + 'Start_Of_Session_Id'.length();
-            Integer e = content.indexOf('End_Of_Session_Id');
-            return content.substring(s, e);
-        } catch (Exception ex) {
-            return UserInfo.getSessionId();
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // PRIVATE — Parameter helpers
     // ─────────────────────────────────────────────────────────────
 
@@ -708,6 +650,7 @@ public class MetadataHelper {
         name = name.trim();
         return name.endsWith('__c') ? name : name + '__c';
     }
+
     // For OBJECT names — only add __c if the object isn't already in the schema as-is
     private static String addObjectSuffix(String name) {
         if (String.isBlank(name)) return name;
@@ -748,29 +691,6 @@ public class MetadataHelper {
         String strVal = String.valueOf(val).trim();
         if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
         return strVal;
-    }
-
-    private static MetadataService.ValueSet buildPicklistValueSet(String csvValues) {
-        MetadataService.ValueSet valueSet = new MetadataService.ValueSet();
-        MetadataService.ValueSetValuesDefinition definition =
-            new MetadataService.ValueSetValuesDefinition();
-        List<MetadataService.CustomValue> picklistValues = new List<MetadataService.CustomValue>();
-        Boolean isFirst = true;
-        for (String val : csvValues.split(',')) {
-            val = val.trim();
-            if (String.isNotBlank(val)) {
-                MetadataService.CustomValue cv = new MetadataService.CustomValue();
-                cv.fullName  = val;
-                cv.label     = val;
-                cv.isActive  = true;
-                cv.default_x = isFirst;
-                picklistValues.add(cv);
-                isFirst = false;
-            }
-        }
-        definition.value            = picklistValues;
-        valueSet.valueSetDefinition = definition;
-        return valueSet;
     }
 
     public class MetadataHelperException extends Exception {}

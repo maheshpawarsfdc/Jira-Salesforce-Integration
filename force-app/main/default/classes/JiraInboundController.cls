@@ -78,7 +78,7 @@ global class JiraInboundController {
 
         } catch (Exception e) {
             success     = false;
-            llmResponse = 'Error: ' + e.getMessage();
+            llmResponse = 'Error: ' + e.getMessage(); //llmResponse = 'Something went wrong. Please check logs.';
             System.debug('JiraInbound: Exception — ' + e.getMessage());
             System.debug('JiraInbound: Stack trace — ' + e.getStackTraceString());
         } finally {

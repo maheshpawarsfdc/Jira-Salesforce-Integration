@@ -60,11 +60,39 @@ public class LLMService {
         // Reason: Zippex CRC32 on large binary files exceeds the 10s synchronous
         // CPU limit. The Queueable gets 60s CPU in its own transaction.
         if (ZipBuilder.hasFiles()) {
-            System.debug('LLMService: ZipBuilder has ' + ZipBuilder.files.size()
-                + ' file(s) — enqueuing ZipDeployQueueable for issue [' + issueKey + ']');
-            System.enqueueJob(new ZipDeployQueueable(issueKey));
-            ZipBuilder.clear();  // clear static state — Queueable already captured a snapshot
-            return result + '\n⏳ Deploying to Salesforce asynchronously — DeployPoller will post the result to Jira when done.';
+            if (ZipBuilder.binaryFiles.isEmpty()) {
+
+                System.debug('LLMService: text-only deploy — building ZIP and calling deploy() synchronously for issue [' + issueKey + ']');
+                String base64Zip = ZipBuilder.buildBase64Zip();
+                ZipBuilder.clear();
+
+                // Call deploy() directly here — it is a SOAP callout that returns a jobId
+                // instantly. We are already making callouts (Groq) so this is allowed.
+                // This eliminates the entire DeployQueueable queue wait.
+                String jobId = DeployService.deploy(base64Zip, issueKey);
+                System.debug('LLMService: deploy submitted. jobId=' + jobId);
+
+                // Immediate check — simple deploys are often already done
+                MetadataService.DeployResult deployResult = DeployService.checkStatus(jobId);
+                System.debug('LLMService: immediate check — done=' + deployResult.done + ', status=' + deployResult.status);
+
+                if (deployResult.done) {
+                    String deployMsg = DeployService.parseResult(deployResult);
+                    System.debug('LLMService: deploy already done! ' + deployMsg);
+                    JiraCallbackService.postComment(issueKey, deployMsg);
+                    return result + '\n' + deployMsg;
+                } else {
+                    System.debug('LLMService: not done yet — enqueuing DeployPoller');
+                    System.enqueueJob(new DeployPoller(jobId, issueKey, 1));
+                    return result + '\n⏳ Deploy submitted — DeployPoller will post the result to Jira when done.';
+                }
+
+            } else {
+                System.debug('LLMService: binary files present — deferring to DeployQueueable for issue [' + issueKey + ']');
+                System.enqueueJob(new DeployQueueable(issueKey));
+                ZipBuilder.clear();
+                return result + '\n⏳ Deploying to Salesforce asynchronously — DeployPoller will post the result to Jira when done.';
+            }
         }
 
         return result;
