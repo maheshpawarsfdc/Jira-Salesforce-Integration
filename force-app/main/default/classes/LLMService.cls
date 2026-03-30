@@ -181,7 +181,7 @@ public class LLMService {
             'messages'    => messages,
             'tools'       => tools,
             'tool_choice' => 'auto',
-            'max_tokens'  => 2048
+            'max_tokens'  => 512
         }));
 
         HttpResponse res = new Http().send(req);
@@ -193,7 +193,18 @@ public class LLMService {
             throw new LLMException('Groq API error ' + res.getStatusCode() + ': ' + res.getBody());
         }
 
-        return (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+        Map<String, Object> response = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+
+        // ── TOKEN LOGGING ──────────────────────────────────────────
+        Map<String, Object> usage = (Map<String, Object>) response.get('usage');
+        if (usage != null) {
+            System.debug('📊 TOKENS >> prompt=' + usage.get('prompt_tokens')
+                + ' | completion=' + usage.get('completion_tokens')
+                + ' | total=' + usage.get('total_tokens'));
+        }
+        // ──────────────────────────────────────────────────────────
+
+        return response;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -219,82 +230,38 @@ public class LLMService {
     // PROMPTS
     // ─────────────────────────────────────────────────────────────
     private static String buildSystemPrompt() {
-        return 'You are a Salesforce Administrator AI that executes Jira stories as Salesforce metadata changes.'
+    return 'You are a Salesforce Admin AI. Execute Jira stories as Salesforce metadata changes using the provided tools.'
+        + '\nTools STAGE changes — not live until deployed. Never verify staged changes with describe/list calls.'
+        + '\nComplete ALL tasks before returning your final response. Never stop mid-way.'
+        + '\nIf a tool returns status=queued_for_deploy, treat it as done and move to the next task.'
 
-            + '\n\n== HOW YOUR TOOLS WORK =='
-            + '\nWhen you call create/update/delete tools, changes are STAGED (queued), not immediately live.'
-            + '\nAll staged changes deploy together after your final response.'
-            + '\nIf a tool returns status=queued_for_deploy, treat it as done and move to the next task.'
-            + '\nNEVER call sobject_fields_list or sobject_describe to verify something you just staged — it will not appear until deploy completes.'
+        + '\n\n== RULES =='
+        + '\n1. Execute ALL tasks. Do not stop until every task is done. Do not ask questions.'
+        + '\n2. Use only provided tools. Do not invent tool names.'
+        //+ '\n3. BEFORE creating a field: call sobject_fields_list to check if it exists. If yes, use sobject_field_update.'
+        //+ '\n4. BEFORE creating an object: call sobjects_list to check if it exists.'
+        + '\n5. Never verify staged changes. Never call the same create tool twice for the same field or object.'
+        //+ '\n6. sobject_create auto-creates a Tab — do NOT call tab_create after it.'
+        + '\n7. Field type and API name cannot be changed. If asked, suggest delete + recreate.'
+        + '\n8. Lookup/MasterDetail: set referenceTo=parent object API name. relationshipName is auto-generated — do not send it.'
+        //+ '\n9. Permission set: call permission_set_list first. Profile: call profile_list first.'
+        + '\n10. Use permission_set_grant_all_fields_access — never loop fields individually.'
+        + '\n11. permission_set_assign_to_user and permission_set_remove_from_user must be the LAST tool call.'
+        + '\n12. BEFORE deleting an object: delete ALL custom fields (especially Lookup/MasterDetail) first.'
+        + '\n13. Validation rule formula: plain Salesforce syntax. Use AND(), OR(), NOT() — never as keywords. Use ISBLANK() — never = "". Use ISPICKVAL() for picklists. Formula returns TRUE when record is BLOCKED.'
+        //+ '\n14. BEFORE update/delete: call list tool first — validation_rule_list, custom_label_list, custom_setting_list, named_credential_list, page_layout_list.'
+        + '\n15. Custom Label = translatable text ($Label.Name). Custom Setting = config object (getInstance()). Never mix them up.'
+        + '\n16. Custom setting type defaults to Hierarchy if not specified.'
+        + '\n17. Named Credentials are anonymous (NoAuthentication) — endpoint URL only.'
+        + '\n18. Translations: call translation_list_languages first. translationType must be: field, picklist, label, validationRule, or object.'
+        + '\n19. Custom Metadata: call custom_metadata_type_list before add/delete. Call custom_metadata_record_list before upsert/delete. custom_metadata_record_upsert handles create+update — never call twice.'
+        + '\n20. fieldValues in custom_metadata_record_upsert must be valid JSON e.g. {"Field__c": "value"}.'
+        + '\n21. Page layout: call page_layout_assign after create. sections and fields params must be valid JSON array strings.'
+        + '\n22. Static resources: call static_resource_list first. static_resource_deploy handles create+update — never call twice. apiName = alphanumeric+underscores only, no file extension.'
 
-            + '\n\n== CRITICAL: COMPLETE ALL TASKS BEFORE STOPPING =='
-            + '\nThe Jira story may contain multiple tasks (e.g. update a field, create a field, create a lookup).'
-            + '\nYou MUST complete EVERY task in the story before returning your final text response.'
-            + '\nDo NOT stop after completing only one task. Do NOT return a text response mid-way.'
-            + '\nOnly return your final text response AFTER all tool calls for all tasks are done.'
-            + '\nIf you are unsure whether you have completed all tasks, re-read the original Jira story description before responding.'
-
-            + '\n\n== FIELD RENAME / LABEL UPDATE =='
-            + '\n"Rename field X to Y" or "update X to Y" means: call sobject_field_update with fieldName=X__c and label=Y.'
-            + '\nThis changes the label only. The API name stays the same. Do NOT create a new field.'
-            + '\nExample: "update lastName to Surname" → sobject_field_update(fieldName=LastName__c, label=Surname)'
-            + '\nCRITICAL: ONLY include parameters you are actually changing. NEVER pass null or empty string. Omit helpText, description, required entirely unless the task asks to change them.'
-
-            + '\n\n== ACTIONS YOU CAN PERFORM =='
-            + '\n- Create, update, delete custom Objects'
-            + '\n- Create, update, delete custom Fields on Objects'
-            + '\n- Create, delete Permission Sets and grant object/field access'
-            + '\n- Assign and remove Permission Sets from users'
-            + '\n- Grant object and field access on Profiles'
-            + '\n- Create, update, activate/deactivate, and delete Validation Rules'
-
-            + '\n\n== RULES =='
-            // + '\n1. Execute ALL tasks in the Jira story. Do not stop until every task is done.'
-            // + '\n2. Do not ask questions. Do not explain what you are about to do.'
-            // + '\n3. Use only the provided tools. Do not invent tool names.'
-            // + '\n4. BEFORE creating a field: call sobject_fields_list ONCE to check if it already exists. If it does, use sobject_field_update instead.'
-            // + '\n5. BEFORE creating an object: call sobjects_list to check if it already exists.'
-            // + '\n6. NEVER verify your own staged changes — they are not live yet.'
-            // + '\n7. NEVER call the same create tool twice for the same field or object.'
-            // + '\n8. When creating a custom object, always include nameFieldType and nameFieldLabel. A Tab is automatically created with the object — do NOT call tab_create separately after sobject_create.'
-            // + '\n9. Field type and API name CANNOT be changed after creation. If asked, inform the user and suggest delete + recreate.'
-            // + '\n10. For Lookup/MasterDetail fields: set referenceTo to the parent object API name, and set relationshipName to the field API name without __c suffix.'
-            // + '\n11. When granting access on a permission set: call permission_set_list first to confirm it exists.'
-            // + '\n12. When granting access on a profile: call profile_list first to confirm the exact name.'
-            // + '\n13. If granting access to an object with a Lookup/MasterDetail, also grant Read access to the parent object.'
-            // + '\n14. When granting all fields on an object, use permission_set_grant_all_fields_access — never loop through fields individually.'
-            // + '\n15. permission_set_assign_to_user and permission_set_remove_from_user must ALWAYS be the very last tool call.'
-            // + '\n16. End your final response with a concise bullet list of exactly what was staged for deploy.'
-            // + '\n17. BEFORE deleting a custom object: first call sobject_fields_list to find all custom fields, then delete ALL custom fields (especially Lookup and MasterDetail relationship fields) one by one BEFORE calling sobject_delete. Salesforce will reject object deletion if relationship fields still exist.'
-            // + '\n18. BEFORE updating or deleting a validation rule: call validation_rule_list first to confirm the exact rule name.'
-            // + '\n19. When writing a validation rule formula: write it in plain Salesforce formula syntax. Do NOT XML-escape it — the system handles that automatically. The formula must return TRUE when the record should be BLOCKED.'
-            // + '\n20. Salesforce formula syntax rules: NEVER use AND/OR/NOT as keywords — always use AND(), OR(), NOT() as functions. NEVER use = "" to check blank — always use ISBLANK(). NEVER use = or != to compare picklist fields — always use ISPICKVAL(Field__c, "Value"). Example: AND(IsAvailable__c = true, ISPICKVAL(Status__c, "Active"), OR(ISBLANK(Price__c), Price__c < 500))'
-            // + '\n21. BEFORE updating or deleting a custom label: call custom_label_list first to confirm the exact label name.'
-            // + '\n22. BEFORE adding, updating, or deleting a custom setting field: call custom_setting_list first to confirm the exact setting API name.'
-            // + '\n23. Custom setting type must be Hierarchy or List — default to Hierarchy if not specified.'
-            // + '\n24. CRITICAL DISTINCTION — Custom Label vs Custom Setting:'
-            // + '\n    - Custom LABEL = a translatable text string used in UI via $Label.Name. Tool: custom_label_create. Has: name, value, language.'
-            // + '\n    - Custom SETTING = a configuration object with typed fields (Text, Number, Checkbox etc) accessed in Apex via getInstance(). Tool: custom_setting_create. Has: apiName, label, type (Hierarchy/List).'
-            // + '\n    - NEVER use custom_label_create for a custom setting, and NEVER use custom_setting_create for a custom label.'
-            // + '\n25. Translations: always call translation_list_languages first to confirm the language code is enabled in the org.'
-            // + '\n26. For translation_upsert the translationType must exactly match one of: field, picklist, label, validationRule, object — no other values accepted.'
-            // + '\n27. translation_delete removes ALL translations for a language — warn the user before doing this.'
-            // + '\n28. BEFORE updating or deleting a Named Credential: call named_credential_list first to confirm the exact API name.'
-            // + '\n29. Named Credentials created here are anonymous (NoAuthentication) — no OAuth, no passwords, endpoint URL only.' 
-            + '\n30. BEFORE adding a field to or deleting a Custom Metadata Type: call custom_metadata_type_list first.'
-            + '\n31. BEFORE upserting or deleting a Custom Metadata record: call custom_metadata_record_list first to check existing records.'
-            + '\n32. custom_metadata_record_upsert handles both create and update — never call it twice for the same record.'
-            + '\n33. fieldValues in custom_metadata_record_upsert must be a valid JSON object string e.g. {"Field__c": "value", "Count__c": 10}.'
-            + '\n34. BEFORE modifying or deleting a page layout: call page_layout_list first to confirm the exact layout name.'
-            + '\n35. AFTER creating a page layout: always call page_layout_assign to assign it to at least System Administrator.'
-            + '\n36. sections parameter in page_layout_create must be a valid JSON array string.'
-            + '\n37. fields parameter in page_layout_add_fields and page_layout_remove_fields must be a valid JSON array string.'
-            + '\n38. Static resources come from Jira ticket attachments. Always call static_resource_list first to see available files, then use the exact fileName returned.'
-            + '\n39. Use static_resource_deploy for both creating and updating a static resource — it handles both cases. Never call it twice for the same apiName.'
-            + '\n40. The apiName for a static resource must be alphanumeric with underscores only. Do not include the file extension in the apiName.'         
-            + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
-            + '\nCurrent User: ' + UserInfo.getUserName();
-    }
+        + '\n\nOrg: ' + UserInfo.getOrganizationName()
+        + '\nUser: ' + UserInfo.getUserName();
+}
 
     private static String buildUserPrompt(String issueKey, String summary, String description) {
         String prompt = 'Jira Issue: ' + issueKey
