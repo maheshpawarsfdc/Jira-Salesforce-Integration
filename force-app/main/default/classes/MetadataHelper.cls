@@ -358,7 +358,7 @@ public class MetadataHelper {
         String existingXml = ZipBuilder.files.get(filePath);
         String objXml;
         if (existingXml != null) {
-            objXml = existingXml.replace('</CustomObject>', fieldXml + '</CustomObject>');
+            objXml = mergeFieldXmlIntoObject(existingXml, fieldXml);
         } else {
             // Read object label from org — Salesforce requires a non-empty label even for partial deploys
             objXml = buildObjectWrapperWithField(objectName, fieldXml);
@@ -366,10 +366,19 @@ public class MetadataHelper {
 
         ZipBuilder.addFile('CustomObject', objectName, filePath, objXml);
         System.debug('            ✔ MetadataHelper.createField(): [' + objectName + '.' + fieldName + '] queued for deploy');
-
-        
     }
-    
+
+
+    private static String mergeFieldXmlIntoObject(String existingXml, String fieldXml) {
+        String objXml = existingXml.replace('</CustomObject>', fieldXml + '</CustomObject>');
+        if (fieldXml.contains('<type>MasterDetail</type>')) {
+            objXml = objXml.replaceAll(
+                '<sharingModel>[^<]*</sharingModel>',
+                '<sharingModel>ControlledByParent</sharingModel>'
+            );
+        }
+        return objXml;
+    }
 
     // Builds a minimal CustomObject XML wrapper with the object's real metadata.
     // Reads label, pluralLabel, sharingModel, and nameField from the org via SOAP.
@@ -466,9 +475,10 @@ public class MetadataHelper {
             }
         } else if (fieldType == 'Lookup' || fieldType == 'MasterDetail') {
             String refTo   = getRequired(args, 'referenceTo');
-            String defaultRelName = fieldName.replace('__c', '');
-            String relName = getOptional(args, 'relationshipName', defaultRelName);
             xml += '<referenceTo>' + refTo + '</referenceTo>';
+            // relationshipName must be unique on the *parent* object; LLM-supplied defaults often collide (e.g. "Account").
+            // Generate a deploy-safe unique name without extra API calls.
+            String relName = buildRelationshipNameForLookup(getOptional(args, 'sObjectName', ''), fieldName, refTo);
             xml += '<relationshipName>' + relName + '</relationshipName>';
             if (fieldType == 'MasterDetail') {
                 xml += '<reparentableMasterDetail>false</reparentableMasterDetail>';
@@ -478,6 +488,53 @@ public class MetadataHelper {
 
         xml += '</fields>';
         return xml;
+    }
+
+    private static String buildRelationshipNameForLookup(String childObjectApiName, String fieldApiName, String parentObjectApiName) {
+        // Salesforce constraints: <= 40 chars, starts with a letter, only alphanumeric/underscore recommended.
+        String child = sanitizeRelationshipToken(String.isBlank(childObjectApiName) ? 'Child' : childObjectApiName);
+        String field = sanitizeRelationshipToken(fieldApiName);
+        String seed  = child + '|' + field + '|' + sanitizeRelationshipToken(parentObjectApiName) + '|' + String.valueOf(DateTime.now().getTime());
+        String hex   = EncodingUtil.convertToHex(Crypto.generateDigest('SHA1', Blob.valueOf(seed))).toUpperCase();
+        String suffix = hex.substring(0, 6);
+
+        Integer maxLen = 40;
+        String base = child;
+        if (String.isNotBlank(field)) base = base + '_' + field;
+
+        // Keep room for "_" + suffix
+        Integer maxBaseLen = Math.max(1, maxLen - (1 + suffix.length()));
+        if (base.length() > maxBaseLen) base = base.substring(0, maxBaseLen);
+
+        String rel = base + '_' + suffix;
+        if (String.isBlank(rel) || !isAlpha(rel.substring(0, 1))) {
+            // Prefix with 'R' if the first char isn't a letter (should be rare after sanitize/truncate).
+            Integer maxRelBaseLen = Math.max(1, maxLen - (1 + 1 + suffix.length())); // "R" + base + "_" + suffix
+            String b = base;
+            if (b.length() > maxRelBaseLen) b = b.substring(0, maxRelBaseLen);
+            rel = 'R' + b + '_' + suffix;
+        }
+        if (rel.length() > maxLen) rel = rel.substring(0, maxLen);
+        return rel;
+    }
+
+    private static String sanitizeRelationshipToken(String token) {
+        if (String.isBlank(token)) return '';
+        String t = token.trim();
+        if (t.endsWith('__c')) t = t.substring(0, t.length() - 3);
+        if (t.endsWith('__r')) t = t.substring(0, t.length() - 3);
+        // Replace non [A-Za-z0-9_] with underscore, collapse repeats, trim underscores.
+        t = t.replaceAll('[^A-Za-z0-9_]', '_');
+        t = t.replaceAll('_+', '_');
+        t = t.replaceAll('^_+', '');
+        t = t.replaceAll('_+$', '');
+        if (t.length() > 30) t = t.substring(0, 30); // keep base tokens reasonably short
+        return t;
+    }
+
+    private static Boolean isAlpha(String ch) {
+        if (String.isBlank(ch)) return false;
+        return ch.toUpperCase() != ch.toLowerCase();
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -552,7 +609,7 @@ public class MetadataHelper {
         String existingXml = ZipBuilder.files.get(filePath);
         String objXml;
         if (existingXml != null) {
-            objXml = existingXml.replace('</CustomObject>', fieldXml + '</CustomObject>');
+            objXml = mergeFieldXmlIntoObject(existingXml, fieldXml);
         } else {
             // Read object label from org — Salesforce requires a non-empty label even for partial deploys
             objXml = buildObjectWrapperWithField(objectName, fieldXml);
