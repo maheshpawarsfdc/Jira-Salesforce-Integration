@@ -258,6 +258,20 @@ public class ToolDefinitions {
                 )
             ),
             buildTool(
+                'permission_set_clone',
+                'Clone an existing permission set into a new one, copying all object and field permissions. '
+                + 'Always call permission_set_list first to confirm the exact source permission set name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('sourcePermissionSetName', 'API name of the existing permission set to copy from'),
+                        strProp('newApiName',              'API name for the new permission set (no spaces)'),
+                        strProp('newLabel',                'Label for the new permission set'),
+                        strProp('description',             'Optional description — omit if not needed')
+                    },
+                    new List<String>{ 'sourcePermissionSetName', 'newApiName', 'newLabel' }
+                )
+            ),
+            buildTool(
                 'permission_set_delete',
                 'Delete a permission set permanently. '
                 + 'Always call permission_set_list first to confirm the permission set exists.',
