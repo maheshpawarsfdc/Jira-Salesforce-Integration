@@ -110,6 +110,152 @@ public class PermissionSetHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // PERMISSION SET — CLONE
+    //
+    // Uses SOAP Metadata API port.retrieve() to get the full deployed
+    // ZIP of the source PS, then extracts and reuses its raw XML.
+    //
+    // Why not readMetadata (SOAP)?
+    // readMetadata silently returns empty objectPermissions/fieldPermissions
+    // for permission sets deployed via ZIP. port.retrieve() returns the
+    // actual deployed XML file with all permissions intact.
+    // ─────────────────────────────────────────────────────────────
+    public static void clonePermissionSet(Map<String, Object> args) {
+        String sourceName  = getRequired(args, 'sourcePermissionSetName');
+        String newApiName  = getRequired(args, 'newApiName');
+        String newLabel    = getRequired(args, 'newLabel');
+        String description = getOptional(args, 'description', null);
+
+        System.debug('PermissionSetHelper.clonePermissionSet() called');
+        System.debug('source=' + sourceName + ', newApiName=' + newApiName);
+
+        // Normalize sourceName to API name format (spaces → underscores, no __c suffix needed)
+        // Salesforce Permission Set API names never have spaces — the label might have spaces
+        // but the API name passed here should already be the API name (e.g. Car_Manager)
+        String sourceApiName = sourceName.replace(' ', '_');
+        System.debug('PermissionSetHelper.clonePermissionSet(): sourceApiName=' + sourceApiName);
+
+        // ── STEP 1: Verify source PS exists and get its label via SOQL ──
+        List<PermissionSet> sourcePsList = [
+            SELECT Id, Name, Label, Description
+            FROM PermissionSet
+            WHERE Name = :sourceApiName
+            AND IsOwnedByProfile = false
+            LIMIT 1
+        ];
+        if (sourcePsList.isEmpty()) {
+            // Try original name too in case caller passed label
+            sourcePsList = [
+                SELECT Id, Name, Label, Description
+                FROM PermissionSet
+                WHERE Label = :sourceName
+                AND IsOwnedByProfile = false
+                LIMIT 1
+            ];
+        }
+        if (sourcePsList.isEmpty()) {
+            throw new PermissionSetException('Source permission set not found: ' + sourceName);
+        }
+        PermissionSet sourcePs = sourcePsList[0];
+        // Always use the actual API Name for retrieve — never the label
+        sourceApiName = sourcePs.Name;
+        System.debug('PermissionSetHelper.clonePermissionSet(): resolved sourceApiName=' + sourceApiName + ', label=' + sourcePs.Label);
+
+        // ── STEP 2: Start SOAP retrieve using the correct API name ──
+        MetadataService.RetrieveRequest retrieveRequest = new MetadataService.RetrieveRequest();
+        retrieveRequest.apiVersion = 61.0;
+        retrieveRequest.singlePackage = true;
+        MetadataService.PackageTypeMembers ptm = new MetadataService.PackageTypeMembers();
+        ptm.name    = 'PermissionSet';
+        ptm.members = new List<String>{ sourceApiName };
+        MetadataService.Package_x pkg = new MetadataService.Package_x();
+        pkg.types   = new List<MetadataService.PackageTypeMembers>{ ptm };
+        pkg.version = '61.0';
+        retrieveRequest.unpackaged = pkg;
+
+        MetadataService.AsyncResult asyncResult = port.retrieve(retrieveRequest);
+        String asyncId = asyncResult.id;
+        System.debug('PermissionSetHelper.clonePermissionSet(): retrieve started, asyncId=' + asyncId);
+
+        // ── STEP 3: Poll until retrieve is done ──
+        String zipBase64 = null;
+        for (Integer attempt = 0; attempt < 10; attempt++) {
+            Long waitUntil = DateTime.now().getTime() + 2500;
+            while (DateTime.now().getTime() < waitUntil) { /* spin */ }
+
+            MetadataService.RetrieveResult retrieveResult = port.checkRetrieveStatus(asyncId, true);
+            System.debug('PermissionSetHelper.clonePermissionSet(): poll attempt=' + attempt
+                + ', done=' + retrieveResult.done + ', status=' + retrieveResult.status);
+
+            if (retrieveResult.done) {
+                if (retrieveResult.status == 'Failed') {
+                    throw new PermissionSetException(
+                        'Retrieve failed for ' + sourceApiName + ': ' + retrieveResult.errorMessage
+                    );
+                }
+                zipBase64 = retrieveResult.zipFile;
+                break;
+            }
+        }
+
+        if (String.isBlank(zipBase64)) {
+            throw new PermissionSetException('Retrieve timed out for source permission set: ' + sourceApiName);
+        }
+
+        // ── STEP 4: Extract the permission set XML from the ZIP ──
+        Blob zipBlob = EncodingUtil.base64Decode(zipBase64);
+
+        // SOAP retrieve returns old-style format: Car_Manager.permissionset (no -meta.xml suffix)
+        String sourceXml = ZipBuilder.extractFileFromZip(zipBlob,
+            'permissionsets/' + sourceApiName + '.permissionset');
+
+        // Fallback: try DX-style suffix just in case
+        if (String.isBlank(sourceXml)) {
+            sourceXml = ZipBuilder.extractFileFromZip(zipBlob,
+                'permissionsets/' + sourceApiName + '.permissionset-meta.xml');
+        }
+
+        if (String.isBlank(sourceXml)) {
+            throw new PermissionSetException(
+                'Could not extract permission set XML from retrieve ZIP for: ' + sourceApiName
+                + '. Check debug logs for ZIP contents.'
+            );
+        }
+        System.debug('PermissionSetHelper.clonePermissionSet(): source XML extracted, length=' + sourceXml.length());
+        System.debug('PermissionSetHelper.clonePermissionSet(): source XML preview: ' + sourceXml.left(500));
+
+        // ── STEP 5: Build new PS XML — swap label/description, keep all permissions ──
+        String effectiveDesc = String.isNotBlank(description)
+            ? description
+            : 'Cloned from ' + sourceApiName + '.';
+
+        String xml = sourceXml;
+
+        // Replace <label> — required field, must be present
+        if (xml.contains('<label>')) {
+            xml = xml.replaceAll('<label>[^<]*</label>', '<label>' + escapeXml(newLabel) + '</label>');
+        } else {
+            // Inject label right after the opening <PermissionSet> tag
+            xml = xml.replace('<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">',
+                '<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">'
+                + '<label>' + escapeXml(newLabel) + '</label>');
+        }
+
+        // Replace or inject <description>
+        if (xml.contains('<description>')) {
+            xml = xml.replaceAll('<description>[^<]*</description>',
+                '<description>' + escapeXml(effectiveDesc) + '</description>');
+        } else {
+            xml = xml.replace('</label>', '</label><description>' + escapeXml(effectiveDesc) + '</description>');
+        }
+
+        String filePath = 'permissionsets/' + newApiName + '.permissionset-meta.xml';
+        ZipBuilder.addFile('PermissionSet', newApiName, filePath, xml);
+        System.debug('PermissionSetHelper.clonePermissionSet(): [' + newApiName + '] queued with full source permissions');
+    }
+
+
+    // ─────────────────────────────────────────────────────────────
     // PERMISSION SET — GRANT OBJECT ACCESS
     //
     // Reads existing permission set, adds object permissions, saves back
@@ -133,23 +279,35 @@ public class PermissionSetHelper {
         Boolean viewAllRecords   = Boolean.valueOf(getOptional(args, 'viewAllRecords',   'false'));
         Boolean modifyAllRecords = Boolean.valueOf(getOptional(args, 'modifyAllRecords', 'false'));
 
-        // Read existing permission set to get current state + label
-        MetadataService.IReadResult readResult = port.readMetadata(
-            'PermissionSet', new List<String>{ permSetName }
-        );
-        MetadataService.Metadata[] records = readResult.getRecords();
-        if (records == null || records.isEmpty() || records[0] == null) {
-            throw new PermissionSetException('Permission Set not found: ' + permSetName);
-        }
-        MetadataService.PermissionSet permSet = (MetadataService.PermissionSet) records[0];
+        // If ZipBuilder already has XML for this PS (e.g. freshly cloned this session),
+        // use it directly — no readMetadata needed (PS may not exist in org yet).
+        String filePath = 'permissionsets/' + permSetName + '.permissionset-meta.xml';
+        String existingXml = ZipBuilder.files.get(filePath);
+        MetadataService.PermissionSet permSet = null;
 
-        // Merge into existing XML in ZipBuilder if already queued, else start fresh
-        String existingXml = ZipBuilder.files.get('permissionsets/' + permSetName + '.permissionset-meta.xml');
-        String xml = buildPermissionSetXml(permSet, existingXml,
+        if (existingXml == null) {
+            // PS not yet in ZipBuilder — read from org
+            MetadataService.IReadResult readResult = port.readMetadata(
+                'PermissionSet', new List<String>{ permSetName }
+            );
+            MetadataService.Metadata[] records = readResult.getRecords();
+            if (records == null || records.isEmpty() || records[0] == null) {
+                throw new PermissionSetException('Permission Set not found: ' + permSetName);
+            }
+            permSet = (MetadataService.PermissionSet) records[0];
+        }
+
+        // Use ZipBuilder XML if available (preserves cloned permissions), else build from org metadata
+        String xml = existingXml != null ? existingXml : buildBasePermissionSetXml(permSet);
+
+        // ── AUTO-INJECT PARENT OBJECT READ ACCESS (recursive) ──────
+        xml = injectParentReadAccess(xml, objectName, new Set<String>());
+        // ───────────────────────────────────────────────────────────
+
+        xml = buildPermissionSetXml(permSet, xml,
             objectName, allowRead, allowCreate, allowEdit, allowDelete, viewAllRecords, modifyAllRecords,
             null, null, null);
 
-        String filePath = 'permissionsets/' + permSetName + '.permissionset-meta.xml';
         ZipBuilder.addFile('PermissionSet', permSetName, filePath, xml);
         System.debug('PermissionSetHelper.grantObjectAccess(): SUCCESS - queued for deploy');
     }
@@ -171,22 +329,32 @@ public class PermissionSetHelper {
         System.debug('PermissionSetHelper.grantFieldAccess() called');
         System.debug('permSet=' + permSetName + ', field=' + fullFieldName);
 
-        MetadataService.IReadResult readResult = port.readMetadata(
-            'PermissionSet', new List<String>{ permSetName }
-        );
-        MetadataService.Metadata[] records = readResult.getRecords();
-        if (records == null || records.isEmpty() || records[0] == null) {
-            throw new PermissionSetException('Permission Set not found: ' + permSetName);
-        }
-        MetadataService.PermissionSet permSet = (MetadataService.PermissionSet) records[0];
+        // If ZipBuilder already has XML for this PS (e.g. freshly cloned this session),
+        // use it directly — no readMetadata needed (PS may not exist in org yet).
+        String fieldFilePath = 'permissionsets/' + permSetName + '.permissionset-meta.xml';
+        String existingXml = ZipBuilder.files.get(fieldFilePath);
+        MetadataService.PermissionSet permSet = null;
 
-        String existingXml = ZipBuilder.files.get('permissionsets/' + permSetName + '.permissionset-meta.xml');
+        if (existingXml == null) {
+            MetadataService.IReadResult readResult = port.readMetadata(
+                'PermissionSet', new List<String>{ permSetName }
+            );
+            MetadataService.Metadata[] records = readResult.getRecords();
+            if (records == null || records.isEmpty() || records[0] == null) {
+                throw new PermissionSetException('Permission Set not found: ' + permSetName);
+            }
+            permSet = (MetadataService.PermissionSet) records[0];
+        }
+
         String xml = buildPermissionSetXml(permSet, existingXml,
             null, null, null, null, null, null, null,
             fullFieldName, readable, editable);
 
-        String filePath = 'permissionsets/' + permSetName + '.permissionset-meta.xml';
-        ZipBuilder.addFile('PermissionSet', permSetName, filePath, xml);
+        // ── AUTO-INJECT PARENT OBJECT READ ACCESS (recursive) ──────
+        xml = injectParentReadAccess(xml, objectName, new Set<String>());
+        // ───────────────────────────────────────────────────────────
+
+        ZipBuilder.addFile('PermissionSet', permSetName, fieldFilePath, xml);
         System.debug('PermissionSetHelper.grantFieldAccess(): SUCCESS for [' + fullFieldName + '] queued for deploy');
     }
 
@@ -204,26 +372,33 @@ public class PermissionSetHelper {
         Boolean readable   = Boolean.valueOf(getOptional(args, 'readable', 'true'));
         Boolean editable   = Boolean.valueOf(getOptional(args, 'editable', 'false'));
 
-        System.debug('PermissionSetHelper.grantAllFieldsAccess() called');
-        System.debug('permSet=' + permSetName + ', object=' + objectName);
-
         Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
         if (objType == null) {
             throw new PermissionSetException('Object not found: ' + objectName);
         }
 
-        MetadataService.IReadResult readResult = port.readMetadata(
-            'PermissionSet', new List<String>{ permSetName }
-        );
-        MetadataService.Metadata[] records = readResult.getRecords();
-        if (records == null || records.isEmpty() || records[0] == null) {
-            throw new PermissionSetException('Permission Set not found: ' + permSetName);
-        }
-        MetadataService.PermissionSet permSet = (MetadataService.PermissionSet) records[0];
+        // If ZipBuilder already has XML for this PS (e.g. freshly cloned this session),
+        // use it directly — no readMetadata needed (PS may not exist in org yet).
+        String allFieldsFilePath = 'permissionsets/' + permSetName + '.permissionset-meta.xml';
+        String existingXml = ZipBuilder.files.get(allFieldsFilePath);
+        MetadataService.PermissionSet permSet = null;
 
-        // Start from existing ZIP file if already modified this session
-        String existingXml = ZipBuilder.files.get('permissionsets/' + permSetName + '.permissionset-meta.xml');
+        if (existingXml == null) {
+            MetadataService.IReadResult readResult = port.readMetadata(
+                'PermissionSet', new List<String>{ permSetName }
+            );
+            MetadataService.Metadata[] records = readResult.getRecords();
+            if (records == null || records.isEmpty() || records[0] == null) {
+                throw new PermissionSetException('Permission Set not found: ' + permSetName);
+            }
+            permSet = (MetadataService.PermissionSet) records[0];
+        }
+
         String xml = existingXml != null ? existingXml : buildBasePermissionSetXml(permSet);
+
+        // ── AUTO-INJECT PARENT OBJECT READ ACCESS (recursive) ──────
+        xml = injectParentReadAccess(xml, objectName, new Set<String>());
+        // ───────────────────────────────────────────────────────────
 
         // Add each custom field
         Integer fieldsAdded = 0;
@@ -243,8 +418,7 @@ public class PermissionSetHelper {
             }
         }
 
-        String filePath = 'permissionsets/' + permSetName + '.permissionset-meta.xml';
-        ZipBuilder.addFile('PermissionSet', permSetName, filePath, xml);
+        ZipBuilder.addFile('PermissionSet', permSetName, allFieldsFilePath, xml);
         System.debug('PermissionSetHelper.grantAllFieldsAccess(): SUCCESS - ' + fieldsAdded + ' fields queued for deploy');
     }
 
@@ -411,6 +585,63 @@ public class PermissionSetHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // PRIVATE — RECURSIVE PARENT READ ACCESS INJECTOR
+    //
+    // Walks the full ancestor chain of lookup/master-detail fields
+    // on the given object and ensures Read access is present for every
+    // parent (and their parents, etc.) in the XML.
+    //
+    // This prevents deploy failures caused by transitive lookup
+    // dependencies, e.g.:
+    //   Reservation__c → AI_Message__c → AI_Conversation__c
+    // where Salesforce requires Read on ALL objects in the chain.
+    //
+    // visited — tracks already-processed objects to prevent infinite loops
+    // ─────────────────────────────────────────────────────────────
+    private static String injectParentReadAccess(String xml, String objectName, Set<String> visited) {
+        if (visited.contains(objectName)) return xml;
+        visited.add(objectName);
+
+        Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
+        if (objType == null) return xml;
+
+        for (Schema.SObjectField field : objType.getDescribe().fields.getMap().values()) {
+            Schema.DescribeFieldResult f = field.getDescribe();
+            if (f.getType() != Schema.DisplayType.REFERENCE) continue;
+
+            for (Schema.SObjectType ref : f.getReferenceTo()) {
+                String parentName = ref.getDescribe().getName();
+
+                // Skip self-lookups and standard non-permissionable objects
+                if (parentName == objectName) continue;
+                if (parentName == 'User' || parentName == 'RecordType') continue;
+                if (visited.contains(parentName)) continue;
+
+                if (!xml.contains('<object>' + parentName + '</object>')) {
+                    System.debug('PermissionSetHelper: auto-injecting Read access for [' + parentName + ']');
+                    String parentBlock = '    <objectPermissions>';
+                    parentBlock += '        <allowCreate>false</allowCreate>';
+                    parentBlock += '        <allowDelete>false</allowDelete>';
+                    parentBlock += '        <allowEdit>false</allowEdit>';
+                    parentBlock += '        <allowRead>true</allowRead>';
+                    parentBlock += '        <modifyAllRecords>false</modifyAllRecords>';
+                    parentBlock += '        <object>' + parentName + '</object>';
+                    parentBlock += '        <viewAllRecords>false</viewAllRecords>';
+                    parentBlock += '    </objectPermissions>';
+                    xml = xml.replace('</PermissionSet>', parentBlock + '</PermissionSet>');
+                } else {
+                    xml = ensureObjectReadPermission(xml, parentName);
+                }
+
+                // Recurse — inject parents of this parent too
+                xml = injectParentReadAccess(xml, parentName, visited);
+            }
+        }
+
+        return xml;
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // PRIVATE — XML BUILDERS
     // ─────────────────────────────────────────────────────────────
 
@@ -508,6 +739,41 @@ public class PermissionSetHelper {
         }
 
         return xml;
+    }
+
+    private static String ensureObjectReadPermission(String xml, String objectName) {
+        String objectMarker = '<object>' + objectName + '</object>';
+        if (xml.contains(objectMarker)) {
+            Integer objectIndex = xml.indexOf(objectMarker);
+            Integer blockStart = xml.lastIndexOf('<objectPermissions>', objectIndex);
+            Integer blockEnd = xml.indexOf('</objectPermissions>', objectIndex);
+            if (blockStart >= 0 && blockEnd >= 0) {
+                blockEnd += '</objectPermissions>'.length();
+                String block = xml.substring(blockStart, blockEnd);
+                if (!block.contains('<allowRead>true</allowRead>')) {
+                    if (block.contains('<allowRead>false</allowRead>')) {
+                        block = block.replace('<allowRead>false</allowRead>', '<allowRead>true</allowRead>');
+                    } else if (block.contains('<allowRead>')) {
+                        block = block.replace('<allowRead>', '<allowRead>true</allowRead>');
+                    } else {
+                        block = block.replace('</objectPermissions>', '        <allowRead>true</allowRead></objectPermissions>');
+                    }
+                    xml = xml.substring(0, blockStart) + block + xml.substring(blockEnd);
+                }
+                return xml;
+            }
+        }
+
+        String parentBlock = '    <objectPermissions>';
+        parentBlock += '        <allowCreate>false</allowCreate>';
+        parentBlock += '        <allowDelete>false</allowDelete>';
+        parentBlock += '        <allowEdit>false</allowEdit>';
+        parentBlock += '        <allowRead>true</allowRead>';
+        parentBlock += '        <modifyAllRecords>false</modifyAllRecords>';
+        parentBlock += '        <object>' + objectName + '</object>';
+        parentBlock += '        <viewAllRecords>false</viewAllRecords>';
+        parentBlock += '    </objectPermissions>';
+        return xml.replace('</PermissionSet>', parentBlock + '</PermissionSet>');
     }
 
     private static String escapeXml(String val) {

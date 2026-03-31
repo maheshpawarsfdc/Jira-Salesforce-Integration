@@ -62,6 +62,60 @@ public class ZipBuilder {
         }
         metadataTypes.get(metadataType).add(memberName);
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // EXTRACT FILE FROM ZIP
+    //
+    // Given a ZIP blob (e.g. from a Metadata API retrieve response),
+    // extracts and returns the content of a single file by path.
+    // Returns null if the file is not found in the ZIP.
+    //
+    // Used by PermissionSetHelper.clonePermissionSet() to read the
+    // raw deployed XML of a source permission set.
+    // ─────────────────────────────────────────────────────────────
+    public static String extractFileFromZip(Blob zipBlob, String filePath) {
+        System.debug('ZipBuilder.extractFileFromZip(): looking for [' + filePath + ']');
+        try {
+            Zippex zip = new Zippex(zipBlob);
+            Set<String> fileNames = zip.getFileNames();
+            System.debug('ZipBuilder.extractFileFromZip(): ZIP contains ' + fileNames.size() + ' files: ' + fileNames);
+
+            // Try exact path first
+            if (fileNames.contains(filePath)) {
+                Blob fileBlob = zip.getFile(filePath);
+                System.debug('ZipBuilder.extractFileFromZip(): found [' + filePath + '], size=' + fileBlob.size());
+                return fileBlob.toString();
+            }
+
+            // Try case-insensitive match (Salesforce ZIPs sometimes vary casing)
+            String lowerTarget = filePath.toLowerCase();
+            for (String name : fileNames) {
+                if (name.toLowerCase() == lowerTarget) {
+                    Blob fileBlob = zip.getFile(name);
+                    System.debug('ZipBuilder.extractFileFromZip(): found (case-insensitive) [' + name + '], size=' + fileBlob.size());
+                    return fileBlob.toString();
+                }
+            }
+
+            // Try matching just the filename without directory prefix
+            // (some retrieve ZIPs omit the top-level folder or add unpackaged/ prefix)
+            String fileName = filePath.contains('/') ? filePath.substringAfterLast('/') : filePath;
+            for (String name : fileNames) {
+                if (name.endsWith(fileName)) {
+                    Blob fileBlob = zip.getFile(name);
+                    System.debug('ZipBuilder.extractFileFromZip(): found by filename [' + name + '], size=' + fileBlob.size());
+                    return fileBlob.toString();
+                }
+            }
+
+            System.debug('ZipBuilder.extractFileFromZip(): file not found in ZIP: ' + filePath);
+            return null;
+        } catch (Exception e) {
+            System.debug('ZipBuilder.extractFileFromZip(): ERROR - ' + e.getMessage());
+            throw new ZipBuilderException('Failed to extract [' + filePath + '] from ZIP: ' + e.getMessage());
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────
     // BUILD BASE64 ZIP
     // Builds the complete ZIP and returns base64 encoded string
@@ -91,7 +145,7 @@ public class ZipBuilder {
             System.debug('ZipBuilder: adding file [' + filePath + ']');
             zip.addFile(filePath, fileBlob, crc32);
         }
-        
+
         // Add all binary files (e.g. static resources)
         for (String filePath : binaryFiles.keySet()) {
             try {
@@ -102,7 +156,7 @@ public class ZipBuilder {
                                         .replace('\r', '')
                                         .replace(' ', '')
                                         .replace('\t', '');
-                                        
+
                 Blob fileBlob = EncodingUtil.base64Decode(cleanBase64);
                 System.debug('ZipBuilder: adding binary file [' + filePath + '], size=' + fileBlob.size() + ' bytes');
                 // Pre-compute CRC32 from the decoded Blob — this uses the fast Blob-based CRC path
@@ -113,8 +167,7 @@ public class ZipBuilder {
                 System.debug('ZipBuilder: ERROR with binary file [' + filePath + ']: ' + e.getMessage());
                 throw new ZipBuilderException('Failed to add binary file ' + filePath + ': ' + e.getMessage());
             }
-        } 
-
+        }
 
         Blob zipBlob = zip.getZipArchive();
         String base64 = EncodingUtil.base64Encode(zipBlob);

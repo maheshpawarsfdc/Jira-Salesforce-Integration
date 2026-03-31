@@ -25,6 +25,7 @@ public class FunctionRouter {
         // ── PERMISSION SET OPERATIONS ─────────────────────────
         else if (functionName == 'permission_set_list')                      result = FunctionHelper.callListPermissionSets(args);
         else if (functionName == 'permission_set_create')                    result = FunctionHelper.callCreatePermissionSet(args);
+        else if (functionName == 'permission_set_clone')                     result = FunctionHelper.callClonePermissionSet(args);
         else if (functionName == 'permission_set_grant_object_access')       result = FunctionHelper.callGrantObjectAccess(args);
         else if (functionName == 'permission_set_grant_field_access')        result = FunctionHelper.callGrantFieldAccess(args);
         else if (functionName == 'permission_set_grant_all_fields_access')   result = FunctionHelper.callGrantAllFieldsAccess(args);

@@ -169,6 +169,14 @@ public class FunctionHelper {
         return SUCCESS_RESPONSE;
     }
 
+    public static String callClonePermissionSet(Map<String, Object> args) {
+        System.debug('FunctionHelper.callClonePermissionSet() called');
+        System.debug('args = ' + args);
+        PermissionSetHelper.clonePermissionSet(args);
+        System.debug('FunctionHelper: permission set cloned successfully');
+        return SUCCESS_RESPONSE;
+    }
+
     public static String callGrantObjectAccess(Map<String, Object> args) {
         System.debug('FunctionHelper.callGrantObjectAccess() called');
         System.debug('args = ' + args);
