@@ -86,19 +86,6 @@ global class JiraInboundController {
             StaticResourceHelper.currentAttachments.clear();
         }
 
-        // ── STEP 5: Post result back to Jira as a comment ──
-        // Note: Commenting out for now to avoid hitting Jira API limits during testing. Can be re-enabled later.
-
-        // if (String.isNotBlank(issueKey)) {
-        //     try {
-        //         String comment = JiraCallbackService.buildResultComment(issueKey, llmResponse, success);
-        //         JiraCallbackService.postComment(issueKey, comment);
-        //         JiraCallbackService.updateTicketStatus(issueKey, success);
-        //     } catch (Exception e) {
-        //         System.debug('JiraInbound: Failed to post comment — ' + e.getMessage());
-        //     }
-        // }
-
         return new Map<String, String>{
             'issueKey' => issueKey,
             'status'   => success ? 'success' : 'error',

@@ -28,6 +28,7 @@ public class ToolDefinitions {
         tools.addAll(getCustomMetadataTools());
         tools.addAll(getPageLayoutTools());
         tools.addAll(getStaticResourceTools()); 
+        tools.addAll(getCsvTools());
         tools.add(getQueryTool());
         return tools;
     }
@@ -45,7 +46,7 @@ public class ToolDefinitions {
                     new List<Map<String, Object>>{
                         strProp('customObjectsOnly', 'Set to true to return only custom objects')
                     },
-                    new List<String>{}  // no required params
+                    new List<String>{} 
                 )
             ),
 
@@ -1019,6 +1020,49 @@ public class ToolDefinitions {
             )
         };
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // CSV TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getCsvTools() {
+        return new List<Map<String, Object>>{
+            
+            buildTool(
+                'csv_bulk_process',
+                'Process ALL rows from a CSV file in a single Apex call. '
+                + 'Call this IMMEDIATELY after csv_read — no per-row tool calls needed. '
+                + 'Apex reads the rows from its internal cache using the fileName — '
+                + 'you do NOT need to pass the rows yourself. '
+                + 'Supported types and their required CSV columns: '
+                + '"translation"          → columns: language, labelName, translation. '
+                + '"custom_label"         → columns: name, value (optional: language, shortDescription, protected). '
+                + '"custom_metadata"      → columns: apiName, recordName, label, [field__c columns...]. '
+                + '"validation_rule"      → columns: objectName, ruleName, errorConditionFormula, errorMessage (optional: description, active). '
+                + '"custom_setting_field" → columns: apiName, fieldName, fieldLabel, fieldType (optional: length, precision, scale, required). '
+                + 'Apex handles all rows, builds XML, and stages a single deploy — regardless of row count.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('type',
+                            'The type of records in the CSV. Must be exactly one of: '
+                            + 'translation, custom_label, custom_metadata, custom_metadata_type, validation_rule, custom_setting_field, custom_setting. '
+                            + 'Identify the type from the CSV column names: '
+                            + 'language+labelName+translation → translation | '
+                            + 'name+value → custom_label | '
+                            + 'apiName+recordName+label → custom_metadata (records into EXISTING type) | '
+                            + 'apiName+label+pluralLabel+fieldName+fieldLabel+fieldType → custom_metadata_type (create type + fields) | '
+                            + 'objectName+ruleName+errorConditionFormula → validation_rule | '
+                            + 'apiName+fieldName+fieldLabel+fieldType (no label/settingType) → custom_setting_field | '
+                            + 'apiName+label+settingType+fieldName+fieldLabel+fieldType → custom_setting'
+                        ),
+                        strProp('fileName', 'The exact same fileName you passed to csv_read. Apex reads rows from its internal cache — do NOT pass the rows array.')
+                    },
+                    new List<String>{ 'type', 'fileName' }
+                )
+            )
+ 
+        };
+    }
+    
 
 
     // ─────────────────────────────────────────────────────────────

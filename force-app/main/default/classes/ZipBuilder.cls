@@ -9,25 +9,13 @@
  * 2. After loop — LLMService calls buildBase64Zip() to get the ZIP
  * 3. ZIP is passed to DeployService.deploy()
  *
- * FILE STRUCTURE INSIDE ZIP:
- *   package.xml
- *   objects/Reservation__c.object-meta.xml
- *   objects/Reservation__c/fields/TotalAmount__c.field-meta.xml
- *   permissionsets/Sales_Team_Access.permissionset-meta.xml
- *   profiles/Standard User.profile-meta.xml
- *   classes/MyClass.cls
- *   classes/MyClass.cls-meta.xml
- *
  * USES: Zippex library (Zippex.cls + HexUtil.cls + Puff.cls)
- * These must be deployed in the org before this class.
  */
 public class ZipBuilder {
 
-    // ─────────────────────────────────────────────────────────────
     // FILE STORE
     // Key   = file path inside ZIP  e.g. "objects/Reservation__c.object-meta.xml"
     // Value = file XML content
-    // ─────────────────────────────────────────────────────────────
     public static Map<String, String> files = new Map<String, String>();
     public static Map<String, String> binaryFiles = new Map<String, String>();
 
@@ -38,7 +26,7 @@ public class ZipBuilder {
 
     // ─────────────────────────────────────────────────────────────
     // ADD FILE
-    // Called by MetadataHelper, PermissionSetHelper, ProfileHelper
+    // Called by MetadataHelper, PermissionSetHelper, ProfileHelper etc
     // ─────────────────────────────────────────────────────────────
     public static void addFile(String metadataType, String memberName, String filePath, String content) {
         System.debug('ZipBuilder.addFile(): type=' + metadataType + ', member=' + memberName + ', path=' + filePath);

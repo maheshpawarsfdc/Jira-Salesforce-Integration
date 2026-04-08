@@ -13,7 +13,7 @@
  * Salesforce deploy is not instant — it can take 5-60 seconds.
  * We cannot block the main transaction — it would timeout.
  * So we enqueue a Queueable job (DeployPoller) that:
- *   → checks status every 5 seconds
+ *   → checks status every 2 seconds
  *   → re-enqueues itself until done
  *   → posts final result to Jira when complete
  */
@@ -99,12 +99,12 @@ public class DeployService {
     // ─────────────────────────────────────────────────────────────
     public static String parseResult(MetadataService.DeployResult result) {
         if (result.success) {
-            return '✅ Deploy successful. '
+            return 'Deploy successful. '
                 + result.numberComponentsDeployed + ' component(s) deployed.';
         }
 
         // Build error message
-        String error = '❌ Deploy failed. ';
+        String error = 'Deploy failed. ';
 
         if (String.isNotBlank(result.errorMessage)) {
             error += result.errorMessage;

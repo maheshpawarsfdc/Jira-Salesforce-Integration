@@ -54,24 +54,21 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         System.debug('');
         System.debug('DeployPoller.execute(): attempt ' + attempt + '/' + MAX_ATTEMPTS
             + ', jobId=' + jobId + ', issue=' + issueKey);
-        System.debug('⏱ [5] DeployPoller attempt ' + attempt + ' started: ' + Datetime.now());
+        System.debug('[5] DeployPoller attempt ' + attempt + ' started: ' + Datetime.now());
 
 
         try {
             MetadataService.DeployResult result = getPort().checkDeployStatus(jobId, true);
             System.debug('DeployPoller: status=' + result.status + ', done=' + result.done);
-            System.debug('⏱ [6] Got deploy status [' + result.status + '] done=' + result.done + ' at: ' + Datetime.now());
+            System.debug('[6] Got deploy status [' + result.status + '] done=' + result.done + ' at: ' + Datetime.now());
 
             if (result.done) {
-                System.debug('⏱ [7] Deploy DONE at: ' + Datetime.now());
+                System.debug('[7] Deploy DONE at: ' + Datetime.now());
                 String message = parseResult(result);
                 System.debug('DeployPoller: deploy DONE. Posting to Jira: ' + message);
                 //JiraCallbackService.postComment(issueKey, message);
 
             } else if (attempt >= MAX_ATTEMPTS) {
-                // String timeoutMsg = '⚠️ Deploy is taking longer than expected. '
-                //     + 'Job ID: ' + jobId + '. '
-                //     + 'Please check Salesforce Setup → Deploy Status for the result.';
                 System.debug('DeployPoller: MAX_ATTEMPTS reached.');
                 //JiraCallbackService.postComment(issueKey, timeoutMsg);
 
@@ -82,29 +79,21 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
                 // Use System.schedule instead of System.enqueueJob to avoid
                 // Salesforce queueable stack depth limit (max 5 chained queueables).
                 // Each scheduled job starts a fresh stack — no depth accumulation.
-                String cronExp = buildCronIn5Seconds();
+                String cronExp = buildCronIn2Seconds();
                 String jobName = 'DeployPoller_' + jobId + '_' + attempt;
                 System.schedule(jobName, cronExp, new Deploypollerscheduler(jobId, issueKey, attempt + 1));
             }
 
         } catch (Exception e) {
             System.debug('DeployPoller: ERROR - ' + e.getMessage());
-            // String errorMsg = '❌ Error checking deploy status: ' + e.getMessage()
-            //     + '. Job ID: ' + jobId
-            //     + '. Check Salesforce Setup → Deploy Status manually.';
-            // try {
-            //     JiraCallbackService.postComment(issueKey, errorMsg);
-            // } catch (Exception jiraEx) {
-            //     System.debug('DeployPoller: Failed to post error to Jira: ' + jiraEx.getMessage());
-            // }
         }
     }
 
     // ─────────────────────────────────────────────────────────────
     // PARSE RESULT — human readable deploy outcome
     // ─────────────────────────────────────────────────────────────
-    // Returns a cron expression for ~5 seconds from now
-    private String buildCronIn5Seconds() {
+    // Returns a cron expression for ~2 seconds from now
+    private String buildCronIn2Seconds() {
         Datetime dt = Datetime.now().addSeconds(2);
         return dt.second() + ' ' + dt.minute() + ' ' + dt.hour()
             + ' ' + dt.day() + ' ' + dt.month() + ' ? ' + dt.year();
@@ -112,11 +101,11 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
 
     private String parseResult(MetadataService.DeployResult result) {
         if (result.success) {
-            return '✅ Deploy successful. '
+            return 'Deploy successful. '
                 + result.numberComponentsDeployed + ' component(s) deployed.';
         }
 
-        String error = '❌ Deploy failed. ';
+        String error = 'Deploy failed. ';
         if (String.isNotBlank(result.errorMessage)) {
             error += result.errorMessage;
         }

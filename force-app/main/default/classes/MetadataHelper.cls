@@ -33,7 +33,7 @@ public class MetadataHelper {
             });
         }
 
-        System.debug('            ✔ MetadataHelper.getSObjects(): returning ' + result.size() + ' objects');
+        System.debug('✔ MetadataHelper.getSObjects(): returning ' + result.size() + ' objects');
         return result;
     }
 
