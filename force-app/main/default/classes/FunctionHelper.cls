@@ -40,24 +40,24 @@ public class FunctionHelper {
             ? Boolean.valueOf(String.valueOf(val))
             : true;
         
-        System.debug('         ── FunctionHelper: listing objects (customOnly=' + customOnly + ')');
+        System.debug('FunctionHelper: listing objects (customOnly=' + customOnly + ')');
         return JSON.serialize(MetadataHelper.getSObjects(customOnly));
     }
 
     public static String callDescribeSObject(Map<String, Object> args) {
         String objectName = getObjectName(args);
-        System.debug('         ── FunctionHelper: describing object [' + objectName + ']');
+        System.debug('FunctionHelper: describing object [' + objectName + ']');
         return JSON.serialize(MetadataHelper.describeSObject(objectName));
     }
 
     public static String callCreateSObject(Map<String, Object> args) {
         String objectName = getObjectName(args);
-        System.debug('         ── FunctionHelper: creating object [' + objectName + ']');
-        System.debug('         ── FunctionHelper: args = ' + args);
+        System.debug('FunctionHelper: creating object [' + objectName + ']');
+        System.debug('FunctionHelper: args = ' + args);
         MetadataHelper.createSObject(objectName, args);
         String fullName = objectName.endsWith('__c') ? objectName : objectName + '__c';
         queuedObjects.add(fullName);
-        System.debug('         ✔ FunctionHelper: object [' + fullName + '] staged for deploy');
+        System.debug('FunctionHelper: object [' + fullName + '] staged for deploy');
         return JSON.serialize(new Map<String, Object>{
             'success' => true,
             'status'  => 'queued_for_deploy',
@@ -68,26 +68,26 @@ public class FunctionHelper {
 
     public static String callUpdateSObject(Map<String, Object> args) {
         String objectName = getObjectName(args);
-        System.debug('         ── FunctionHelper: updating object [' + objectName + ']');
-        System.debug('         ── FunctionHelper: args = ' + args);
+        System.debug('FunctionHelper: updating object [' + objectName + ']');
+        System.debug('FunctionHelper: args = ' + args);
         MetadataHelper.updateSObject(objectName, args);
-        System.debug('         ✔ FunctionHelper: object [' + objectName + '] updated successfully');
+        System.debug('FunctionHelper: object [' + objectName + '] updated successfully');
         return SUCCESS_RESPONSE;
     }
 
     public static String callDeleteSObject(Map<String, Object> args) {
         String objectName = getObjectName(args);
-        System.debug('         ── FunctionHelper: deleting object [' + objectName + ']');
+        System.debug('FunctionHelper: deleting object [' + objectName + ']');
         MetadataHelper.deleteSObject(objectName);
-        System.debug('         ✔ FunctionHelper: object [' + objectName + '] deleted successfully');
+        System.debug('FunctionHelper: object [' + objectName + '] deleted successfully');
         return SUCCESS_RESPONSE;
     }
 
     public static String callCreateTab(Map<String, Object> args) {
         String objectName = getObjectName(args);
-        System.debug('         ── FunctionHelper: creating tab for [' + objectName + ']');
+        System.debug('FunctionHelper: creating tab for [' + objectName + ']');
         MetadataHelper.createTab(objectName, args);
-        System.debug('         ✔ FunctionHelper: tab for [' + objectName + '] staged for deploy');
+        System.debug('FunctionHelper: tab for [' + objectName + '] staged for deploy');
         return JSON.serialize(new Map<String, Object>{
             'success' => true,
             'status'  => 'queued_for_deploy',
@@ -102,29 +102,29 @@ public class FunctionHelper {
 
     public static String callListSObjectFields(Map<String, Object> args) {
         String objectName = getObjectName(args);
-        System.debug('         ── FunctionHelper: listing fields on [' + objectName + ']');
+        System.debug('FunctionHelper: listing fields on [' + objectName + ']');
         List<Map<String, Object>> fields = MetadataHelper.getSObjectFieldsList(objectName);
-        System.debug('         ✔ FunctionHelper: found ' + fields.size() + ' fields');
+        System.debug('FunctionHelper: found ' + fields.size() + ' fields');
         return JSON.serialize(fields);
     }
 
     public static String callDescribeSObjectField(Map<String, Object> args) {
         String objectName = getObjectName(args);
         String fieldName  = getFieldName(args);
-        System.debug('         ── FunctionHelper: describing field [' + fieldName + '] on [' + objectName + ']');
+        System.debug('FunctionHelper: describing field [' + fieldName + '] on [' + objectName + ']');
         return JSON.serialize(MetadataHelper.describeSObjectField(objectName, fieldName));
     }
 
     public static String callCreateSObjectField(Map<String, Object> args) {
         String objectName = getObjectName(args);
         String fieldName  = getFieldName(args);
-        System.debug('         ── FunctionHelper: creating field [' + fieldName + '] on [' + objectName + ']');
-        System.debug('         ── FunctionHelper: args = ' + args);
+        System.debug('FunctionHelper: creating field [' + fieldName + '] on [' + objectName + ']');
+        System.debug('FunctionHelper: args = ' + args);
         MetadataHelper.createField(objectName, fieldName, args);
         String fullName = objectName.endsWith('__c') ? objectName : objectName + '__c';
         String fullField = fullName + '.' + (fieldName.endsWith('__c') ? fieldName : fieldName + '__c');
         queuedFields.add(fullField);
-        System.debug('         ✔ FunctionHelper: field [' + fullField + '] staged for deploy');
+        System.debug('FunctionHelper: field [' + fullField + '] staged for deploy');
         return JSON.serialize(new Map<String, Object>{
             'success' => true,
             'status'  => 'queued_for_deploy',
@@ -136,8 +136,8 @@ public class FunctionHelper {
     public static String callUpdateSObjectField(Map<String, Object> args) {
         String objectName = getObjectName(args);
         String fieldName  = getFieldName(args);
-        System.debug('         ── FunctionHelper: updating field [' + fieldName + '] on [' + objectName + ']');
-        System.debug('         ── FunctionHelper: args = ' + args);
+        System.debug('FunctionHelper: updating field [' + fieldName + '] on [' + objectName + ']');
+        System.debug('FunctionHelper: args = ' + args);
         MetadataHelper.updateField(objectName, fieldName, args);
         System.debug('         ✔ FunctionHelper: field [' + objectName + '.' + fieldName + '] updated successfully');
         return SUCCESS_RESPONSE;
@@ -146,9 +146,9 @@ public class FunctionHelper {
     public static String callDeleteSObjectField(Map<String, Object> args) {
         String objectName = getObjectName(args);
         String fieldName  = getFieldName(args);
-        System.debug('         ── FunctionHelper: deleting field [' + fieldName + '] on [' + objectName + ']');
+        System.debug('FunctionHelper: deleting field [' + fieldName + '] on [' + objectName + ']');
         MetadataHelper.deleteField(objectName, fieldName);
-        System.debug('         ✔ FunctionHelper: field [' + objectName + '.' + fieldName + '] deleted successfully');
+        System.debug('FunctionHelper: field [' + objectName + '.' + fieldName + '] deleted successfully');
         return SUCCESS_RESPONSE;
     }
 
@@ -607,6 +607,33 @@ public class FunctionHelper {
         System.debug('FunctionHelper: static resource queued for destructive deploy');
         return SUCCESS_RESPONSE;
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // CSV METHODS
+    // ─────────────────────────────────────────────────────────────
+ 
+    public static String callCsvListFiles(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCsvListFiles() called');
+        return JSON.serialize(CsvProcessor.listCsvFiles(args));
+    }
+ 
+    public static String callCsvRead(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCsvRead() called');
+        System.debug('args = ' + args);
+        Map<String, Object> result = CsvProcessor.readCsv(args);
+        System.debug('FunctionHelper.callCsvRead(): returned '
+            + result.get('totalRows') + ' rows from [' + result.get('fileName') + ']');
+        return JSON.serialize(result);
+    }
+
+    public static String callCsvBulkProcess(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCsvBulkProcess() called');
+        System.debug('args type=' + args.get('type') + ', fileName=' + args.get('fileName'));
+        Map<String, Object> result = CsvProcessor.process(args);
+        System.debug('FunctionHelper.callCsvBulkProcess(): processed ' + result.get('processed') + ' records');
+        return JSON.serialize(result);
+    }
+ 
 
     // ─────────────────────────────────────────────────────────────
     // PARAMETER EXTRACTION HELPERS

@@ -15,7 +15,7 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
 
     public void execute(QueueableContext ctx) {
         System.debug('ZipDeployQueueable.execute() — restoring ZipBuilder state for issue: ' + issueKey);
-        System.debug('⏱ [1] ZipDeployQueueable started: ' + Datetime.now());
+        System.debug('[1] ZipDeployQueueable started: ' + Datetime.now());
 
 
         // Restore static ZipBuilder state in the new transaction
@@ -27,17 +27,17 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
         try {
             System.debug('ZipDeployQueueable: building ZIP (' + files.size() + ' text + '
              + binaryFiles.size() + ' binary file(s))...');
-             System.debug('⏱ [2] Starting ZIP build: ' + Datetime.now());
+             System.debug('[2] Starting ZIP build: ' + Datetime.now());
 
             String base64Zip = ZipBuilder.buildBase64Zip();
             ZipBuilder.clear();
-            System.debug('⏱ [3] ZIP built, starting deploy: ' + Datetime.now());
+            System.debug('[3] ZIP built, starting deploy: ' + Datetime.now());
 
 
             System.debug('ZipDeployQueueable: ZIP built — starting deploy...');
             String jobId = DeployService.deploy(base64Zip, issueKey);
             System.debug('ZipDeployQueueable: deploy started. jobId = ' + jobId);
-            System.debug('⏱ [4] Deploy submitted to Metadata API: ' + Datetime.now());
+            System.debug('[4] Deploy submitted to Metadata API: ' + Datetime.now());
 
 
         } catch (Exception e) {
@@ -46,7 +46,7 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
             try {
                 JiraCallbackService.postComment(
                     issueKey,
-                    '❌ Deploy failed to start: ' + e.getMessage()
+                    'Deploy failed to start: ' + e.getMessage()
                 );
             } catch (Exception je) {
                 System.debug('ZipDeployQueueable: failed to post Jira comment — ' + je.getMessage());

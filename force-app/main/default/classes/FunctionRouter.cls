@@ -2,8 +2,7 @@ public class FunctionRouter {
 
     public static String execute(String functionName, Map<String, Object> args) {
 
-        System.debug('');
-        System.debug('      ── FunctionRouter: routing [' + functionName + ']');
+        System.debug('FunctionRouter: routing [' + functionName + ']');
 
         String result;
 
@@ -97,6 +96,11 @@ public class FunctionRouter {
         else if (functionName == 'static_resource_deploy') result = FunctionHelper.callStaticResourceDeploy(args);
         else if (functionName == 'static_resource_delete') result = FunctionHelper.callStaticResourceDelete(args);
 
+        // ── CSV OPERATIONS ────────────────────────────────────
+        else if (functionName == 'csv_list_files')  result = FunctionHelper.callCsvListFiles(args);
+        else if (functionName == 'csv_read')        result = FunctionHelper.callCsvRead(args);
+        else if (functionName == 'csv_bulk_process') result = FunctionHelper.callCsvBulkProcess(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 
@@ -109,7 +113,7 @@ public class FunctionRouter {
             });
         }
 
-        System.debug('      ── FunctionRouter: [' + functionName + '] completed successfully');
+        System.debug('FunctionRouter: [' + functionName + '] completed successfully');
         return result;
     }
 }
