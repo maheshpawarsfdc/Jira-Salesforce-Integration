@@ -121,6 +121,7 @@ public class CustomMetadataHelper {
     // ─────────────────────────────────────────────────────────────
     // ADD FIELD TO TYPE
     // Same ZipBuilder-first pattern as CustomSettingHelper
+    // After staging the field, auto-add it to the default page layout
     // ─────────────────────────────────────────────────────────────
     public static void addFieldToCustomMetadataType(Map<String, Object> args) {
         String apiName    = getRequired(args, 'apiName');
@@ -168,6 +169,125 @@ public class CustomMetadataHelper {
 
         ZipBuilder.addFile('CustomObject', fullApiName, filePath, objectXml);
         System.debug('CustomMetadataHelper: field [' + fullField + '] staged on [' + fullApiName + ']');
+
+        // ── Auto-add field to page layout ──────────────────────
+        autoAddFieldToPageLayout(fullApiName, fullField);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Auto-add a newly staged field to the default layout.
+    //
+    // Assumptions:
+    //   - The CMDT already exists in the org (created in a previous deploy)
+    //   - The default layout "{ObjectApiName}-{Label} Layout" exists
+    //   - We're just adding a new field to an existing type
+    //
+    // Strategy:
+    //   1. Resolve the label to derive the layout name
+    //   2. Call PageLayoutHelper.addFieldsToLayout()
+    //   3. If it fails (layout not found), log a warning
+    //
+    // For brand new CMDTs created in the same ticket as the field:
+    //   - This will fail (layout doesn't exist yet)
+    //   - That's OK — we accept this limitation
+    //   - Solution: Create CMDT in one ticket, add fields in subsequent tickets
+    // ─────────────────────────────────────────────────────────────
+    private static void autoAddFieldToPageLayout(String fullApiName, String fieldName) {
+        System.debug('CustomMetadataHelper.autoAddFieldToPageLayout(): '
+            + fullApiName + ' / ' + fieldName);
+        try {
+            // ── Resolve the label to derive the layout name ────
+            String label = resolveLabelForLayoutName(fullApiName);
+            String layoutName = label + ' Layout';
+
+            System.debug('CustomMetadataHelper.autoAddFieldToPageLayout(): '
+                + 'layout name = [' + layoutName + ']');
+
+            // ── Add field to the layout ────────────────────────
+            PageLayoutHelper.addFieldsToLayout(new Map<String, Object>{
+                'objectApiName' => fullApiName,
+                'layoutName'    => layoutName,
+                'sectionLabel'  => 'Information',
+                'fields'        => '["' + fieldName + '"]'
+            });
+
+            System.debug('CustomMetadataHelper.autoAddFieldToPageLayout(): '
+                + 'field [' + fieldName + '] added to layout [' + layoutName + ']. Done.');
+
+        } catch (Exception e) {
+            // Non-fatal — field is already staged successfully
+            // This will fail if CMDT + field were created in the same ticket
+            // (layout doesn't exist yet)
+            System.debug('CustomMetadataHelper.autoAddFieldToPageLayout(): '
+                + 'WARNING — could not update layout: ' + e.getMessage()
+                + ' | This is expected if the CMDT was just created in the same deploy.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Resolve the label used to derive the layout name.
+    //
+    // Priority:
+    //   1. Staged XML in ZipBuilder  — type created this session
+    //   2. Org Metadata API          — type already deployed
+    //   3. Fallback string           — strip __mdt, replace _ with space
+    // ─────────────────────────────────────────────────────────────
+    private static String resolveLabelForLayoutName(String fullApiName) {
+        // ── 1. Check ZipBuilder for staged object XML ──────────
+        String filePath  = 'objects/' + fullApiName + '.object';
+        String stagedXml = ZipBuilder.files.get(filePath);
+
+        if (String.isNotBlank(stagedXml)) {
+            String extracted = extractTagValue(stagedXml, 'label');
+            if (String.isNotBlank(extracted)) {
+                System.debug('CustomMetadataHelper.resolveLabelForLayoutName(): '
+                    + 'label from staged XML = [' + extracted + ']');
+                return extracted;
+            }
+        }
+
+        // ── 2. Read from org via Metadata API ─────────────────
+        try {
+            MetadataService.IReadResult readResult = port.readMetadata(
+                'CustomObject', new List<String>{ fullApiName });
+
+            if (readResult != null && readResult.getRecords() != null
+                    && !readResult.getRecords().isEmpty()
+                    && readResult.getRecords()[0] != null) {
+
+                MetadataService.CustomObject obj =
+                    (MetadataService.CustomObject) readResult.getRecords()[0];
+
+                if (String.isNotBlank(obj.label)) {
+                    System.debug('CustomMetadataHelper.resolveLabelForLayoutName(): '
+                        + 'label from org = [' + obj.label + ']');
+                    return obj.label;
+                }
+            }
+        } catch (Exception e) {
+            System.debug('CustomMetadataHelper.resolveLabelForLayoutName(): '
+                + 'Metadata API read failed: ' + e.getMessage());
+        }
+
+        // ── 3. Fallback — derive from API name ─────────────────
+        String fallback = fullApiName.replace('__mdt', '').replace('_', ' ').trim();
+        System.debug('CustomMetadataHelper.resolveLabelForLayoutName(): '
+            + 'using fallback label = [' + fallback + ']');
+        return fallback;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Extract a tag value from an XML string
+    // e.g. extractTagValue(xml, 'label') → "Testing"
+    // ─────────────────────────────────────────────────────────────
+    private static String extractTagValue(String xml, String tagName) {
+        String open  = '<' + tagName + '>';
+        String close = '</' + tagName + '>';
+        Integer start = xml.indexOf(open);
+        if (start == -1) return null;
+        Integer endPos = xml.indexOf(close, start);
+        if (endPos == -1) return null;
+        return xml.substring(start + open.length(), endPos).trim();
     }
 
     // ─────────────────────────────────────────────────────────────

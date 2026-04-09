@@ -323,10 +323,19 @@ public class PageLayoutHelper {
         for (Integer i = 0; i < newFields.size(); i++) {
             String fieldName         = newFields[i].trim();
             Metadata.LayoutItem item = new Metadata.LayoutItem();
-            item.field    = fieldName;
-            item.behavior = (fieldName == 'Name' || requiredFields.contains(fieldName))
-                ? Metadata.UiBehavior.Required
-                : Metadata.UiBehavior.Edit;
+            item.field = fieldName;
+            
+            // Determine behavior based on field type
+            if (SYSTEM_FIELDS.contains(fieldName)) {
+                // System fields must always be Readonly
+                item.behavior = Metadata.UiBehavior.Readonly;
+            } else if (fieldName == 'Name' || requiredFields.contains(fieldName)) {
+                // Required fields
+                item.behavior = Metadata.UiBehavior.Required;
+            } else {
+                // Optional custom fields
+                item.behavior = Metadata.UiBehavior.Edit;
+            }
 
             if (Math.mod(totalExisting + i, 2) == 0) {
                 leftCol.layoutItems.add(item);
@@ -397,8 +406,15 @@ public class PageLayoutHelper {
                 xml += '<layoutColumns>';
                 if (col.layoutItems != null) {
                     for (Metadata.LayoutItem item : col.layoutItems) {
-                        String behavior = item.behavior == Metadata.UiBehavior.Required
-                            ? 'Required' : 'Edit';
+                        String behavior;
+                        if (item.behavior == Metadata.UiBehavior.Required) {
+                            behavior = 'Required';
+                        } else if (item.behavior == Metadata.UiBehavior.Readonly) {
+                            behavior = 'Readonly';
+                        } else {
+                            behavior = 'Edit';
+                        }
+                        
                         xml += '<layoutItems>'
                             + '<behavior>' + behavior + '</behavior>'
                             + '<field>'    + escapeXml(item.field) + '</field>'
@@ -432,7 +448,15 @@ public class PageLayoutHelper {
 
         String newItems = '';
         for (String f : newFields) {
-            String behavior = (f == 'Name' || requiredFields.contains(f)) ? 'Required' : 'Edit';
+            String behavior;
+            if (SYSTEM_FIELDS.contains(f)) {
+                behavior = 'Readonly';
+            } else if (f == 'Name' || requiredFields.contains(f)) {
+                behavior = 'Required';
+            } else {
+                behavior = 'Edit';
+            }
+            
             newItems += '<layoutItems>'
                 + '<behavior>' + behavior + '</behavior>'
                 + '<field>'    + escapeXml(f) + '</field>'
