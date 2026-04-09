@@ -332,6 +332,7 @@ public class MetadataHelper {
     // Uses MDAPI format: field embedded inside object XML wrapper.
     // Salesforce merges the field into the existing object on deploy.
     // Multiple fields on same object are merged into a single object file.
+    // After staging the field, auto-add it to the object's default page layout.
     // ─────────────────────────────────────────────────────────────
     public static void createField(String objectName, String fieldName, Map<String, Object> args) {
         objectName = addObjectSuffix(objectName);
@@ -366,6 +367,144 @@ public class MetadataHelper {
 
         ZipBuilder.addFile('CustomObject', objectName, filePath, objXml);
         System.debug('            ✔ MetadataHelper.createField(): [' + objectName + '.' + fieldName + '] queued for deploy');
+
+        // ── Auto-add field to page layout ──────────────────────
+        autoAddFieldToPageLayout(objectName, fieldName);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Auto-add a newly staged field to the object's default page layout.
+    //
+    // CRITICAL: Only works for CUSTOM objects.
+    // Standard object layouts have additional required components
+    // (customLinks, relatedLists, etc.) that aren't returned by
+    // Metadata.Operations.retrieve(), causing deploy failures.
+    //
+    // Strategy:
+    //   1. Check if object is custom (ends with __c)
+    //   2. If custom: add field to layout
+    //   3. If standard: skip (log info message)
+    // ─────────────────────────────────────────────────────────────
+    private static void autoAddFieldToPageLayout(String objectName, String fieldName) {
+        System.debug('            ── MetadataHelper.autoAddFieldToPageLayout(): '
+            + objectName + ' / ' + fieldName);
+        
+        // ── Check if object is custom ──────────────────────────
+        Boolean isCustomObject = objectName.endsWith('__c');
+        
+        if (!isCustomObject) {
+            System.debug('            ⓘ MetadataHelper.autoAddFieldToPageLayout(): '
+                + 'SKIPPED — auto-layout-add only works for custom objects. '
+                + '[' + objectName + '] is a standard object. '
+                + 'Field [' + fieldName + '] will be created, but you must manually '
+                + 'add it to the layout via Setup → Object Manager → '
+                + objectName + ' → Page Layouts.');
+            return; // Skip for standard objects
+        }
+        
+        try {
+            // ── Get the default layout name ────────────────────
+            String layoutName = getDefaultLayoutName(objectName, isCustomObject);
+            
+            System.debug('            ── MetadataHelper.autoAddFieldToPageLayout(): '
+                + 'layout name = [' + layoutName + ']');
+
+            // ── Add field to the layout ────────────────────────
+            PageLayoutHelper.addFieldsToLayout(new Map<String, Object>{
+                'objectApiName' => objectName,
+                'layoutName'    => layoutName,
+                'sectionLabel'  => 'Information',
+                'fields'        => '["' + fieldName + '"]'
+            });
+
+            System.debug('            ✔ MetadataHelper.autoAddFieldToPageLayout(): '
+                + 'field [' + fieldName + '] added to layout [' + layoutName + ']. Done.');
+
+        } catch (Exception e) {
+            // Non-fatal — field is already staged successfully
+            System.debug('            ⚠ MetadataHelper.autoAddFieldToPageLayout(): '
+                + 'WARNING — could not update layout: ' + e.getMessage()
+                + ' | Field will still be created, but may not appear on layout.');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Get the default layout name for an object
+    //
+    // Custom objects: "{ObjectLabel} Layout"
+    //   Example: Car__c with label "Car" → "Car Layout"
+    //
+    // Standard objects: "{ObjectName}-{ObjectLabel}" 
+    //   Example: Account → "Account-Account Layout"
+    //   Example: Contact → "Contact-Contact Layout"
+    // ─────────────────────────────────────────────────────────────
+    private static String getDefaultLayoutName(String objectName, Boolean isCustomObject) {
+        String label = getObjectLabel(objectName);
+        
+        if (isCustomObject) {
+            // Custom objects: just "{Label} Layout"
+            return label + ' Layout';
+        } else {
+            // Standard objects: "{ObjectName}-{Label} Layout"
+            // But PageLayoutHelper will add the objectName prefix,
+            // so we only return the label part
+            return label + ' Layout';
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PRIVATE — Get the label for an object (from Schema or Metadata API)
+    //
+    // Priority:
+    //   1. Schema.getGlobalDescribe() (fastest)
+    //   2. Metadata API (fallback)
+    //   3. API name without suffix (last resort)
+    // ─────────────────────────────────────────────────────────────
+    private static String getObjectLabel(String objectName) {
+        // ── 1. Try Schema.getGlobalDescribe() ──────────────────
+        try {
+            Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
+            if (objType != null) {
+                String label = objType.getDescribe().getLabel();
+                if (String.isNotBlank(label)) {
+                    System.debug('            ── MetadataHelper.getObjectLabel(): '
+                        + 'label from Schema = [' + label + ']');
+                    return label;
+                }
+            }
+        } catch (Exception e) {
+            System.debug('            ── MetadataHelper.getObjectLabel(): '
+                + 'Schema describe failed: ' + e.getMessage());
+        }
+
+        // ── 2. Try Metadata API ────────────────────────────────
+        try {
+            MetadataService.IReadResult readResult = port.readMetadata(
+                'CustomObject', new List<String>{ objectName });
+
+            if (readResult != null && readResult.getRecords() != null
+                    && !readResult.getRecords().isEmpty()
+                    && readResult.getRecords()[0] != null) {
+
+                MetadataService.CustomObject obj =
+                    (MetadataService.CustomObject) readResult.getRecords()[0];
+
+                if (String.isNotBlank(obj.label)) {
+                    System.debug('            ── MetadataHelper.getObjectLabel(): '
+                        + 'label from Metadata API = [' + obj.label + ']');
+                    return obj.label;
+                }
+            }
+        } catch (Exception e) {
+            System.debug('            ── MetadataHelper.getObjectLabel(): '
+                + 'Metadata API read failed: ' + e.getMessage());
+        }
+
+        // ── 3. Fallback — derive from API name ─────────────────
+        String fallback = objectName.replace('__c', '').replace('_', ' ').trim();
+        System.debug('            ── MetadataHelper.getObjectLabel(): '
+            + 'using fallback label = [' + fallback + ']');
+        return fallback;
     }
 
 
