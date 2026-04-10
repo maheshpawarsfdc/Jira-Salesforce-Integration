@@ -63,6 +63,21 @@ public class LLMService {
             return result + '\n⏳ Deploying to Salesforce asynchronously — DeployPoller will post the result to Jira when done.';
         }
 
+        // ── SYNC RESULT — store immediately for Forge frontend polling ──
+        try {
+            System.debug('LLMService: storing deployment status for issue [' + issueKey + '] hadError=' + FunctionHelper.hadError);
+            JiraCallbackService.storeDeploymentStatus(
+                issueKey,
+                FunctionHelper.hadError ? 'error' : 'success',
+                result,
+                'sync-' + DateTime.now().getTime()
+            );
+            System.debug('LLMService: storeDeploymentStatus completed successfully');
+        } catch (Exception e) {
+            System.debug('LLMService: storeDeploymentStatus FAILED — ' + e.getMessage());
+            System.debug('LLMService: stack trace — ' + e.getStackTraceString());
+        }
+        FunctionHelper.hadError = false;
         return result;
     }
 
@@ -121,7 +136,28 @@ public class LLMService {
                     System.debug('   │  Result      : ' + toolResult);
                     System.debug('   └───────────────────────────────────────────────────');
 
-                    // Feed result back into conversation
+                    if (toolResult.contains('"success":false')) {
+                        FunctionHelper.hadError = true;
+                        
+                        // ADD THIS — feed the error back then force stop
+                        messages.add(new Map<String, Object>{
+                            'role'         => 'tool',
+                            'tool_call_id' => toolCallId,
+                            'content'      => toolResult
+                        });
+
+                        // Get one final response from LLM explaining the error, then stop
+                        Map<String, Object> errorResponse = callGroq(messages, tools);
+                        List<Object> errorChoices = (List<Object>) errorResponse.get('choices');
+                        Map<String, Object> errorChoice = (Map<String, Object>) errorChoices[0];
+                        Map<String, Object> errorMessage = (Map<String, Object>) errorChoice.get('message');
+                        String finalMsg = (String) errorMessage.get('content');
+                        
+                        System.debug('LLMService: tool failed — forcing stop. Final message: ' + finalMsg);
+                        return String.isNotBlank(finalMsg) ? finalMsg : 'Error: ' + toolResult;
+                    }
+
+                    // Feed result back into conversation (only reached if success)
                     messages.add(new Map<String, Object>{
                         'role'         => 'tool',
                         'tool_call_id' => toolCallId,
@@ -308,6 +344,8 @@ public class LLMService {
                 + '\nCRITICAL: NEVER call translation_upsert, custom_label_create, custom_metadata_record_upsert'
                 + '\nor any other individual tool when a CSV is present. Always use csv_bulk_process.'
                 + '\nCRITICAL: NEVER pass a rows argument to csv_bulk_process — only type and fileName.'   
+                + '\n\n== ERROR HANDLING =='
+                + '\nIf a CREATE tool fails because the item already exists, STOP immediately and report the error to the user. Do NOT attempt to call an update tool as a fallback.'
                 + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
                 + '\nCurrent User: ' + UserInfo.getUserName();
     }

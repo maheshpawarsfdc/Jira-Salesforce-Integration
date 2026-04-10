@@ -81,6 +81,14 @@ global class JiraInboundController {
             llmResponse = 'Error: ' + e.getMessage();
             System.debug('JiraInbound: Exception — ' + e.getMessage());
             System.debug('JiraInbound: Stack trace — ' + e.getStackTraceString());
+
+            if (issueKey != null) {
+                try {
+                    JiraCallbackService.storeDeploymentStatus(issueKey, 'error', llmResponse, 'exception');
+                } catch (Exception je) {
+                    System.debug('JiraInbound: Failed to store error status — ' + je.getMessage());
+                }
+            }
         } finally {
             // Clear attachments for next request
             StaticResourceHelper.currentAttachments.clear();

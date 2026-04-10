@@ -22,6 +22,7 @@ public class FunctionHelper {
     public static List<SObject> recordsToInsert        = new List<SObject>();
     public static List<SObject> recordsToDelete        = new List<SObject>();
     public static List<String>  permissionSetsToDelete = new List<String>();
+    public static Boolean hadError = false;
 
     public static void clearQueues() {
         recordsToInsert.clear();
