@@ -56,7 +56,6 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
             + ', jobId=' + jobId + ', issue=' + issueKey);
         System.debug('[5] DeployPoller attempt ' + attempt + ' started: ' + Datetime.now());
 
-
         try {
             MetadataService.DeployResult result = getPort().checkDeployStatus(jobId, true);
             System.debug('DeployPoller: status=' + result.status + ', done=' + result.done);
@@ -64,21 +63,34 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
 
             if (result.done) {
                 System.debug('[7] Deploy DONE at: ' + Datetime.now());
-                String message = parseResult(result);
-                System.debug('DeployPoller: deploy DONE. Posting to Jira: ' + message);
-                //JiraCallbackService.postComment(issueKey, message);
+                
+                // ── Check if deployment was successful ────────────
+                if (result.success) {
+                    String successMsg = 'Successfully deployed! '
+                        + result.numberComponentsDeployed + ' component(s) deployed.';
+                    System.debug('DeployPoller: deploy SUCCESS. Posting to Jira: ' + successMsg);
+                    postStatusToJira(issueKey, 'success', successMsg, jobId);
+                } else {
+                    // ── Deploy failed — extract error details ─────
+                    String errorMsg = parseFailureResult(result);
+                    System.debug('DeployPoller: deploy FAILED. Posting to Jira: ' + errorMsg);
+                    postStatusToJira(issueKey, 'error', errorMsg, jobId);
+                }
 
             } else if (attempt >= MAX_ATTEMPTS) {
+                // ── Max attempts reached without completion ────────
                 System.debug('DeployPoller: MAX_ATTEMPTS reached.');
-                //JiraCallbackService.postComment(issueKey, timeoutMsg);
+                String timeoutMsg = 'Deploy timed out after ' + MAX_ATTEMPTS + ' attempts. '
+                    + 'Status: ' + result.status + '. Check Salesforce deployment status manually.';
+                postStatusToJira(issueKey, 'error', timeoutMsg, jobId);
 
             } else {
+                // ── Not done yet, schedule next poll ──────────────
                 System.debug('⏱ [6b] Not done, scheduling next poll at: ' + Datetime.now());
-
                 System.debug('DeployPoller: not done yet (status=' + result.status + '). Re-enqueuing...');
+                
                 // Use System.schedule instead of System.enqueueJob to avoid
                 // Salesforce queueable stack depth limit (max 5 chained queueables).
-                // Each scheduled job starts a fresh stack — no depth accumulation.
                 String cronExp = buildCronIn2Seconds();
                 String jobName = 'DeployPoller_' + jobId + '_' + attempt;
                 System.schedule(jobName, cronExp, new Deploypollerscheduler(jobId, issueKey, attempt + 1));
@@ -86,37 +98,61 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
 
         } catch (Exception e) {
             System.debug('DeployPoller: ERROR - ' + e.getMessage());
+            String exceptionMsg = 'Deploy poller error: ' + e.getMessage() + ' | ' + e.getStackTraceString();
+            postStatusToJira(issueKey, 'error', exceptionMsg, jobId);
         }
     }
 
     // ─────────────────────────────────────────────────────────────
-    // PARSE RESULT — human readable deploy outcome
+    // Helper method to post status to Jira (via issue properties)
     // ─────────────────────────────────────────────────────────────
-    // Returns a cron expression for ~2 seconds from now
+    private static void postStatusToJira(String issueKey, String status, String message, String deployId) {
+        try {
+            JiraCallbackService.storeDeploymentStatus(issueKey, status, message, deployId);
+        } catch (Exception e) {
+            System.debug('postStatusToJira error: ' + e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PARSE FAILURE RESULT — extract error details
+    // ─────────────────────────────────────────────────────────────
+    private String parseFailureResult(MetadataService.DeployResult result) {
+        String errorMsg = 'Deploy failed. ';
+        
+        if (String.isNotBlank(result.errorMessage)) {
+            errorMsg += result.errorMessage + ' ';
+        }
+        
+        if (result.details != null && result.details.componentFailures != null) {
+            errorMsg += '\n\nComponent failures:\n';
+            for (MetadataService.DeployMessage failure : result.details.componentFailures) {
+                if (!failure.success) {
+                    errorMsg += '- ' + failure.fullName + ': ' + failure.problem + '\n';
+                }
+            }
+        }
+        
+        return errorMsg;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // CRON BUILDER — returns a cron expression for ~2 seconds from now
+    // ─────────────────────────────────────────────────────────────
     private String buildCronIn2Seconds() {
         Datetime dt = Datetime.now().addSeconds(2);
         return dt.second() + ' ' + dt.minute() + ' ' + dt.hour()
             + ' ' + dt.day() + ' ' + dt.month() + ' ? ' + dt.year();
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // PARSE RESULT — human readable deploy outcome (kept for backwards compat)
+    // ─────────────────────────────────────────────────────────────
     private String parseResult(MetadataService.DeployResult result) {
         if (result.success) {
             return 'Deploy successful. '
                 + result.numberComponentsDeployed + ' component(s) deployed.';
         }
-
-        String error = 'Deploy failed. ';
-        if (String.isNotBlank(result.errorMessage)) {
-            error += result.errorMessage;
-        }
-        if (result.details != null && result.details.componentFailures != null) {
-            for (MetadataService.DeployMessage msg : result.details.componentFailures) {
-                if (!msg.success) {
-                    error += '\n- ' + msg.fullName + ': ' + msg.problem;
-                }
-            }
-        }
-        return error;
+        return parseFailureResult(result);
     }
-
 }
