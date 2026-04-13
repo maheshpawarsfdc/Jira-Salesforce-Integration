@@ -116,6 +116,8 @@ public class ZipBuilder {
             throw new ZipBuilderException('No files to deploy');
         }
 
+        finalizeObjectXml();  // Merge record type fragments into object XML
+        finalizeProfileXml();  // Merge record type visibility into profile XML
         // Use Zippex library for ZIP creation
         Zippex zip = new Zippex();
 
@@ -184,6 +186,194 @@ public class ZipBuilder {
         xml += '    <version>61.0</version>\n';
         xml += '</Package>';
         return xml;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // FINALIZE OBJECT XML WITH RECORD TYPE FRAGMENTS
+    // Called before building ZIP to merge all staged record type fragments
+    // ─────────────────────────────────────────────────────────────
+    public static void finalizeObjectXml() {
+        System.debug('ZipBuilder.finalizeObjectXml(): merging record type fragments...');
+        
+        // Collect all record type fragments by object
+        Map<String, List<String>> rtFragmentsByObject = new Map<String, List<String>>();
+        Map<String, List<String>> picklistFragmentsByRT = new Map<String, List<String>>();
+        
+        List<String> keysToRemove = new List<String>();
+        
+        for (String key : files.keySet()) {
+            if (key.startsWith('recordTypes.')) {
+                // Parse: recordTypes.Car__c.Premium
+                List<String> parts = key.split('\\.');
+                String objectName = parts[1];
+                
+                if (!rtFragmentsByObject.containsKey(objectName)) {
+                    rtFragmentsByObject.put(objectName, new List<String>());
+                }
+                rtFragmentsByObject.get(objectName).add(files.get(key));
+                keysToRemove.add(key);
+                
+            } else if (key.startsWith('recordTypePicklist.')) {
+                // Parse: recordTypePicklist.Opportunity__c.Premium.StageName
+                List<String> parts = key.split('\\.');
+                String objectName = parts[1];
+                String rtName = parts[2];
+                String rtKey = objectName + '.' + rtName;
+                
+                if (!picklistFragmentsByRT.containsKey(rtKey)) {
+                    picklistFragmentsByRT.put(rtKey, new List<String>());
+                }
+                picklistFragmentsByRT.get(rtKey).add(files.get(key));
+                keysToRemove.add(key);
+            }
+        }
+        
+        // Remove fragments from files map
+        for (String key : keysToRemove) {
+            files.remove(key);
+        }
+        
+        if (rtFragmentsByObject.isEmpty()) {
+            System.debug('ZipBuilder: no record type fragments to merge');
+            return;
+        }
+        
+        // For each object with record types, build/update its object XML
+        for (String objectName : rtFragmentsByObject.keySet()) {
+            String objectXmlPath = 'objects/' + objectName + '.object-meta.xml';
+            String objectXml;
+            
+            if (files.containsKey(objectXmlPath)) {
+                // Object XML already exists (from sobject_create or sobject_update)
+                objectXml = files.get(objectXmlPath);
+            } else {
+                // Need to retrieve existing object XML or create skeleton
+                objectXml = retrieveOrCreateObjectXml(objectName);
+            }
+            
+            // Merge record type fragments
+            List<String> rtFragments = rtFragmentsByObject.get(objectName);
+            for (String rtXml : rtFragments) {
+                // Insert before </CustomObject>
+                Integer insertIdx = objectXml.lastIndexOf('</CustomObject>');
+                objectXml = objectXml.substring(0, insertIdx)
+                    + '    ' + rtXml + '\n'
+                    + objectXml.substring(insertIdx);
+            }
+            
+            // Save merged XML
+            files.put(objectXmlPath, objectXml);
+            
+            // Track for package.xml
+            if (!metadataTypes.containsKey('CustomObject')) {
+                metadataTypes.put('CustomObject', new Set<String>());
+            }
+            metadataTypes.get('CustomObject').add(objectName);
+        }
+        
+        System.debug('ZipBuilder: record type fragments merged into object XML');
+    }
+
+    private static String retrieveOrCreateObjectXml(String objectName) {
+        // Try to get via Schema first (for existing objects)
+        Map<String, Schema.SObjectType> gd = Schema.getGlobalDescribe();
+        if (gd.containsKey(objectName)) {
+            // Object exists - return minimal skeleton (Metadata API will merge with existing)
+            return '<?xml version="1.0" encoding="UTF-8"?>\n'
+                + '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+                + '</CustomObject>';
+        }
+        
+        // Object doesn't exist yet - return full skeleton
+        // (This shouldn't happen if LLM follows "create object first" pattern)
+        throw new ZipBuilderException(
+            'Cannot add record type to non-existent object: ' + objectName
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // FINALIZE PROFILE XML WITH RECORD TYPE FRAGMENTS
+    // Called before building ZIP to merge all staged profile fragments
+    // ─────────────────────────────────────────────────────────────
+    public static void finalizeProfileXml() {
+        System.debug('ZipBuilder.finalizeProfileXml(): merging profile fragments...');
+        
+        // Collect all profile RT visibility fragments by profile name
+        Map<String, List<String>> fragmentsByProfile = new Map<String, List<String>>();
+        List<String> keysToRemove = new List<String>();
+        
+        for (String key : files.keySet()) {
+            if (key.startsWith('profileRTVisibility.')) {
+                // Parse: profileRTVisibility.System Administrator.Account.Premium_Customer
+                List<String> parts = key.split('\\.');
+                String profileName = parts[1];
+                
+                // Handle profile names with spaces (they get split)
+                // e.g., "System Administrator" becomes parts[1]="System", parts[2]="Administrator"
+                Integer objectIdx = parts.size() - 2;  // Second to last is object name
+                Integer rtIdx = parts.size() - 1;      // Last is record type name
+                
+                // Reconstruct profile name (everything between index 1 and objectIdx)
+                profileName = '';
+                for (Integer i = 1; i < objectIdx; i++) {
+                    if (i > 1) profileName += '.';
+                    profileName += parts[i];
+                }
+                
+                if (!fragmentsByProfile.containsKey(profileName)) {
+                    fragmentsByProfile.put(profileName, new List<String>());
+                }
+                fragmentsByProfile.get(profileName).add(files.get(key));
+                keysToRemove.add(key);
+            }
+        }
+        
+        // Remove fragments from files map
+        for (String key : keysToRemove) {
+            files.remove(key);
+        }
+        
+        if (fragmentsByProfile.isEmpty()) {
+            System.debug('ZipBuilder: no profile fragments to merge');
+            return;
+        }
+        
+        // For each profile with fragments, build/update its XML
+        for (String profileName : fragmentsByProfile.keySet()) {
+            String profileXmlPath = 'profiles/' + profileName + '.profile-meta.xml';
+            String profileXml;
+            
+            if (files.containsKey(profileXmlPath)) {
+                // Profile XML already exists in this deploy
+                profileXml = files.get(profileXmlPath);
+            } else {
+                // Create minimal profile skeleton
+                profileXml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+                profileXml += '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n';
+                profileXml += '</Profile>';
+            }
+            
+            // Merge fragments
+            List<String> fragments = fragmentsByProfile.get(profileName);
+            for (String fragmentXml : fragments) {
+                // Insert before </Profile>
+                Integer insertIdx = profileXml.lastIndexOf('</Profile>');
+                profileXml = profileXml.substring(0, insertIdx)
+                    + '    ' + fragmentXml + '\n'
+                    + profileXml.substring(insertIdx);
+            }
+            
+            // Save merged XML
+            files.put(profileXmlPath, profileXml);
+            
+            // Track for package.xml
+            if (!metadataTypes.containsKey('Profile')) {
+                metadataTypes.put('Profile', new Set<String>());
+            }
+            metadataTypes.get('Profile').add(profileName);
+        }
+        
+        System.debug('ZipBuilder: profile fragments merged');
     }
 
     // ─────────────────────────────────────────────────────────────

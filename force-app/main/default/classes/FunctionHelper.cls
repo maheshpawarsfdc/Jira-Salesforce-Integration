@@ -634,6 +634,63 @@ public class FunctionHelper {
         System.debug('FunctionHelper.callCsvBulkProcess(): processed ' + result.get('processed') + ' records');
         return JSON.serialize(result);
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // RECORD TYPE METHODS
+    // ─────────────────────────────────────────────────────────────
+
+    public static String callListRecordTypes(Map<String, Object> args) {
+        System.debug('FunctionHelper.callListRecordTypes() called');
+        return JSON.serialize(RecordTypeHelper.listRecordTypes(args));
+    }
+
+    public static String callCreateRecordType(Map<String, Object> args) {
+        System.debug('FunctionHelper.callCreateRecordType() called');
+        System.debug('args = ' + args);
+        RecordTypeHelper.createRecordType(args);
+        System.debug('FunctionHelper: record type created successfully');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callUpdateRecordType(Map<String, Object> args) {
+        System.debug('FunctionHelper.callUpdateRecordType() called');
+        System.debug('args = ' + args);
+        RecordTypeHelper.updateRecordType(args);
+        System.debug('FunctionHelper: record type updated successfully');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callDeleteRecordType(Map<String, Object> args) {
+        System.debug('FunctionHelper.callDeleteRecordType() called');
+        System.debug('args = ' + args);
+        RecordTypeHelper.deleteRecordType(args);
+        System.debug('FunctionHelper: record type queued for destructive deploy');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callAssignRecordTypeToProfiles(Map<String, Object> args) {
+        System.debug('FunctionHelper.callAssignRecordTypeToProfiles() called');
+        System.debug('args = ' + args);
+        RecordTypeHelper.assignToProfiles(args);
+        System.debug('FunctionHelper: record type profile assignments staged');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callRemoveRecordTypeFromProfiles(Map<String, Object> args) {
+        System.debug('FunctionHelper.callRemoveRecordTypeFromProfiles() called');
+        System.debug('args = ' + args);
+        RecordTypeHelper.removeFromProfiles(args);
+        System.debug('FunctionHelper: record type profile removals staged');
+        return SUCCESS_RESPONSE;
+    }
+
+    public static String callSetRecordTypePicklistValues(Map<String, Object> args) {
+        System.debug('FunctionHelper.callSetRecordTypePicklistValues() called');
+        System.debug('args = ' + args);
+        RecordTypeHelper.setPicklistValues(args);
+        System.debug('FunctionHelper: record type picklist values staged');
+        return SUCCESS_RESPONSE;
+    }
  
 
     // ─────────────────────────────────────────────────────────────

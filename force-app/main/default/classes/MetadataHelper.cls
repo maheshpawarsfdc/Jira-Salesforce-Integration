@@ -905,7 +905,7 @@ public class MetadataHelper {
         return name.endsWith('__c') ? name : name + '__c';
     }
     // For OBJECT names — only add __c if the object isn't already in the schema as-is
-    private static String addObjectSuffix(String name) {
+    public static String addObjectSuffix(String name) {
         if (String.isBlank(name)) return name;
         name = name.trim();
         
@@ -924,7 +924,7 @@ public class MetadataHelper {
 
     // For FIELD names — new fields are always custom, always need __c
     // UNLESS it's a standard field (for read/describe only, not for create)
-    private static String addFieldSuffix(String name) {
+    public static String addFieldSuffix(String name) {
         if (String.isBlank(name)) return name;
         name = name.trim();
         return name.endsWith('__c') ? name : name + '__c';

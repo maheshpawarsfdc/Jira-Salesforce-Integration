@@ -346,6 +346,15 @@ public class LLMService {
                 + '\nCRITICAL: NEVER pass a rows argument to csv_bulk_process — only type and fileName.'   
                 + '\n\n== ERROR HANDLING =='
                 + '\nIf a CREATE tool fails because the item already exists, STOP immediately and report the error to the user. Do NOT attempt to call an update tool as a fallback.'
+                + '\n\n== RECORD TYPES =='
+                + '\nBEFORE creating a record type: call record_type_list to check if it already exists.'
+                + '\nAFTER creating a record type:'
+                + '\n  1. Optionally create a dedicated page layout (page_layout_create)'
+                + '\n  2. Assign the layout to profiles for this record type (page_layout_assign with recordType parameter)'
+                + '\n  3. Assign the record type to profiles (record_type_assign_to_profiles)'
+                + '\nWhen assigning to profiles, you can pass "All" to assign to all profiles or a JSON array like ["System Administrator","Sales User"].'
+                + '\nIf setting as default, pass default=true in record_type_assign_to_profiles.'
+                + '\nFor picklist values per record type, use record_type_set_picklist_values after creating the record type.'
                 + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
                 + '\nCurrent User: ' + UserInfo.getUserName();
     }

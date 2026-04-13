@@ -28,6 +28,7 @@ public class ToolDefinitions {
         tools.addAll(getCustomMetadataTools());
         tools.addAll(getPageLayoutTools());
         tools.addAll(getStaticResourceTools()); 
+        tools.addAll(getRecordTypeTools());
         tools.addAll(getCsvTools());
         tools.add(getQueryTool());
         return tools;
@@ -1060,6 +1061,123 @@ public class ToolDefinitions {
                 )
             )
  
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // RECORD TYPE TOOLS
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getRecordTypeTools() {
+        return new List<Map<String, Object>>{
+            
+            buildTool(
+                'record_type_list',
+                'List all record types for a given object. Always call this before creating, updating, or deleting a record type.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName', 'API name of the object e.g. Account or Opportunity or Car__c')
+                    },
+                    new List<String>{ 'objectApiName' }
+                )
+            ),
+
+            buildTool(
+                'record_type_create',
+                'Create a new record type for an object. '
+                + 'After creating a record type, you should: '
+                + '1. Optionally create a page layout for it (page_layout_create) '
+                + '2. Assign the page layout to profiles for this record type (page_layout_assign with recordType parameter) '
+                + '3. Assign the record type to profiles (record_type_assign_to_profiles)',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName',   'API name of the object e.g. Account or Car__c'),
+                        strProp('recordTypeName',  'Developer name for the record type - no spaces, no __c (e.g. Premium_Customer)'),
+                        strProp('label',           'Human-readable label (e.g. Premium Customer)'),
+                        strProp('description',     'Optional description of this record type'),
+                        strProp('active',          'true or false - whether record type is active (default true)'),
+                        strProp('businessProcess', 'Optional business process API name (for Case/Lead/Opportunity/Solution only)')
+                    },
+                    new List<String>{ 'objectApiName', 'recordTypeName', 'label' }
+                )
+            ),
+
+            buildTool(
+                'record_type_update',
+                'Update an existing record type - change label, description, or active status. '
+                + 'Always call record_type_list first to confirm the exact record type name. '
+                + 'Only include parameters you want to change.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName',  'API name of the object e.g. Account'),
+                        strProp('recordTypeName', 'Developer name of the record type to update'),
+                        strProp('label',          'New label - only include if changing'),
+                        strProp('description',    'New description - only include if changing'),
+                        strProp('active',         'true or false - only include if changing')
+                    },
+                    new List<String>{ 'objectApiName', 'recordTypeName' }
+                )
+            ),
+
+            buildTool(
+                'record_type_delete',
+                'Delete a record type via destructive deploy. '
+                + 'CRITICAL: Before deleting, you must reassign all records using this record type to a different record type. '
+                + 'Always call record_type_list first to confirm the exact record type name.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName',  'API name of the object e.g. Account'),
+                        strProp('recordTypeName', 'Developer name of the record type to delete')
+                    },
+                    new List<String>{ 'objectApiName', 'recordTypeName' }
+                )
+            ),
+
+            buildTool(
+                'record_type_assign_to_profiles',
+                'Assign a record type to one or more profiles, making it available for users with those profiles. '
+                + 'If default=true, this becomes the default record type for that profile. '
+                + 'Always call profile_list first to get exact profile names.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName',  'API name of the object e.g. Account'),
+                        strProp('recordTypeName', 'Developer name of the record type'),
+                        strProp('profiles',       'JSON array of profile names e.g. ["System Administrator","Standard User"] or "All" for all profiles'),
+                        strProp('default',        'true or false - set as default record type for these profiles (default false)')
+                    },
+                    new List<String>{ 'objectApiName', 'recordTypeName', 'profiles' }
+                )
+            ),
+
+            buildTool(
+                'record_type_remove_from_profiles',
+                'Remove a record type from one or more profiles, making it unavailable for users with those profiles. '
+                + 'Always call profile_list first to get exact profile names.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName',  'API name of the object e.g. Account'),
+                        strProp('recordTypeName', 'Developer name of the record type'),
+                        strProp('profiles',       'JSON array of profile names e.g. ["Sales User"]')
+                    },
+                    new List<String>{ 'objectApiName', 'recordTypeName', 'profiles' }
+                )
+            ),
+
+            buildTool(
+                'record_type_set_picklist_values',
+                'Set which picklist values are available for a record type. '
+                + 'This controls which picklist options users see when using this record type. '
+                + 'Always call record_type_list and sobject_field_describe first.',
+                buildParams(
+                    new List<Map<String, Object>>{
+                        strProp('objectApiName',  'API name of the object e.g. Opportunity'),
+                        strProp('recordTypeName', 'Developer name of the record type'),
+                        strProp('fieldName',      'API name of the picklist field e.g. Stage'),
+                        strProp('values',         'JSON array of picklist values to make available e.g. ["Prospecting","Closed Won"]'),
+                        strProp('defaultValue',   'Optional default value for this picklist on this record type')
+                    },
+                    new List<String>{ 'objectApiName', 'recordTypeName', 'fieldName', 'values' }
+                )
+            )
         };
     }
     

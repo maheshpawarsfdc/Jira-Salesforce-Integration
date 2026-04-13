@@ -101,6 +101,15 @@ public class FunctionRouter {
         else if (functionName == 'csv_read')        result = FunctionHelper.callCsvRead(args);
         else if (functionName == 'csv_bulk_process') result = FunctionHelper.callCsvBulkProcess(args);
 
+        // ── RECORD TYPE OPERATIONS ───────────────────────────────────
+        else if (functionName == 'record_type_list')                result = FunctionHelper.callListRecordTypes(args);
+        else if (functionName == 'record_type_create')              result = FunctionHelper.callCreateRecordType(args);
+        else if (functionName == 'record_type_update')              result = FunctionHelper.callUpdateRecordType(args);
+        else if (functionName == 'record_type_delete')              result = FunctionHelper.callDeleteRecordType(args);
+        else if (functionName == 'record_type_assign_to_profiles')  result = FunctionHelper.callAssignRecordTypeToProfiles(args);
+        else if (functionName == 'record_type_remove_from_profiles') result = FunctionHelper.callRemoveRecordTypeFromProfiles(args);
+        else if (functionName == 'record_type_set_picklist_values') result = FunctionHelper.callSetRecordTypePicklistValues(args);
+
         // ── QUERY ─────────────────────────────────────────────
         else if (functionName == 'run_tooling_api_query')   result = FunctionHelper.runToolingApiQuery(args);
 

@@ -491,6 +491,75 @@ public class ProfileHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // RECORD TYPE VISIBILITY - SIMPLIFIED FRAGMENT APPROACH
+    // Instead of modifying full profile XML, we stage fragments
+    // ─────────────────────────────────────────────────────────────
+
+    public static void addRecordTypeVisibility(
+        String profileName,
+        String objectApiName,
+        String recordTypeName,
+        Boolean isDefault
+    ) {
+        System.debug('ProfileHelper.addRecordTypeVisibility(): profile=' + profileName 
+            + ', object=' + objectApiName + ', RT=' + recordTypeName + ', default=' + isDefault);
+
+        // Build record type visibility fragment
+        String rtVisibilityXml = '<recordTypeVisibilities>\n';
+        rtVisibilityXml += '    <default>' + isDefault + '</default>\n';
+        rtVisibilityXml += '    <recordType>' + objectApiName + '.' + recordTypeName + '</recordType>\n';
+        rtVisibilityXml += '    <visible>true</visible>\n';
+        rtVisibilityXml += '</recordTypeVisibilities>';
+
+        // Stage as fragment - will be merged when building profile XML
+        String fragmentKey = 'profileRTVisibility.' + profileName + '.' + objectApiName + '.' + recordTypeName;
+        
+        ZipBuilder.addFile(
+            '__profile_rt_fragment__',
+            fragmentKey,
+            fragmentKey,
+            rtVisibilityXml
+        );
+
+        System.debug('ProfileHelper: record type visibility fragment staged');
+    }
+
+    public static void removeRecordTypeVisibility(
+        String profileName,
+        String objectApiName,
+        String recordTypeName
+    ) {
+        System.debug('ProfileHelper.removeRecordTypeVisibility(): profile=' + profileName 
+            + ', object=' + objectApiName + ', RT=' + recordTypeName);
+
+        // Add to destructive changes
+        String fullName = profileName + '.' + objectApiName + '.' + recordTypeName;
+        
+        ZipBuilder.addFile(
+            '__destructive__ProfileRecordType',
+            fullName,
+            '__destructive__ProfileRecordType__' + fullName,
+            '<members>' + fullName + '</members>'
+        );
+
+        System.debug('ProfileHelper: record type visibility queued for removal');
+    }
+
+    public static List<String> getAllProfileNames() {
+        List<Profile> profiles = [SELECT Name FROM Profile ORDER BY Name];
+        List<String> names = new List<String>();
+        for (Profile p : profiles) {
+            names.add(p.Name);
+        }
+        return names;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EXCEPTION CLASS
+    // ─────────────────────────────────────────────────────────────
+    public class ProfileHelperException extends Exception {}
+
+    // ─────────────────────────────────────────────────────────────
     // PRIVATE — Helpers
     // ─────────────────────────────────────────────────────────────
     private static String resolveProfileName(String profileName) {
