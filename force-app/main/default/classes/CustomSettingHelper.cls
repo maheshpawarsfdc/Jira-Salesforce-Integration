@@ -31,7 +31,7 @@ public class CustomSettingHelper {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/61.0';
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = UserInfo.getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('CustomSettingHelper: MetadataPort ready.');
             }
             return port;
@@ -89,10 +89,10 @@ public class CustomSettingHelper {
     // CREATE SETTING
     // ─────────────────────────────────────────────────────────────
     public static void createCustomSetting(Map<String, Object> args) {
-        String apiName     = getRequired(args, 'apiName');
-        String label       = getRequired(args, 'label');
-        String settingType = getOptional(args, 'type', 'Hierarchy');
-        String description = getOptional(args, 'description', null);
+        String apiName     = MetadataUtils.getRequired(args, 'apiName');
+        String label       = MetadataUtils.getRequired(args, 'label');
+        String settingType = MetadataUtils.getOptional(args, 'type', 'Hierarchy');
+        String description = MetadataUtils.getOptional(args, 'description', null);
 
         if (!apiName.endsWith('__c')) apiName += '__c';
 
@@ -110,10 +110,10 @@ public class CustomSettingHelper {
     // Reads existing fields from org, preserves them, adds new one
     // ─────────────────────────────────────────────────────────────
     public static void addFieldToCustomSetting(Map<String, Object> args) {
-        String apiName    = getRequired(args, 'apiName');
-        String fieldName  = getRequired(args, 'fieldName');
-        String fieldType  = getRequired(args, 'fieldType');
-        String fieldLabel = getRequired(args, 'fieldLabel');
+        String apiName    = MetadataUtils.getRequired(args, 'apiName');
+        String fieldName  = MetadataUtils.getRequired(args, 'fieldName');
+        String fieldType  = MetadataUtils.getRequired(args, 'fieldType');
+        String fieldLabel = MetadataUtils.getRequired(args, 'fieldLabel');
 
         if (!apiName.endsWith('__c'))   apiName   += '__c';
         if (!fieldName.endsWith('__c')) fieldName += '__c';
@@ -154,8 +154,8 @@ public class CustomSettingHelper {
     // Reads all existing fields, replaces the target field
     // ─────────────────────────────────────────────────────────────
     public static void updateCustomSettingField(Map<String, Object> args) {
-        String apiName   = getRequired(args, 'apiName');
-        String fieldName = getRequired(args, 'fieldName');
+        String apiName   = MetadataUtils.getRequired(args, 'apiName');
+        String fieldName = MetadataUtils.getRequired(args, 'fieldName');
 
         if (!apiName.endsWith('__c'))   apiName   += '__c';
         if (!fieldName.endsWith('__c')) fieldName += '__c';
@@ -166,8 +166,8 @@ public class CustomSettingHelper {
         Map<String, Object> existingField  = readSingleField(apiName, fieldName);
         List<String>        allFieldBlocks = readExistingFieldBlocks(apiName);
 
-        String newLabel = getOptional(args, 'fieldLabel', (String) existingField.get('label'));
-        String newType  = getOptional(args, 'fieldType',  (String) existingField.get('type'));
+        String newLabel = MetadataUtils.getOptional(args, 'fieldLabel', (String) existingField.get('label'));
+        String newType  = MetadataUtils.getOptional(args, 'fieldType',  (String) existingField.get('type'));
 
         Map<String, Object> mergedArgs = new Map<String, Object>(args);
         if (!mergedArgs.containsKey('fieldLabel')) mergedArgs.put('fieldLabel', newLabel);
@@ -201,8 +201,8 @@ public class CustomSettingHelper {
     // DELETE FIELD
     // ─────────────────────────────────────────────────────────────
     public static void deleteCustomSettingField(Map<String, Object> args) {
-        String apiName   = getRequired(args, 'apiName');
-        String fieldName = getRequired(args, 'fieldName');
+        String apiName   = MetadataUtils.getRequired(args, 'apiName');
+        String fieldName = MetadataUtils.getRequired(args, 'fieldName');
 
         if (!apiName.endsWith('__c'))   apiName   += '__c';
         if (!fieldName.endsWith('__c')) fieldName += '__c';
@@ -218,7 +218,7 @@ public class CustomSettingHelper {
     // DELETE SETTING
     // ─────────────────────────────────────────────────────────────
     public static void deleteCustomSetting(Map<String, Object> args) {
-        String apiName = getRequired(args, 'apiName');
+        String apiName = MetadataUtils.getRequired(args, 'apiName');
         if (!apiName.endsWith('__c')) apiName += '__c';
 
         System.debug('CustomSettingHelper.deleteCustomSetting(): ' + apiName);
@@ -348,11 +348,11 @@ public class CustomSettingHelper {
             + '<customSettingsType>' + safeType + '</customSettingsType>';
 
         if (String.isNotBlank(description)) {
-            xml += '<description>' + escapeXml(description) + '</description>';
+            xml += '<description>' + MetadataUtils.escapeXml(description) + '</description>';
         }
 
         xml += '<enableFeeds>false</enableFeeds>'
-            + '<label>' + escapeXml(safeLabel) + '</label>';
+            + '<label>' + MetadataUtils.escapeXml(safeLabel) + '</label>';
 
         for (String block : fieldBlocks) {
             xml += block;
@@ -377,27 +377,27 @@ public class CustomSettingHelper {
         String safeType  = String.isNotBlank(fieldType)  ? fieldType  : 'Text';
 
         String xml = '<fields>'
-            + '<fullName>' + escapeXml(fieldName) + '</fullName>';
+            + '<fullName>' + MetadataUtils.escapeXml(fieldName) + '</fullName>';
 
         if (safeType == 'Checkbox') {
             // Checkbox requires <defaultValue>, not <required>
-            xml += '<defaultValue>' + getOptional(args, 'defaultValue', 'false') + '</defaultValue>';
+            xml += '<defaultValue>' + MetadataUtils.getOptional(args, 'defaultValue', 'false') + '</defaultValue>';
         } else if (safeType == 'Text') {
-            Integer len = Integer.valueOf(getOptional(args, 'length', '255'));
+            Integer len = Integer.valueOf(MetadataUtils.getOptional(args, 'length', '255'));
             xml += '<length>' + len + '</length>';
         } else if (safeType == 'Number' || safeType == 'Currency' || safeType == 'Percent') {
-            Integer precision = Integer.valueOf(getOptional(args, 'precision', '18'));
-            Integer scale     = Integer.valueOf(getOptional(args, 'scale', '0'));
+            Integer precision = Integer.valueOf(MetadataUtils.getOptional(args, 'precision', '18'));
+            Integer scale     = Integer.valueOf(MetadataUtils.getOptional(args, 'scale', '0'));
             xml += '<precision>' + precision + '</precision>'
                 +  '<scale>'     + scale     + '</scale>';
         }
         // Checkbox, Date, DateTime, Email, Phone, TextArea, Url — no extra attributes
 
-        xml += '<label>' + escapeXml(safeLabel) + '</label>';
+        xml += '<label>' + MetadataUtils.escapeXml(safeLabel) + '</label>';
 
         // Checkbox fields cannot have <required> — Salesforce will reject the deploy
         if (safeType != 'Checkbox') {
-            xml += '<required>' + getOptional(args, 'required', 'false') + '</required>';
+            xml += '<required>' + MetadataUtils.getOptional(args, 'required', 'false') + '</required>';
         }
 
         xml += '<type>' + safeType + '</type>'
@@ -411,7 +411,7 @@ public class CustomSettingHelper {
     // ─────────────────────────────────────────────────────────────
     private static String buildFieldBlockFromMeta(MetadataService.CustomField f) {
         String xml = '<fields>'
-            + '<fullName>' + escapeXml(f.fullName) + '</fullName>';
+            + '<fullName>' + MetadataUtils.escapeXml(f.fullName) + '</fullName>';
 
         if (f.length != null && f.length > 0) {
             xml += '<length>' + f.length + '</length>';
@@ -430,7 +430,7 @@ public class CustomSettingHelper {
         Boolean safeReqd  = (f.required != null)        ? f.required : false;
         String  safeType  = String.isNotBlank(f.type_x) ? f.type_x  : 'Text';
 
-        xml += '<label>' + escapeXml(safeLabel) + '</label>';
+        xml += '<label>' + MetadataUtils.escapeXml(safeLabel) + '</label>';
 
         if (safeType == 'Checkbox') {
             String defaultVal = (f.defaultValue != null) ? String.valueOf(f.defaultValue) : 'false';
@@ -472,35 +472,6 @@ public class CustomSettingHelper {
         }
 
         ZipBuilder.addFile('__destructive__', member, 'destructiveChangesPost.xml', xml);
-    }
-
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new CustomSettingException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class CustomSettingException extends Exception {}

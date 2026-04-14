@@ -32,7 +32,7 @@ public class DeployService {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/' + API_VERSION;
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = UserInfo.getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('DeployService: MetadataPort ready.');
             }
             return port;
@@ -97,31 +97,31 @@ public class DeployService {
     // PARSE RESULT
     // Converts DeployResult into a human readable message
     // ─────────────────────────────────────────────────────────────
-    public static String parseResult(MetadataService.DeployResult result) {
-        if (result.success) {
-            return 'Deploy successful. '
-                + result.numberComponentsDeployed + ' component(s) deployed.';
-        }
+    // public static String parseResult(MetadataService.DeployResult result) {
+    //     if (result.success) {
+    //         return 'Deploy successful. '
+    //             + result.numberComponentsDeployed + ' component(s) deployed.';
+    //     }
 
-        // Build error message
-        String error = 'Deploy failed. ';
+    //     // Build error message
+    //     String error = 'Deploy failed. ';
 
-        if (String.isNotBlank(result.errorMessage)) {
-            error += result.errorMessage;
-        }
+    //     if (String.isNotBlank(result.errorMessage)) {
+    //         error += result.errorMessage;
+    //     }
 
-        // Include component level errors if available
-        if (result.details != null && result.details.componentFailures != null) {
-            for (MetadataService.DeployMessage msg : result.details.componentFailures) {
-                if (!msg.success) {
-                    error += '\n- ' + msg.fullName + ': ' + msg.problem;
-                }
-            }
-        }
+    //     // Include component level errors if available
+    //     if (result.details != null && result.details.componentFailures != null) {
+    //         for (MetadataService.DeployMessage msg : result.details.componentFailures) {
+    //             if (!msg.success) {
+    //                 error += '\n- ' + msg.fullName + ': ' + msg.problem;
+    //             }
+    //         }
+    //     }
 
-        System.debug('DeployService: deploy failed - ' + error);
-        return error;
-    }
+    //     System.debug('DeployService: deploy failed - ' + error);
+    //     return error;
+    // }
 
     public class DeployServiceException extends Exception {}
 }

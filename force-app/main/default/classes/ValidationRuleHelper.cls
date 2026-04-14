@@ -20,7 +20,7 @@ public class ValidationRuleHelper {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/61.0';
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = UserInfo.getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('ValidationRuleHelper: MetadataPort ready.');
             }
             return port;
@@ -32,7 +32,7 @@ public class ValidationRuleHelper {
     // LIST VALIDATION RULES
     // ─────────────────────────────────────────────────────────────
     public static List<Map<String, Object>> listValidationRules(Map<String, Object> args) {
-        String objectName = addSuffix(getRequired(args, 'objectName'));
+        String objectName = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
         System.debug('ValidationRuleHelper.listValidationRules() called for [' + objectName + ']');
 
         String query = 'SELECT Id, ValidationName, Active, Description, ErrorMessage, ErrorDisplayField '
@@ -82,13 +82,13 @@ public class ValidationRuleHelper {
     // CREATE VALIDATION RULE
     // ─────────────────────────────────────────────────────────────
     public static void createValidationRule(Map<String, Object> args) {
-        String objectName   = addSuffix(getRequired(args, 'objectName'));
-        String ruleName     = getRequired(args, 'ruleName');
-        String formula      = getRequired(args, 'errorConditionFormula');
-        String errorMsg     = getRequired(args, 'errorMessage');
-        String description  = getOptional(args, 'description', null);
-        String displayField = getOptional(args, 'errorDisplayField', null);
-        Boolean active      = Boolean.valueOf(getOptional(args, 'active', 'true'));
+        String objectName   = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String ruleName     = MetadataUtils.getRequired(args, 'ruleName');
+        String formula      = MetadataUtils.getRequired(args, 'errorConditionFormula');
+        String errorMsg     = MetadataUtils.getRequired(args, 'errorMessage');
+        String description  = MetadataUtils.getOptional(args, 'description', null);
+        String displayField = MetadataUtils.getOptional(args, 'errorDisplayField', null);
+        Boolean active      = Boolean.valueOf(MetadataUtils.getOptional(args, 'active', 'true'));
 
         System.debug('ValidationRuleHelper.createValidationRule() called');
         System.debug('object=' + objectName + ', rule=' + ruleName);
@@ -105,8 +105,8 @@ public class ValidationRuleHelper {
     // UPDATE VALIDATION RULE
     // ─────────────────────────────────────────────────────────────
     public static void updateValidationRule(Map<String, Object> args) {
-        String objectName = addSuffix(getRequired(args, 'objectName'));
-        String ruleName   = getRequired(args, 'ruleName');
+        String objectName = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String ruleName   = MetadataUtils.getRequired(args, 'ruleName');
         String fullName   = objectName + '.' + ruleName;
 
         System.debug('ValidationRuleHelper.updateValidationRule() called for [' + fullName + ']');
@@ -127,10 +127,10 @@ public class ValidationRuleHelper {
         String existingDesc     = String.isNotBlank(existing.description)           ? existing.description           : null;
         String existingField    = String.isNotBlank(existing.errorDisplayField)     ? existing.errorDisplayField     : null;
 
-        String formula      = getOptional(args, 'errorConditionFormula', existingFormula);
-        String errorMsg     = getOptional(args, 'errorMessage',          existingMsg);
-        String description  = getOptional(args, 'description',           existingDesc);
-        String displayField = getOptional(args, 'errorDisplayField',     existingField);
+        String formula      = MetadataUtils.getOptional(args, 'errorConditionFormula', existingFormula);
+        String errorMsg     = MetadataUtils.getOptional(args, 'errorMessage',          existingMsg);
+        String description  = MetadataUtils.getOptional(args, 'description',           existingDesc);
+        String displayField = MetadataUtils.getOptional(args, 'errorDisplayField',     existingField);
         Boolean active      = existingActive;
 
         String ruleBlock = buildValidationRuleBlock(ruleName, active, formula, errorMsg, description, displayField);
@@ -145,9 +145,9 @@ public class ValidationRuleHelper {
     // ACTIVATE / DEACTIVATE VALIDATION RULE
     // ─────────────────────────────────────────────────────────────
     public static void setValidationRuleActive(Map<String, Object> args) {
-        String objectName = addSuffix(getRequired(args, 'objectName'));
-        String ruleName   = getRequired(args, 'ruleName');
-        Boolean active    = Boolean.valueOf(getRequired(args, 'active'));
+        String objectName = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String ruleName   = MetadataUtils.getRequired(args, 'ruleName');
+        Boolean active    = Boolean.valueOf(MetadataUtils.getRequired(args, 'active'));
         String fullName   = objectName + '.' + ruleName;
 
         System.debug('ValidationRuleHelper.setValidationRuleActive() called for [' + fullName + '], active=' + active);
@@ -179,8 +179,8 @@ public class ValidationRuleHelper {
     // DELETE VALIDATION RULE
     // ─────────────────────────────────────────────────────────────
     public static void deleteValidationRule(Map<String, Object> args) {
-        String objectName = addSuffix(getRequired(args, 'objectName'));
-        String ruleName   = getRequired(args, 'ruleName');
+        String objectName = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String ruleName   = MetadataUtils.getRequired(args, 'ruleName');
         String fullName   = objectName + '.' + ruleName;
 
         System.debug('ValidationRuleHelper.deleteValidationRule() called for [' + fullName + ']');
@@ -204,20 +204,20 @@ public class ValidationRuleHelper {
         Boolean safeActive = (active != null) ? active : false;
 
         String xml = '<validationRules>'
-            + '<fullName>' + escapeXml(ruleName) + '</fullName>'
+            + '<fullName>' + MetadataUtils.escapeXml(ruleName) + '</fullName>'
             + '<active>'   + safeActive          + '</active>';
 
         if (String.isNotBlank(description)) {
-            xml += '<description>' + escapeXml(description) + '</description>';
+            xml += '<description>' + MetadataUtils.escapeXml(description) + '</description>';
         }
 
-        xml += '<errorConditionFormula>' + escapeXml(formula) + '</errorConditionFormula>';
+        xml += '<errorConditionFormula>' + MetadataUtils.escapeXml(formula) + '</errorConditionFormula>';
 
         if (String.isNotBlank(errorDisplayField)) {
-            xml += '<errorDisplayField>' + escapeXml(errorDisplayField) + '</errorDisplayField>';
+            xml += '<errorDisplayField>' + MetadataUtils.escapeXml(errorDisplayField) + '</errorDisplayField>';
         }
 
-        xml += '<errorMessage>' + escapeXml(errorMessage) + '</errorMessage>'
+        xml += '<errorMessage>' + MetadataUtils.escapeXml(errorMessage) + '</errorMessage>'
             + '</validationRules>';
 
         return xml;
@@ -272,10 +272,10 @@ public class ValidationRuleHelper {
 
         return '<?xml version="1.0" encoding="UTF-8"?>'
             + '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">'
-            + '<label>'       + escapeXml(objLabel)       + '</label>'
-            + '<pluralLabel>' + escapeXml(objPluralLabel) + '</pluralLabel>'
+            + '<label>'       + MetadataUtils.escapeXml(objLabel)       + '</label>'
+            + '<pluralLabel>' + MetadataUtils.escapeXml(objPluralLabel) + '</pluralLabel>'
             + '<nameField>'
-            +     '<label>' + escapeXml(nameFieldLabel) + '</label>'
+            +     '<label>' + MetadataUtils.escapeXml(nameFieldLabel) + '</label>'
             +     '<type>'  + nameFieldType             + '</type>'
             + '</nameField>'
             + '<deploymentStatus>Deployed</deploymentStatus>'
@@ -320,36 +320,5 @@ public class ValidationRuleHelper {
     // ─────────────────────────────────────────────────────────────
     // PRIVATE — Helpers
     // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&',  '&amp;')
-                  .replace('<',  '&lt;')
-                  .replace('>',  '&gt;')
-                  .replace('"',  '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String addSuffix(String name) {
-        if (String.isBlank(name)) return name;
-        name = name.trim();
-        return name.endsWith('__c') ? name : name + '__c';
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new ValidationRuleException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
-    }
-
     public class ValidationRuleException extends Exception {}
 }

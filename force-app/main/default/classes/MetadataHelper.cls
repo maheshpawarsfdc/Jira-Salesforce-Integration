@@ -8,7 +8,7 @@ public class MetadataHelper {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/61.0';
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = UserInfo.getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('            ── MetadataHelper: MetadataPort ready. Endpoint = ' + port.endpoint_x);
             }
             return port;
@@ -74,27 +74,27 @@ public class MetadataHelper {
     // SOBJECT — CREATE
     // ─────────────────────────────────────────────────────────────
     public static void createSObject(String objectName, Map<String, Object> args) {
-        objectName = addSuffix(objectName);
+        objectName = MetadataUtils.addSuffix(objectName);
         System.debug('            ── MetadataHelper.createSObject() called for [' + objectName + ']');
 
-        String nameFieldType  = getRequired(args, 'nameFieldType');
-        String nameFieldLabel = getRequired(args, 'nameFieldLabel');
-        String label          = getRequired(args, 'label');
-        String pluralLabel    = getRequired(args, 'pluralLabel');
-        String sharingModel   = getOptional(args, 'sharingModel', 'ReadWrite');
-        String description    = getOptional(args, 'description', null);
-        String autoNumFormat  = getOptional(args, 'autoNumberFormat', 'RES-{0000}');
+        String nameFieldType  = MetadataUtils.getRequired(args, 'nameFieldType');
+        String nameFieldLabel = MetadataUtils.getRequired(args, 'nameFieldLabel');
+        String label          = MetadataUtils.getRequired(args, 'label');
+        String pluralLabel    = MetadataUtils.getRequired(args, 'pluralLabel');
+        String sharingModel   = MetadataUtils.getOptional(args, 'sharingModel', 'ReadWrite');
+        String description    = MetadataUtils.getOptional(args, 'description', null);
+        String autoNumFormat  = MetadataUtils.getOptional(args, 'autoNumberFormat', 'RES-{0000}');
 
         // Build XML
         String xml = '<?xml version="1.0" encoding="UTF-8"?>';
         xml += '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">';
-        xml += '    <label>' + escapeXml(label) + '</label>';
-        xml += '    <pluralLabel>' + escapeXml(pluralLabel) + '</pluralLabel>';
+        xml += '    <label>' + MetadataUtils.escapeXml(label) + '</label>';
+        xml += '    <pluralLabel>' + MetadataUtils.escapeXml(pluralLabel) + '</pluralLabel>';
         if (String.isNotBlank(description)) {
-            xml += '    <description>' + escapeXml(description) + '</description>';
+            xml += '    <description>' + MetadataUtils.escapeXml(description) + '</description>';
         }
         xml += '    <nameField>';
-        xml += '        <label>' + escapeXml(nameFieldLabel) + '</label>';
+        xml += '        <label>' + MetadataUtils.escapeXml(nameFieldLabel) + '</label>';
         xml += '        <type>' + nameFieldType + '</type>';
         if (nameFieldType == 'AutoNumber') {
             xml += '        <displayFormat>' + autoNumFormat + '</displayFormat>';
@@ -116,7 +116,7 @@ public class MetadataHelper {
     // TAB — CREATE FOR OBJECT (called automatically on object create)
     // ─────────────────────────────────────────────────────────────
     public static void createTabForObject(String objectName, String label) {
-        objectName = addSuffix(objectName);
+        objectName = MetadataUtils.addSuffix(objectName);
         System.debug('            ── MetadataHelper.createTabForObject() called for [' + objectName + ']');
 
         String tabXml = '<?xml version="1.0" encoding="UTF-8"?>'
@@ -137,15 +137,15 @@ public class MetadataHelper {
     // TAB — STANDALONE CREATE (called from tool directly)
     // ─────────────────────────────────────────────────────────────
     public static void createTab(String objectName, Map<String, Object> args) {
-        objectName = addSuffix(objectName);
-        String motif = getOptional(args, 'motif', 'Custom18: Form');
+        objectName = MetadataUtils.addSuffix(objectName);
+        String motif = MetadataUtils.getOptional(args, 'motif', 'Custom18: Form');
 
         System.debug('            ── MetadataHelper.createTab() called for [' + objectName + ']');
 
         String tabXml = '<?xml version="1.0" encoding="UTF-8"?>'
             + '<CustomTab xmlns="http://soap.sforce.com/2006/04/metadata">'
             + '<customObject>true</customObject>'
-            + '<motif>' + escapeXml(motif) + '</motif>'
+            + '<motif>' + MetadataUtils.escapeXml(motif) + '</motif>'
             + '</CustomTab>';
 
         String filePath = 'tabs/' + objectName + '.tab';
@@ -194,7 +194,7 @@ public class MetadataHelper {
     // SOBJECT — UPDATE
     // ─────────────────────────────────────────────────────────────
     public static void updateSObject(String objectName, Map<String, Object> args) {
-        objectName = addSuffix(objectName);
+        objectName = MetadataUtils.addSuffix(objectName);
         System.debug('            ── MetadataHelper.updateSObject() called for [' + objectName + ']');
 
         // For updates we must read current state first to preserve existing settings
@@ -210,9 +210,9 @@ public class MetadataHelper {
         MetadataService.CustomObject obj = (MetadataService.CustomObject) records[0];
 
         // Apply updates
-        String newLabel       = getOptional(args, 'label', null);
-        String newPluralLabel = getOptional(args, 'pluralLabel', null);
-        String newDesc        = getOptional(args, 'description', null);
+        String newLabel       = MetadataUtils.getOptional(args, 'label', null);
+        String newPluralLabel = MetadataUtils.getOptional(args, 'pluralLabel', null);
+        String newDesc        = MetadataUtils.getOptional(args, 'description', null);
         if (String.isNotBlank(newLabel))       obj.label       = newLabel;
         if (String.isNotBlank(newPluralLabel)) obj.pluralLabel = newPluralLabel;
         if (String.isNotBlank(newDesc))        obj.description = newDesc;
@@ -220,14 +220,14 @@ public class MetadataHelper {
         // Build XML from updated object
         String xml = '<?xml version="1.0" encoding="UTF-8"?>';
         xml += '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">';
-        xml += '    <label>' + escapeXml(obj.label) + '</label>';
-        xml += '    <pluralLabel>' + escapeXml(obj.pluralLabel) + '</pluralLabel>';
+        xml += '    <label>' + MetadataUtils.escapeXml(obj.label) + '</label>';
+        xml += '    <pluralLabel>' + MetadataUtils.escapeXml(obj.pluralLabel) + '</pluralLabel>';
         if (String.isNotBlank(obj.description)) {
-            xml += '    <description>' + escapeXml(obj.description) + '</description>';
+            xml += '    <description>' + MetadataUtils.escapeXml(obj.description) + '</description>';
         }
         if (obj.nameField != null) {
             xml += '    <nameField>';
-            xml += '        <label>' + escapeXml(obj.nameField.label) + '</label>';
+            xml += '        <label>' + MetadataUtils.escapeXml(obj.nameField.label) + '</label>';
             xml += '        <type>' + obj.nameField.type_x + '</type>';
             xml += '    </nameField>';
         }
@@ -244,7 +244,7 @@ public class MetadataHelper {
     // SOBJECT — DELETE
     // ─────────────────────────────────────────────────────────────
     public static void deleteSObject(String objectName) {
-        objectName = addSuffix(objectName);
+        objectName = MetadataUtils.addSuffix(objectName);
         System.debug('            ── MetadataHelper.deleteSObject() called for [' + objectName + ']');
 
         // Merge into existing destructiveChangesPost.xml if present
@@ -306,7 +306,7 @@ public class MetadataHelper {
     // ─────────────────────────────────────────────────────────────
     public static Map<String, Object> describeSObjectField(String objectName, String fieldName) {
         objectName = addObjectSuffix(objectName);
-        fieldName  = addFieldSuffix(fieldName);
+        fieldName  = MetadataUtils.addSuffix(fieldName);
         System.debug('            ── MetadataHelper.describeSObjectField() called for [' + objectName + '.' + fieldName + ']');
 
         Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
@@ -336,9 +336,9 @@ public class MetadataHelper {
     // ─────────────────────────────────────────────────────────────
     public static void createField(String objectName, String fieldName, Map<String, Object> args) {
         objectName = addObjectSuffix(objectName);
-        fieldName  = addFieldSuffix(fieldName);
-        String fieldType = getRequired(args, 'type');
-        String label     = getRequired(args, 'label');
+        fieldName  = MetadataUtils.addSuffix(fieldName);
+        String fieldType = MetadataUtils.getRequired(args, 'type');
+        String label     = MetadataUtils.getRequired(args, 'label');
 
         System.debug('            ── MetadataHelper.createField() called for [' + objectName + '.' + fieldName + ']');
 
@@ -554,10 +554,10 @@ public class MetadataHelper {
 
         return '<?xml version="1.0" encoding="UTF-8"?>'
             + '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">'
-            + '<label>' + escapeXml(objLabel) + '</label>'
-            + '<pluralLabel>' + escapeXml(objPluralLabel) + '</pluralLabel>'
+            + '<label>' + MetadataUtils.escapeXml(objLabel) + '</label>'
+            + '<pluralLabel>' + MetadataUtils.escapeXml(objPluralLabel) + '</pluralLabel>'
             + '<nameField>'
-            +     '<label>' + escapeXml(nameFieldLabel) + '</label>'
+            +     '<label>' + MetadataUtils.escapeXml(nameFieldLabel) + '</label>'
             +     '<type>' + nameFieldType + '</type>'
             + '</nameField>'
             + '<deploymentStatus>Deployed</deploymentStatus>'
@@ -570,41 +570,41 @@ public class MetadataHelper {
     private static String buildFieldXmlBlock(String fieldName, String fieldType, String label, Map<String, Object> args) {
         String xml = '<fields>';
         xml += '<fullName>' + fieldName + '</fullName>';
-        xml += '<label>' + escapeXml(label) + '</label>';
+        xml += '<label>' + MetadataUtils.escapeXml(label) + '</label>';
         xml += '<type>' + fieldType + '</type>';
 
-        String req = getOptional(args, 'required', 'false');
+        String req = MetadataUtils.getOptional(args, 'required', 'false');
         if (req == 'true') xml += '<required>true</required>';
 
-        String fieldDesc = getOptional(args, 'description', null);
-        if (String.isNotBlank(fieldDesc)) xml += '<description>' + escapeXml(fieldDesc) + '</description>';
+        String fieldDesc = MetadataUtils.getOptional(args, 'description', null);
+        if (String.isNotBlank(fieldDesc)) xml += '<description>' + MetadataUtils.escapeXml(fieldDesc) + '</description>';
 
-        String help = getOptional(args, 'helpText', null);
-        if (String.isNotBlank(help)) xml += '<inlineHelpText>' + escapeXml(help) + '</inlineHelpText>';
+        String help = MetadataUtils.getOptional(args, 'helpText', null);
+        if (String.isNotBlank(help)) xml += '<inlineHelpText>' + MetadataUtils.escapeXml(help) + '</inlineHelpText>';
 
         if (fieldType == 'Text') {
-            xml += '<length>' + getOptional(args, 'length', '255') + '</length>';
+            xml += '<length>' + MetadataUtils.getOptional(args, 'length', '255') + '</length>';
         } else if (fieldType == 'TextArea') {
             xml += '<length>255</length>';
         } else if (fieldType == 'LongTextArea') {
             xml += '<length>32768</length>';
             xml += '<visibleLines>5</visibleLines>';
         } else if (fieldType == 'Number' || fieldType == 'Currency' || fieldType == 'Percent') {
-            xml += '<precision>' + getOptional(args, 'precision', '18') + '</precision>';
-            xml += '<scale>' + getOptional(args, 'scale', '2') + '</scale>';
+            xml += '<precision>' + MetadataUtils.getOptional(args, 'precision', '18') + '</precision>';
+            xml += '<scale>' + MetadataUtils.getOptional(args, 'scale', '2') + '</scale>';
         } else if (fieldType == 'Checkbox') {
-            xml += '<defaultValue>' + getOptional(args, 'defaultValue', 'false') + '</defaultValue>';
+            xml += '<defaultValue>' + MetadataUtils.getOptional(args, 'defaultValue', 'false') + '</defaultValue>';
         } else if (fieldType == 'Picklist' || fieldType == 'MultiselectPicklist') {
-            String vals = getRequired(args, 'picklistValues');
+            String vals = MetadataUtils.getRequired(args, 'picklistValues');
             xml += '<valueSet><restricted>false</restricted><valueSetDefinition><sorted>false</sorted>';
             Boolean isFirst = true;
             for (String v : vals.split(',')) {
                 String val = v.trim();
                 if (String.isBlank(val)) continue;
                 xml += '<value>'
-                    + '<fullName>' + escapeXml(val) + '</fullName>'
+                    + '<fullName>' + MetadataUtils.escapeXml(val) + '</fullName>'
                     + '<default>' + (isFirst ? 'false' : 'false') + '</default>'
-                    + '<label>' + escapeXml(val) + '</label>'
+                    + '<label>' + MetadataUtils.escapeXml(val) + '</label>'
                     + '</value>';
                 isFirst = false;
             }
@@ -613,11 +613,11 @@ public class MetadataHelper {
                 xml += '<visibleLines>4</visibleLines>';
             }
         } else if (fieldType == 'Lookup' || fieldType == 'MasterDetail') {
-            String refTo   = getRequired(args, 'referenceTo');
+            String refTo   = MetadataUtils.getRequired(args, 'referenceTo');
             xml += '<referenceTo>' + refTo + '</referenceTo>';
             // relationshipName must be unique on the *parent* object; LLM-supplied defaults often collide (e.g. "Account").
             // Generate a deploy-safe unique name without extra API calls.
-            String relName = buildRelationshipNameForLookup(getOptional(args, 'sObjectName', ''), fieldName, refTo);
+            String relName = buildRelationshipNameForLookup(MetadataUtils.getOptional(args, 'sObjectName', ''), fieldName, refTo);
             xml += '<relationshipName>' + relName + '</relationshipName>';
             if (fieldType == 'MasterDetail') {
                 xml += '<reparentableMasterDetail>false</reparentableMasterDetail>';
@@ -683,7 +683,7 @@ public class MetadataHelper {
     // ─────────────────────────────────────────────────────────────
     public static void updateField(String objectName, String fieldName, Map<String, Object> args) {
         objectName = addObjectSuffix(objectName);
-        fieldName  = addFieldSuffix(fieldName);
+        fieldName  = MetadataUtils.addSuffix(fieldName);
         String fullName = objectName + '.' + fieldName;
 
         System.debug('            ── MetadataHelper.updateField() called for [' + fullName + ']');
@@ -700,10 +700,10 @@ public class MetadataHelper {
         MetadataService.CustomField field = (MetadataService.CustomField) records[0];
 
         // Apply requested updates
-        String newLabel    = getOptional(args, 'label', null);
-        String newDesc     = getOptional(args, 'description', null);
-        String newHelp     = getOptional(args, 'helpText', null);
-        String newRequired = getOptional(args, 'required', null);
+        String newLabel    = MetadataUtils.getOptional(args, 'label', null);
+        String newDesc     = MetadataUtils.getOptional(args, 'description', null);
+        String newHelp     = MetadataUtils.getOptional(args, 'helpText', null);
+        String newRequired = MetadataUtils.getOptional(args, 'required', null);
         if (String.isNotBlank(newLabel))    field.label          = newLabel;
         if (String.isNotBlank(newDesc))     field.description    = newDesc;
         if (String.isNotBlank(newHelp))     field.inlineHelpText = newHelp;
@@ -712,11 +712,11 @@ public class MetadataHelper {
         // Build field XML block with all preserved + updated settings
         String fieldXml = '<fields>';
         fieldXml += '<fullName>' + fieldName + '</fullName>';
-        fieldXml += '<label>' + escapeXml(field.label) + '</label>';
+        fieldXml += '<label>' + MetadataUtils.escapeXml(field.label) + '</label>';
         fieldXml += '<type>' + field.type_x + '</type>';
         if (field.required == true) fieldXml += '<required>true</required>';
-        if (String.isNotBlank(field.description))    fieldXml += '<description>' + escapeXml(field.description) + '</description>';
-        if (String.isNotBlank(field.inlineHelpText)) fieldXml += '<inlineHelpText>' + escapeXml(field.inlineHelpText) + '</inlineHelpText>';
+        if (String.isNotBlank(field.description))    fieldXml += '<description>' + MetadataUtils.escapeXml(field.description) + '</description>';
+        if (String.isNotBlank(field.inlineHelpText)) fieldXml += '<inlineHelpText>' + MetadataUtils.escapeXml(field.inlineHelpText) + '</inlineHelpText>';
         if (field.length != null)    fieldXml += '<length>' + field.length + '</length>';
         if (field.precision != null) fieldXml += '<precision>' + field.precision + '</precision>';
         if (field.scale != null)     fieldXml += '<scale>' + field.scale + '</scale>';
@@ -730,9 +730,9 @@ public class MetadataHelper {
             fieldXml += '<valueSet><restricted>false</restricted><valueSetDefinition><sorted>false</sorted>';
             for (MetadataService.CustomValue cv : field.valueSet.valueSetDefinition.value) {
                 fieldXml += '<value>'
-                    + '<fullName>' + escapeXml(cv.fullName) + '</fullName>'
+                    + '<fullName>' + MetadataUtils.escapeXml(cv.fullName) + '</fullName>'
                     + '<default>false</default>'
-                    + '<label>' + escapeXml(cv.label) + '</label>'
+                    + '<label>' + MetadataUtils.escapeXml(cv.label) + '</label>'
                     + '</value>';
             }
             fieldXml += '</valueSetDefinition></valueSet>';
@@ -765,7 +765,7 @@ public class MetadataHelper {
     // ─────────────────────────────────────────────────────────────
     public static void deleteField(String objectName, String fieldName) {
         objectName = addObjectSuffix(objectName);
-        fieldName  = addFieldSuffix(fieldName);
+        fieldName  = MetadataUtils.addSuffix(fieldName);
         String fullName = objectName + '.' + fieldName;
         System.debug('            ── MetadataHelper.deleteField() called for [' + fullName + ']');
 
@@ -832,30 +832,11 @@ public class MetadataHelper {
     // PRIVATE — Result checkers
     // ─────────────────────────────────────────────────────────────
 
-    private static void checkUpsertResults(MetadataService.UpsertResult[] results) {
-        if (results == null || results.isEmpty()) {
-            throw new MetadataHelperException('No results returned from Metadata API');
-        }
-        for (MetadataService.UpsertResult result : results) {
-            if (!result.success) {
-                String errors = '';
-                if (result.errors != null) {
-                    for (MetadataService.Error err : result.errors) {
-                        errors += err.message + ' (' + err.statusCode + '). ';
-                    }
-                }
-                System.debug('            ✖ MetadataHelper: upsert FAILED for [' + result.fullName + ']: ' + errors);
-                throw new MetadataHelperException('Metadata API error on ' + result.fullName + ': ' + errors);
-            }
-            System.debug('            ✔ MetadataHelper: Salesforce confirmed success for [' + result.fullName + ']');
-        }
-    }
-
-    // private static void checkDeleteResults(MetadataService.DeleteResult[] results) {
+    // private static void checkUpsertResults(MetadataService.UpsertResult[] results) {
     //     if (results == null || results.isEmpty()) {
     //         throw new MetadataHelperException('No results returned from Metadata API');
     //     }
-    //     for (MetadataService.DeleteResult result : results) {
+    //     for (MetadataService.UpsertResult result : results) {
     //         if (!result.success) {
     //             String errors = '';
     //             if (result.errors != null) {
@@ -863,47 +844,13 @@ public class MetadataHelper {
     //                     errors += err.message + ' (' + err.statusCode + '). ';
     //                 }
     //             }
-    //             System.debug('            ✖ MetadataHelper: delete FAILED for [' + result.fullName + ']: ' + errors);
-    //             throw new MetadataHelperException('Delete error on ' + result.fullName + ': ' + errors);
+    //             System.debug('            ✖ MetadataHelper: upsert FAILED for [' + result.fullName + ']: ' + errors);
+    //             throw new MetadataHelperException('Metadata API error on ' + result.fullName + ': ' + errors);
     //         }
-    //         System.debug('            ✔ MetadataHelper: Salesforce confirmed delete for [' + result.fullName + ']');
+    //         System.debug('            ✔ MetadataHelper: Salesforce confirmed success for [' + result.fullName + ']');
     //     }
     // }
 
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Session ID
-    // ─────────────────────────────────────────────────────────────
-    private static String getSessionId() {
-        if (Test.isRunningTest()) return UserInfo.getSessionId();
-        try {
-            PageReference vfPage = Page.SessionId;
-            String content = vfPage.getContent().toString();
-            Integer s = content.indexOf('Start_Of_Session_Id') + 'Start_Of_Session_Id'.length();
-            Integer e = content.indexOf('End_Of_Session_Id');
-            return content.substring(s, e);
-        } catch (Exception ex) {
-            return UserInfo.getSessionId();
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Parameter helpers
-    // ─────────────────────────────────────────────────────────────
-
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String addSuffix(String name) {
-        if (String.isBlank(name)) return name;
-        name = name.trim();
-        return name.endsWith('__c') ? name : name + '__c';
-    }
     // For OBJECT names — only add __c if the object isn't already in the schema as-is
     private static String addObjectSuffix(String name) {
         if (String.isBlank(name)) return name;
@@ -924,50 +871,28 @@ public class MetadataHelper {
 
     // For FIELD names — new fields are always custom, always need __c
     // UNLESS it's a standard field (for read/describe only, not for create)
-    private static String addFieldSuffix(String name) {
-        if (String.isBlank(name)) return name;
-        name = name.trim();
-        return name.endsWith('__c') ? name : name + '__c';
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new MetadataHelperException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
-    }
-
-    private static MetadataService.ValueSet buildPicklistValueSet(String csvValues) {
-        MetadataService.ValueSet valueSet = new MetadataService.ValueSet();
-        MetadataService.ValueSetValuesDefinition definition =
-            new MetadataService.ValueSetValuesDefinition();
-        List<MetadataService.CustomValue> picklistValues = new List<MetadataService.CustomValue>();
-        Boolean isFirst = true;
-        for (String val : csvValues.split(',')) {
-            val = val.trim();
-            if (String.isNotBlank(val)) {
-                MetadataService.CustomValue cv = new MetadataService.CustomValue();
-                cv.fullName  = val;
-                cv.label     = val;
-                cv.isActive  = true;
-                cv.default_x = isFirst;
-                picklistValues.add(cv);
-                isFirst = false;
-            }
-        }
-        definition.value            = picklistValues;
-        valueSet.valueSetDefinition = definition;
-        return valueSet;
-    }
+    // private static MetadataService.ValueSet buildPicklistValueSet(String csvValues) {
+    //     MetadataService.ValueSet valueSet = new MetadataService.ValueSet();
+    //     MetadataService.ValueSetValuesDefinition definition =
+    //         new MetadataService.ValueSetValuesDefinition();
+    //     List<MetadataService.CustomValue> picklistValues = new List<MetadataService.CustomValue>();
+    //     Boolean isFirst = true;
+    //     for (String val : csvValues.split(',')) {
+    //         val = val.trim();
+    //         if (String.isNotBlank(val)) {
+    //             MetadataService.CustomValue cv = new MetadataService.CustomValue();
+    //             cv.fullName  = val;
+    //             cv.label     = val;
+    //             cv.isActive  = true;
+    //             cv.default_x = isFirst;
+    //             picklistValues.add(cv);
+    //             isFirst = false;
+    //         }
+    //     }
+    //     definition.value            = picklistValues;
+    //     valueSet.valueSetDefinition = definition;
+    //     return valueSet;
+    // }
 
     public class MetadataHelperException extends Exception {}
 }

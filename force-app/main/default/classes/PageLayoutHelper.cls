@@ -35,7 +35,7 @@ public class PageLayoutHelper {
     // LIST LAYOUTS
     // ─────────────────────────────────────────────────────────────
     public static List<Map<String, Object>> listPageLayouts(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
+        String objectApiName = MetadataUtils.getRequired(args, 'objectApiName');
         System.debug('PageLayoutHelper.listPageLayouts(): ' + objectApiName);
 
         String query = 'SELECT Id, FullName, TableEnumOrId FROM Layout '
@@ -72,9 +72,9 @@ public class PageLayoutHelper {
     // Required fields always prepended to first section
     // ─────────────────────────────────────────────────────────────
     public static void createPageLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
-        String sectionsJson  = getOptional(args, 'sections', '');
+        String objectApiName = MetadataUtils.getRequired(args, 'objectApiName');
+        String layoutName    = MetadataUtils.getRequired(args, 'layoutName');
+        String sectionsJson  = MetadataUtils.getOptional(args, 'sections', '');
 
         String fullName = objectApiName + '-' + layoutName;
         System.debug('PageLayoutHelper.createPageLayout(): ' + fullName);
@@ -96,10 +96,10 @@ public class PageLayoutHelper {
     // ADD FIELDS TO EXISTING LAYOUT
     // ─────────────────────────────────────────────────────────────
     public static void addFieldsToLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
-        String sectionLabel  = getOptional(args, 'sectionLabel', 'Information');
-        String fieldsJson    = getRequired(args, 'fields');
+        String objectApiName = MetadataUtils.getRequired(args, 'objectApiName');
+        String layoutName    = MetadataUtils.getRequired(args, 'layoutName');
+        String sectionLabel  = MetadataUtils.getOptional(args, 'sectionLabel', 'Information');
+        String fieldsJson    = MetadataUtils.getRequired(args, 'fields');
 
         String fullName        = objectApiName + '-' + layoutName;
         List<String> newFields = parseStringArray(fieldsJson);
@@ -127,9 +127,9 @@ public class PageLayoutHelper {
     // REMOVE FIELDS FROM EXISTING LAYOUT
     // ─────────────────────────────────────────────────────────────
     public static void removeFieldsFromLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
-        String fieldsJson    = getRequired(args, 'fields');
+        String objectApiName = MetadataUtils.getRequired(args, 'objectApiName');
+        String layoutName    = MetadataUtils.getRequired(args, 'layoutName');
+        String fieldsJson    = MetadataUtils.getRequired(args, 'fields');
 
         String fullName      = objectApiName + '-' + layoutName;
         Set<String> toRemove = new Set<String>(parseStringArray(fieldsJson));
@@ -157,8 +157,8 @@ public class PageLayoutHelper {
     // DELETE LAYOUT
     // ─────────────────────────────────────────────────────────────
     public static void deletePageLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
+        String objectApiName = MetadataUtils.getRequired(args, 'objectApiName');
+        String layoutName    = MetadataUtils.getRequired(args, 'layoutName');
         String fullName      = objectApiName + '-' + layoutName;
 
         System.debug('PageLayoutHelper.deletePageLayout(): ' + fullName);
@@ -170,10 +170,10 @@ public class PageLayoutHelper {
     // ASSIGN LAYOUT TO PROFILES
     // ─────────────────────────────────────────────────────────────
     public static void assignPageLayout(Map<String, Object> args) {
-        String objectApiName  = getRequired(args, 'objectApiName');
-        String layoutName     = getRequired(args, 'layoutName');
-        String profilesParam  = getOptional(args, 'profiles', '');
-        String recordType     = getOptional(args, 'recordType', '');
+        String objectApiName  = MetadataUtils.getRequired(args, 'objectApiName');
+        String layoutName     = MetadataUtils.getRequired(args, 'layoutName');
+        String profilesParam  = MetadataUtils.getOptional(args, 'profiles', '');
+        String recordType     = MetadataUtils.getOptional(args, 'recordType', '');
 
         String fullLayoutName = objectApiName + '-' + layoutName;
         System.debug('PageLayoutHelper.assignPageLayout(): ' + fullLayoutName);
@@ -376,7 +376,7 @@ public class PageLayoutHelper {
     private static String serializeLayoutToXml(Metadata.Layout layout) {
         String xml = '<?xml version="1.0" encoding="UTF-8"?>'
             + '<Layout xmlns="' + NAMESPACE + '">'
-            + '<fullName>' + escapeXml(layout.fullName) + '</fullName>';
+            + '<fullName>' + MetadataUtils.escapeXml(layout.fullName) + '</fullName>';
 
         if (layout.layoutSections != null) {
             for (Metadata.LayoutSection section : layout.layoutSections) {
@@ -399,7 +399,7 @@ public class PageLayoutHelper {
             + '<customLabel>'   + (section.customLabel   == true ? 'true' : 'false') + '</customLabel>'
             + '<detailHeading>' + (section.detailHeading == true ? 'true' : 'false') + '</detailHeading>'
             + '<editHeading>'   + (section.editHeading   == true ? 'true' : 'false') + '</editHeading>'
-            + '<label>' + escapeXml(section.label) + '</label>';
+            + '<label>' + MetadataUtils.escapeXml(section.label) + '</label>';
 
         if (section.layoutColumns != null) {
             for (Metadata.LayoutColumn col : section.layoutColumns) {
@@ -417,7 +417,7 @@ public class PageLayoutHelper {
                         
                         xml += '<layoutItems>'
                             + '<behavior>' + behavior + '</behavior>'
-                            + '<field>'    + escapeXml(item.field) + '</field>'
+                            + '<field>'    + MetadataUtils.escapeXml(item.field) + '</field>'
                             + '</layoutItems>';
                     }
                 }
@@ -437,7 +437,7 @@ public class PageLayoutHelper {
     private static String injectFieldsIntoXml(String xml, String sectionLabel,
         List<String> newFields, Set<String> requiredFields) {
 
-        String labelTag = '<label>' + escapeXml(sectionLabel) + '</label>';
+        String labelTag = '<label>' + MetadataUtils.escapeXml(sectionLabel) + '</label>';
 
         if (!xml.contains(labelTag)) {
             Metadata.LayoutSection newSection =
@@ -459,7 +459,7 @@ public class PageLayoutHelper {
             
             newItems += '<layoutItems>'
                 + '<behavior>' + behavior + '</behavior>'
-                + '<field>'    + escapeXml(f) + '</field>'
+                + '<field>'    + MetadataUtils.escapeXml(f) + '</field>'
                 + '</layoutItems>';
         }
 
@@ -476,7 +476,7 @@ public class PageLayoutHelper {
     // ─────────────────────────────────────────────────────────────
     private static String removeFieldsFromXml(String xml, Set<String> fieldsToRemove) {
         for (String fieldName : fieldsToRemove) {
-            String fieldTag = '<field>' + escapeXml(fieldName) + '</field>';
+            String fieldTag = '<field>' + MetadataUtils.escapeXml(fieldName) + '</field>';
             while (xml.contains(fieldTag)) {
                 Integer itemStart = xml.lastIndexOf('<layoutItems>', xml.indexOf(fieldTag));
                 Integer itemEnd   = xml.indexOf('</layoutItems>', itemStart)
@@ -585,9 +585,9 @@ public class PageLayoutHelper {
         String fullLayoutName, String recordType) {
 
         return '<layoutAssignments>'
-            + '<layout>' + escapeXml(fullLayoutName) + '</layout>'
+            + '<layout>' + MetadataUtils.escapeXml(fullLayoutName) + '</layout>'
             + (String.isNotBlank(recordType)
-                ? '<recordType>' + escapeXml(recordType) + '</recordType>' : '')
+                ? '<recordType>' + MetadataUtils.escapeXml(recordType) + '</recordType>' : '')
             + '</layoutAssignments>';
     }
 
@@ -721,34 +721,6 @@ public class PageLayoutHelper {
             }
         }
         return result;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new PageLayoutException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class PageLayoutException extends Exception {}

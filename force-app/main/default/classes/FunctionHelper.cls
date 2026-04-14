@@ -613,10 +613,10 @@ public class FunctionHelper {
     // CSV METHODS
     // ─────────────────────────────────────────────────────────────
  
-    public static String callCsvListFiles(Map<String, Object> args) {
-        System.debug('FunctionHelper.callCsvListFiles() called');
-        return JSON.serialize(CsvProcessor.listCsvFiles(args));
-    }
+    // public static String callCsvListFiles(Map<String, Object> args) {
+    //     System.debug('FunctionHelper.callCsvListFiles() called');
+    //     return JSON.serialize(CsvProcessor.listCsvFiles(args));
+    // }
  
     public static String callCsvRead(Map<String, Object> args) {
         System.debug('FunctionHelper.callCsvRead() called');

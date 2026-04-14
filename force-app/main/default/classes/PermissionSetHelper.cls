@@ -27,7 +27,7 @@ public class PermissionSetHelper {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/61.0';
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = UserInfo.getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('PermissionSetHelper: MetadataPort ready.');
             }
             return port;
@@ -89,18 +89,18 @@ public class PermissionSetHelper {
     // Optional args: description
     // ─────────────────────────────────────────────────────────────
     public static void createPermissionSet(Map<String, Object> args) {
-        String apiName    = getRequired(args, 'apiName');
-        String label      = getRequired(args, 'label');
-        String psDesc     = getOptional(args, 'description', null);
+        String apiName    = MetadataUtils.getRequired(args, 'apiName');
+        String label      = MetadataUtils.getRequired(args, 'label');
+        String psDesc     = MetadataUtils.getOptional(args, 'description', null);
 
         System.debug('PermissionSetHelper.createPermissionSet() called');
         System.debug('apiName = ' + apiName + ', label = ' + label);
 
         String xml = '<?xml version="1.0" encoding="UTF-8"?>';
         xml += '<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">';
-        xml += '    <label>' + escapeXml(label) + '</label>';
+        xml += '    <label>' + MetadataUtils.escapeXml(label) + '</label>';
         if (String.isNotBlank(psDesc)) {
-            xml += '    <description>' + escapeXml(psDesc) + '</description>';
+            xml += '    <description>' + MetadataUtils.escapeXml(psDesc) + '</description>';
         }
         xml += '</PermissionSet>';
 
@@ -121,10 +121,10 @@ public class PermissionSetHelper {
     // actual deployed XML file with all permissions intact.
     // ─────────────────────────────────────────────────────────────
     public static void clonePermissionSet(Map<String, Object> args) {
-        String sourceName  = getRequired(args, 'sourcePermissionSetName');
-        String newApiName  = getRequired(args, 'newApiName');
-        String newLabel    = getRequired(args, 'newLabel');
-        String description = getOptional(args, 'description', null);
+        String sourceName  = MetadataUtils.getRequired(args, 'sourcePermissionSetName');
+        String newApiName  = MetadataUtils.getRequired(args, 'newApiName');
+        String newLabel    = MetadataUtils.getRequired(args, 'newLabel');
+        String description = MetadataUtils.getOptional(args, 'description', null);
 
         System.debug('PermissionSetHelper.clonePermissionSet() called');
         System.debug('source=' + sourceName + ', newApiName=' + newApiName);
@@ -180,8 +180,8 @@ public class PermissionSetHelper {
         // ── STEP 3: Poll until retrieve is done ──
         String zipBase64 = null;
         for (Integer attempt = 0; attempt < 10; attempt++) {
-            Long waitUntil = DateTime.now().getTime() + 2500;
-            while (DateTime.now().getTime() < waitUntil) { /* spin */ }
+            // Long waitUntil = DateTime.now().getTime() + 2500;
+            // while (DateTime.now().getTime() < waitUntil) { /* spin */ }
 
             MetadataService.RetrieveResult retrieveResult = port.checkRetrieveStatus(asyncId, true);
             System.debug('PermissionSetHelper.clonePermissionSet(): poll attempt=' + attempt
@@ -233,20 +233,20 @@ public class PermissionSetHelper {
 
         // Replace <label> — required field, must be present
         if (xml.contains('<label>')) {
-            xml = xml.replaceAll('<label>[^<]*</label>', '<label>' + escapeXml(newLabel) + '</label>');
+            xml = xml.replaceAll('<label>[^<]*</label>', '<label>' + MetadataUtils.escapeXml(newLabel) + '</label>');
         } else {
             // Inject label right after the opening <PermissionSet> tag
             xml = xml.replace('<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">',
                 '<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">'
-                + '<label>' + escapeXml(newLabel) + '</label>');
+                + '<label>' + MetadataUtils.escapeXml(newLabel) + '</label>');
         }
 
         // Replace or inject <description>
         if (xml.contains('<description>')) {
             xml = xml.replaceAll('<description>[^<]*</description>',
-                '<description>' + escapeXml(effectiveDesc) + '</description>');
+                '<description>' + MetadataUtils.escapeXml(effectiveDesc) + '</description>');
         } else {
-            xml = xml.replace('</label>', '</label><description>' + escapeXml(effectiveDesc) + '</description>');
+            xml = xml.replace('</label>', '</label><description>' + MetadataUtils.escapeXml(effectiveDesc) + '</description>');
         }
 
         String filePath = 'permissionsets/' + newApiName + '.permissionset-meta.xml';
@@ -266,18 +266,18 @@ public class PermissionSetHelper {
     //                (all default to false if not provided)
     // ─────────────────────────────────────────────────────────────
     public static void grantObjectAccess(Map<String, Object> args) {
-        String permSetName = getRequired(args, 'permissionSetName');
-        String objectName  = addSuffix(getRequired(args, 'objectName'));
+        String permSetName = MetadataUtils.getRequired(args, 'permissionSetName');
+        String objectName  = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
 
         System.debug('PermissionSetHelper.grantObjectAccess() called');
         System.debug('permSet = ' + permSetName + ', object = ' + objectName);
 
-        Boolean allowRead        = Boolean.valueOf(getOptional(args, 'allowRead',        'false'));
-        Boolean allowCreate      = Boolean.valueOf(getOptional(args, 'allowCreate',      'false'));
-        Boolean allowEdit        = Boolean.valueOf(getOptional(args, 'allowEdit',        'false'));
-        Boolean allowDelete      = Boolean.valueOf(getOptional(args, 'allowDelete',      'false'));
-        Boolean viewAllRecords   = Boolean.valueOf(getOptional(args, 'viewAllRecords',   'false'));
-        Boolean modifyAllRecords = Boolean.valueOf(getOptional(args, 'modifyAllRecords', 'false'));
+        Boolean allowRead        = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowRead',        'false'));
+        Boolean allowCreate      = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowCreate',      'false'));
+        Boolean allowEdit        = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowEdit',        'false'));
+        Boolean allowDelete      = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowDelete',      'false'));
+        Boolean viewAllRecords   = Boolean.valueOf(MetadataUtils.getOptional(args, 'viewAllRecords',   'false'));
+        Boolean modifyAllRecords = Boolean.valueOf(MetadataUtils.getOptional(args, 'modifyAllRecords', 'false'));
 
         // If ZipBuilder already has XML for this PS (e.g. freshly cloned this session),
         // use it directly — no readMetadata needed (PS may not exist in org yet).
@@ -319,12 +319,12 @@ public class PermissionSetHelper {
     // Optional args: readable (default true), editable (default false)
     // ─────────────────────────────────────────────────────────────
     public static void grantFieldAccess(Map<String, Object> args) {
-        String permSetName   = getRequired(args, 'permissionSetName');
-        String objectName    = addSuffix(getRequired(args, 'objectName'));
-        String fieldName     = addSuffix(getRequired(args, 'fieldName'));
+        String permSetName   = MetadataUtils.getRequired(args, 'permissionSetName');
+        String objectName    = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String fieldName     = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'fieldName'));
         String fullFieldName = objectName + '.' + fieldName;
-        Boolean readable     = Boolean.valueOf(getOptional(args, 'readable', 'true'));
-        Boolean editable     = Boolean.valueOf(getOptional(args, 'editable', 'false'));
+        Boolean readable     = Boolean.valueOf(MetadataUtils.getOptional(args, 'readable', 'true'));
+        Boolean editable     = Boolean.valueOf(MetadataUtils.getOptional(args, 'editable', 'false'));
 
         System.debug('PermissionSetHelper.grantFieldAccess() called');
         System.debug('permSet=' + permSetName + ', field=' + fullFieldName);
@@ -367,10 +367,10 @@ public class PermissionSetHelper {
     // Optional args: readable (default true), editable (default false)
     // ─────────────────────────────────────────────────────────────
     public static void grantAllFieldsAccess(Map<String, Object> args) {
-        String permSetName = getRequired(args, 'permissionSetName');
-        String objectName  = addSuffix(getRequired(args, 'objectName'));
-        Boolean readable   = Boolean.valueOf(getOptional(args, 'readable', 'true'));
-        Boolean editable   = Boolean.valueOf(getOptional(args, 'editable', 'false'));
+        String permSetName = MetadataUtils.getRequired(args, 'permissionSetName');
+        String objectName  = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        Boolean readable   = Boolean.valueOf(MetadataUtils.getOptional(args, 'readable', 'true'));
+        Boolean editable   = Boolean.valueOf(MetadataUtils.getOptional(args, 'editable', 'false'));
 
         Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
         if (objType == null) {
@@ -432,8 +432,8 @@ public class PermissionSetHelper {
     // Required args: permissionSetName, username
     // ─────────────────────────────────────────────────────────────
     public static SObject buildAssignment(Map<String, Object> args) {
-        String permSetName    = getRequired(args, 'permissionSetName');
-        String userIdentifier = getRequired(args, 'username');
+        String permSetName    = MetadataUtils.getRequired(args, 'permissionSetName');
+        String userIdentifier = MetadataUtils.getRequired(args, 'username');
 
         System.debug('PermissionSetHelper.buildAssignment() called');
         System.debug('permSet=' + permSetName + ', user=' + userIdentifier);
@@ -485,8 +485,8 @@ public class PermissionSetHelper {
     // Required args: permissionSetName, username
     // ─────────────────────────────────────────────────────────────
     public static SObject findAssignment(Map<String, Object> args) {
-        String permSetName    = getRequired(args, 'permissionSetName');
-        String userIdentifier = getRequired(args, 'username');
+        String permSetName    = MetadataUtils.getRequired(args, 'permissionSetName');
+        String userIdentifier = MetadataUtils.getRequired(args, 'username');
 
         System.debug('PermissionSetHelper.findAssignment() called');
         System.debug('permSet=' + permSetName + ', user=' + userIdentifier);
@@ -533,7 +533,7 @@ public class PermissionSetHelper {
     // Required args: permissionSetName
     // ─────────────────────────────────────────────────────────────
     public static void queuePermissionSetDelete(Map<String, Object> args) {
-        String permSetName = getRequired(args, 'permissionSetName');
+        String permSetName = MetadataUtils.getRequired(args, 'permissionSetName');
 
         System.debug('PermissionSetHelper.queuePermissionSetDelete() called');
         System.debug('permSetName = ' + permSetName);
@@ -649,9 +649,9 @@ public class PermissionSetHelper {
     private static String buildBasePermissionSetXml(MetadataService.PermissionSet permSet) {
         String xml = '<?xml version="1.0" encoding="UTF-8"?>';
         xml += '<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">';
-        xml += '    <label>' + escapeXml(permSet.label) + '</label>';
+        xml += '    <label>' + MetadataUtils.escapeXml(permSet.label) + '</label>';
         if (String.isNotBlank(permSet.description)) {
-            xml += '    <description>' + escapeXml(permSet.description) + '</description>';
+            xml += '    <description>' + MetadataUtils.escapeXml(permSet.description) + '</description>';
         }
 
         // Preserve existing object permissions
@@ -776,103 +776,47 @@ public class PermissionSetHelper {
         return xml.replace('</PermissionSet>', parentBlock + '</PermissionSet>');
     }
 
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
+    // private static void checkUpsertResults(MetadataService.UpsertResult[] results) {
+    //     if (results == null || results.isEmpty()) {
+    //         throw new PermissionSetException('No results returned from Metadata API');
+    //     }
+    //     for (MetadataService.UpsertResult result : results) {
+    //         if (!result.success) {
+    //             String errors = '';
+    //             if (result.errors != null) {
+    //                 for (MetadataService.Error err : result.errors) {
+    //                     errors += err.message + ' (' + err.statusCode + '). ';
+    //                 }
+    //             }
+    //             System.debug('PermissionSetHelper: FAILED for [' + result.fullName + ']: ' + errors);
+    //             throw new PermissionSetException(
+    //                 'Permission Set error on ' + result.fullName + ': ' + errors
+    //             );
+    //         }
+    //         System.debug('PermissionSetHelper: Salesforce confirmed success for [' + result.fullName + ']');
+    //     }
+    // }
 
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Result checkers (same pattern as MetadataHelper)
-    // ─────────────────────────────────────────────────────────────
-    private static void checkUpsertResults(MetadataService.UpsertResult[] results) {
-        if (results == null || results.isEmpty()) {
-            throw new PermissionSetException('No results returned from Metadata API');
-        }
-        for (MetadataService.UpsertResult result : results) {
-            if (!result.success) {
-                String errors = '';
-                if (result.errors != null) {
-                    for (MetadataService.Error err : result.errors) {
-                        errors += err.message + ' (' + err.statusCode + '). ';
-                    }
-                }
-                System.debug('PermissionSetHelper: FAILED for [' + result.fullName + ']: ' + errors);
-                throw new PermissionSetException(
-                    'Permission Set error on ' + result.fullName + ': ' + errors
-                );
-            }
-            System.debug('PermissionSetHelper: Salesforce confirmed success for [' + result.fullName + ']');
-        }
-    }
+    // private static void checkDeleteResults(MetadataService.DeleteResult[] results) {
+    //     if (results == null || results.isEmpty()) {
+    //         throw new PermissionSetException('No results returned from Metadata API');
+    //     }
+    //     for (MetadataService.DeleteResult result : results) {
+    //         if (!result.success) {
+    //             String errors = '';
+    //             if (result.errors != null) {
+    //                 for (MetadataService.Error err : result.errors) {
+    //                     errors += err.message + ' (' + err.statusCode + '). ';
+    //                 }
+    //             }
+    //             System.debug('PermissionSetHelper: DELETE FAILED for [' + result.fullName + ']: ' + errors);
+    //             throw new PermissionSetException(
+    //                 'Delete error on ' + result.fullName + ': ' + errors
+    //             );
+    //         }
+    //         System.debug('PermissionSetHelper: Salesforce confirmed delete for [' + result.fullName + ']');
+    //     }
+    // }
 
-    private static void checkDeleteResults(MetadataService.DeleteResult[] results) {
-        if (results == null || results.isEmpty()) {
-            throw new PermissionSetException('No results returned from Metadata API');
-        }
-        for (MetadataService.DeleteResult result : results) {
-            if (!result.success) {
-                String errors = '';
-                if (result.errors != null) {
-                    for (MetadataService.Error err : result.errors) {
-                        errors += err.message + ' (' + err.statusCode + '). ';
-                    }
-                }
-                System.debug('PermissionSetHelper: DELETE FAILED for [' + result.fullName + ']: ' + errors);
-                throw new PermissionSetException(
-                    'Delete error on ' + result.fullName + ': ' + errors
-                );
-            }
-            System.debug('PermissionSetHelper: Salesforce confirmed delete for [' + result.fullName + ']');
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Session ID
-    // ─────────────────────────────────────────────────────────────
-    private static String getSessionId() {
-        if (Test.isRunningTest()) return UserInfo.getSessionId();
-        try {
-            PageReference vfPage = Page.SessionId;
-            String content = vfPage.getContent().toString();
-            Integer s = content.indexOf('Start_Of_Session_Id') + 'Start_Of_Session_Id'.length();
-            Integer e = content.indexOf('End_Of_Session_Id');
-            return content.substring(s, e);
-        } catch (Exception ex) {
-            return UserInfo.getSessionId();
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Parameter helpers (same as MetadataHelper)
-    // ─────────────────────────────────────────────────────────────
-    private static String addSuffix(String name) {
-        if (String.isBlank(name)) return name;
-        name = name.trim();
-        return name.endsWith('__c') ? name : name + '__c';
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new PermissionSetException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // EXCEPTION
-    // ─────────────────────────────────────────────────────────────
     public class PermissionSetException extends Exception {}
 }

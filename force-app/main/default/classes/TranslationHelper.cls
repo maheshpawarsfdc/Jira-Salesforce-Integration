@@ -28,7 +28,7 @@ public class TranslationHelper {
         port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
             + '/services/Soap/m/61.0';
         port.SessionHeader = new MetadataService.SessionHeader_element();
-        port.SessionHeader.sessionId = UserInfo.getSessionId();
+        port.SessionHeader.sessionId = MetadataUtils.getSessionId();
         return port;
     }
 
@@ -85,8 +85,8 @@ public class TranslationHelper {
     // Routes to the correct file type based on translationType
     // ─────────────────────────────────────────────────────────────
     public static void upsertTranslation(Map<String, Object> args) {
-        String language        = getRequired(args, 'language');
-        String translationType = getRequired(args, 'translationType');
+        String language        = MetadataUtils.getRequired(args, 'language');
+        String translationType = MetadataUtils.getRequired(args, 'translationType');
 
         System.debug('TranslationHelper.upsertTranslation(): language=' + language + ' type=' + translationType);
 
@@ -105,8 +105,8 @@ public class TranslationHelper {
     // DELETE TRANSLATION (entire language file)
     // ─────────────────────────────────────────────────────────────
     public static void deleteTranslation(Map<String, Object> args) {
-        String language  = getRequired(args, 'language');
-        String labelName = getRequired(args, 'labelName');
+        String language  = MetadataUtils.getRequired(args, 'language');
+        String labelName = MetadataUtils.getRequired(args, 'labelName');
 
         System.debug('TranslationHelper.deleteTranslation(): ' + labelName + ' / ' + language);
 
@@ -167,8 +167,8 @@ public class TranslationHelper {
     // PRIVATE — Custom Label translation → translations/{lang}.translation
     // ─────────────────────────────────────────────────────────────
     private static void upsertLabelTranslation(String language, Map<String, Object> args) {
-        String labelName   = getRequired(args, 'labelName');
-        String translation = getRequired(args, 'translation');
+        String labelName   = MetadataUtils.getRequired(args, 'labelName');
+        String translation = MetadataUtils.getRequired(args, 'translation');
 
         // Read existing Translations file
         MetadataPort port = getPort();
@@ -200,8 +200,8 @@ public class TranslationHelper {
 
         for (String lName : labelMap.keySet()) {
             xml += '<customLabels>'
-                + '<label>' + escapeXml(labelMap.get(lName)) + '</label>'
-                + '<name>'  + escapeXml(lName)               + '</name>'
+                + '<label>' + MetadataUtils.escapeXml(labelMap.get(lName)) + '</label>'
+                + '<name>'  + MetadataUtils.escapeXml(lName)               + '</name>'
                 + '</customLabels>';
         }
 
@@ -217,7 +217,7 @@ public class TranslationHelper {
     // Covers: field, picklist, validationRule, object (label)
     // ─────────────────────────────────────────────────────────────
     private static void upsertObjectTranslation(String language, String translationType, Map<String, Object> args) {
-        String objectName = getRequired(args, 'objectName');
+        String objectName = MetadataUtils.getRequired(args, 'objectName');
         String member     = objectName + '-' + language; // e.g. Car__c-fr
 
         // Read existing CustomObjectTranslation
@@ -266,23 +266,23 @@ public class TranslationHelper {
 
         // Apply the new translation
         if (translationType == 'object') {
-            objectLabel = getRequired(args, 'translation');
+            objectLabel = MetadataUtils.getRequired(args, 'translation');
 
         } else if (translationType == 'field') {
-            String fieldName   = getRequired(args, 'fieldName');
-            String translation = getRequired(args, 'translation');
+            String fieldName   = MetadataUtils.getRequired(args, 'fieldName');
+            String translation = MetadataUtils.getRequired(args, 'translation');
             fieldLabels.put(fieldName, translation);
 
         } else if (translationType == 'picklist') {
-            String fieldName   = getRequired(args, 'fieldName');
-            String masterLabel = getRequired(args, 'masterLabel');
-            String translation = getRequired(args, 'translation');
+            String fieldName   = MetadataUtils.getRequired(args, 'fieldName');
+            String masterLabel = MetadataUtils.getRequired(args, 'masterLabel');
+            String translation = MetadataUtils.getRequired(args, 'translation');
             if (!picklistMap.containsKey(fieldName)) picklistMap.put(fieldName, new Map<String, String>());
             picklistMap.get(fieldName).put(masterLabel, translation);
 
         } else if (translationType == 'validationRule') {
-            String ruleName    = getRequired(args, 'ruleName');
-            String translation = getRequired(args, 'translation');
+            String ruleName    = MetadataUtils.getRequired(args, 'ruleName');
+            String translation = MetadataUtils.getRequired(args, 'translation');
             validationRules.put(ruleName, translation);
         }
 
@@ -291,7 +291,7 @@ public class TranslationHelper {
             + '<CustomObjectTranslation xmlns="' + NAMESPACE + '">';
 
         if (String.isNotBlank(objectLabel)) {
-            xml += '<nameFieldLabel>' + escapeXml(objectLabel) + '</nameFieldLabel>';
+            xml += '<nameFieldLabel>' + MetadataUtils.escapeXml(objectLabel) + '</nameFieldLabel>';
         }
 
         // Collect all field names
@@ -301,18 +301,18 @@ public class TranslationHelper {
 
         for (String fieldName : allFields) {
             xml += '<fields>'
-                + '<name>' + escapeXml(fieldName) + '</name>';
+                + '<name>' + MetadataUtils.escapeXml(fieldName) + '</name>';
 
             if (fieldLabels.containsKey(fieldName)) {
-                xml += '<label>' + escapeXml(fieldLabels.get(fieldName)) + '</label>';
+                xml += '<label>' + MetadataUtils.escapeXml(fieldLabels.get(fieldName)) + '</label>';
             }
 
             if (picklistMap.containsKey(fieldName)) {
                 Map<String, String> pvMap = picklistMap.get(fieldName);
                 for (String masterLabel : pvMap.keySet()) {
                     xml += '<picklistValues>'
-                        + '<masterLabel>'  + escapeXml(masterLabel)          + '</masterLabel>'
-                        + '<translation>'  + escapeXml(pvMap.get(masterLabel)) + '</translation>'
+                        + '<masterLabel>'  + MetadataUtils.escapeXml(masterLabel)          + '</masterLabel>'
+                        + '<translation>'  + MetadataUtils.escapeXml(pvMap.get(masterLabel)) + '</translation>'
                         + '</picklistValues>';
                 }
             }
@@ -322,8 +322,8 @@ public class TranslationHelper {
 
         for (String ruleName : validationRules.keySet()) {
             xml += '<validationRules>'
-                + '<errorMessage>' + escapeXml(validationRules.get(ruleName)) + '</errorMessage>'
-                + '<name>'         + escapeXml(ruleName)                      + '</name>'
+                + '<errorMessage>' + MetadataUtils.escapeXml(validationRules.get(ruleName)) + '</errorMessage>'
+                + '<name>'         + MetadataUtils.escapeXml(ruleName)                      + '</name>'
                 + '</validationRules>';
         }
 
@@ -332,34 +332,6 @@ public class TranslationHelper {
         String filePath = 'objectTranslations/' + member + '.objectTranslation';
         ZipBuilder.addFile('CustomObjectTranslation', member, filePath, xml);
         System.debug('TranslationHelper: object translation [' + member + '] queued for deploy');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new TranslationException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class TranslationException extends Exception {}

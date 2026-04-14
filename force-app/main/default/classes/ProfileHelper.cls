@@ -21,7 +21,7 @@ public class ProfileHelper {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/61.0';
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('ProfileHelper: MetadataPort ready.');
             }
             return port;
@@ -65,8 +65,8 @@ public class ProfileHelper {
     // Required args: sourceProfileName, newProfileName, newLabel
     // ─────────────────────────────────────────────────────────────
     public static void cloneProfile(Map<String, Object> args) {
-        String sourceProfileName = getRequired(args, 'sourceProfileName');
-        String newProfileName    = getRequired(args, 'newProfileName');
+        String sourceProfileName = MetadataUtils.getRequired(args, 'sourceProfileName');
+        String newProfileName    = MetadataUtils.getRequired(args, 'newProfileName');
 
         String sourceMetadataName = resolveProfileName(sourceProfileName);
 
@@ -102,7 +102,7 @@ public class ProfileHelper {
     // Required args: profileName
     // ─────────────────────────────────────────────────────────────
     public static void deleteProfile(Map<String, Object> args) {
-        String profileName  = getRequired(args, 'profileName');
+        String profileName  = MetadataUtils.getRequired(args, 'profileName');
         String metadataName = resolveProfileName(profileName);
 
         System.debug('ProfileHelper.deleteProfile() called for [' + metadataName + ']');
@@ -124,19 +124,19 @@ public class ProfileHelper {
     // PROFILE — GRANT OBJECT ACCESS
     // ─────────────────────────────────────────────────────────────
     public static void grantObjectAccess(Map<String, Object> args) {
-        String profileName  = getRequired(args, 'profileName');
-        String objectName   = addSuffix(getRequired(args, 'objectName'));
+        String profileName  = MetadataUtils.getRequired(args, 'profileName');
+        String objectName   = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
         String metadataName = resolveProfileName(profileName);
 
         System.debug('ProfileHelper.grantObjectAccess() called');
         System.debug('profile=' + profileName + ' (' + metadataName + '), object=' + objectName);
 
-        Boolean allowRead        = Boolean.valueOf(getOptional(args, 'allowRead',        'false'));
-        Boolean allowCreate      = Boolean.valueOf(getOptional(args, 'allowCreate',      'false'));
-        Boolean allowEdit        = Boolean.valueOf(getOptional(args, 'allowEdit',        'false'));
-        Boolean allowDelete      = Boolean.valueOf(getOptional(args, 'allowDelete',      'false'));
-        Boolean viewAllRecords   = Boolean.valueOf(getOptional(args, 'viewAllRecords',   'false'));
-        Boolean modifyAllRecords = Boolean.valueOf(getOptional(args, 'modifyAllRecords', 'false'));
+        Boolean allowRead        = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowRead',        'false'));
+        Boolean allowCreate      = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowCreate',      'false'));
+        Boolean allowEdit        = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowEdit',        'false'));
+        Boolean allowDelete      = Boolean.valueOf(MetadataUtils.getOptional(args, 'allowDelete',      'false'));
+        Boolean viewAllRecords   = Boolean.valueOf(MetadataUtils.getOptional(args, 'viewAllRecords',   'false'));
+        Boolean modifyAllRecords = Boolean.valueOf(MetadataUtils.getOptional(args, 'modifyAllRecords', 'false'));
 
         // Check if already staged this session — merge into existing ZIP XML
         String existingXml = ZipBuilder.files.get('profiles/' + metadataName + '.profile');
@@ -180,8 +180,8 @@ public class ProfileHelper {
     // PROFILE — REVOKE OBJECT ACCESS
     // ─────────────────────────────────────────────────────────────
     public static void revokeObjectAccess(Map<String, Object> args) {
-        String profileName  = getRequired(args, 'profileName');
-        String objectName   = addSuffix(getRequired(args, 'objectName'));
+        String profileName  = MetadataUtils.getRequired(args, 'profileName');
+        String objectName   = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
         String metadataName = resolveProfileName(profileName);
 
         System.debug('ProfileHelper.revokeObjectAccess() called');
@@ -227,17 +227,17 @@ public class ProfileHelper {
     // PROFILE — GRANT FIELD ACCESS
     // ─────────────────────────────────────────────────────────────
     public static void grantFieldAccess(Map<String, Object> args) {
-        String profileName   = getRequired(args, 'profileName');
-        String objectName    = addSuffix(getRequired(args, 'objectName'));
-        String fieldName     = addSuffix(getRequired(args, 'fieldName'));
+        String profileName   = MetadataUtils.getRequired(args, 'profileName');
+        String objectName    = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String fieldName     = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'fieldName'));
         String fullFieldName = objectName + '.' + fieldName;
         String metadataName  = resolveProfileName(profileName);
 
         System.debug('ProfileHelper.grantFieldAccess() called');
         System.debug('profile=' + profileName + ', field=' + fullFieldName);
 
-        Boolean readable = Boolean.valueOf(getOptional(args, 'readable', 'true'));
-        Boolean editable = Boolean.valueOf(getOptional(args, 'editable', 'false'));
+        Boolean readable = Boolean.valueOf(MetadataUtils.getOptional(args, 'readable', 'true'));
+        Boolean editable = Boolean.valueOf(MetadataUtils.getOptional(args, 'editable', 'false'));
 
         String xml = getOrBuildMinimalXml(metadataName);
         xml = removeFieldBlock(xml, fullFieldName);
@@ -259,9 +259,9 @@ public class ProfileHelper {
     // PROFILE — REVOKE FIELD ACCESS
     // ─────────────────────────────────────────────────────────────
     public static void revokeFieldAccess(Map<String, Object> args) {
-        String profileName   = getRequired(args, 'profileName');
-        String objectName    = addSuffix(getRequired(args, 'objectName'));
-        String fieldName     = addSuffix(getRequired(args, 'fieldName'));
+        String profileName   = MetadataUtils.getRequired(args, 'profileName');
+        String objectName    = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        String fieldName     = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'fieldName'));
         String fullFieldName = objectName + '.' + fieldName;
         String metadataName  = resolveProfileName(profileName);
 
@@ -288,10 +288,10 @@ public class ProfileHelper {
     // PROFILE — GRANT ALL FIELDS ACCESS
     // ─────────────────────────────────────────────────────────────
     public static void grantAllFieldsAccess(Map<String, Object> args) {
-        String profileName  = getRequired(args, 'profileName');
-        String objectName   = addSuffix(getRequired(args, 'objectName'));
-        Boolean readable    = Boolean.valueOf(getOptional(args, 'readable', 'true'));
-        Boolean editable    = Boolean.valueOf(getOptional(args, 'editable', 'false'));
+        String profileName  = MetadataUtils.getRequired(args, 'profileName');
+        String objectName   = MetadataUtils.addSuffix(MetadataUtils.getRequired(args, 'objectName'));
+        Boolean readable    = Boolean.valueOf(MetadataUtils.getOptional(args, 'readable', 'true'));
+        Boolean editable    = Boolean.valueOf(MetadataUtils.getOptional(args, 'editable', 'false'));
         String metadataName = resolveProfileName(profileName);
 
         System.debug('ProfileHelper.grantAllFieldsAccess() called');
@@ -359,27 +359,27 @@ public class ProfileHelper {
     // PRIVATE — Get existing staged XML or read fresh from org
     // Used ONLY for cloneProfile
     // ─────────────────────────────────────────────────────────────
-    private static String getOrReadProfileXml(String metadataName, String profileName) {
-        // If already staged in ZipBuilder this session, use that
-        String existingXml = ZipBuilder.files.get('profiles/' + metadataName + '.profile');
-        if (existingXml != null) {
-            System.debug('ProfileHelper: using staged XML for [' + metadataName + ']');
-            return existingXml;
-        }
+    // private static String getOrReadProfileXml(String metadataName, String profileName) {
+    //     // If already staged in ZipBuilder this session, use that
+    //     String existingXml = ZipBuilder.files.get('profiles/' + metadataName + '.profile');
+    //     if (existingXml != null) {
+    //         System.debug('ProfileHelper: using staged XML for [' + metadataName + ']');
+    //         return existingXml;
+    //     }
 
-        // Otherwise read fresh from org
-        MetadataService.IReadResult readResult = port.readMetadata(
-            'Profile', new List<String>{ metadataName }
-        );
-        MetadataService.Metadata[] records = readResult.getRecords();
-        if (records == null || records.isEmpty() || records[0] == null) {
-            throw new ProfileException('Profile not found: ' + profileName);
-        }
+    //     // Otherwise read fresh from org
+    //     MetadataService.IReadResult readResult = port.readMetadata(
+    //         'Profile', new List<String>{ metadataName }
+    //     );
+    //     MetadataService.Metadata[] records = readResult.getRecords();
+    //     if (records == null || records.isEmpty() || records[0] == null) {
+    //         throw new ProfileException('Profile not found: ' + profileName);
+    //     }
 
-        MetadataService.Profile profile = (MetadataService.Profile) records[0];
-        System.debug('ProfileHelper: read fresh profile [' + profile.fullName + '] from org');
-        return buildBaseProfileXml(profile, metadataName, null);
-    }
+    //     MetadataService.Profile profile = (MetadataService.Profile) records[0];
+    //     System.debug('ProfileHelper: read fresh profile [' + profile.fullName + '] from org');
+    //     return buildBaseProfileXml(profile, metadataName, null);
+    // }
 
     // ─────────────────────────────────────────────────────────────
     // PRIVATE — Add destructive XML for profile delete
@@ -427,7 +427,7 @@ public class ProfileHelper {
 
         String xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
             + '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
-            + '    <fullName>' + escapeXml(fullName) + '</fullName>\n';
+            + '    <fullName>' + MetadataUtils.escapeXml(fullName) + '</fullName>\n';
 
         // Preserve custom flag
         if (profile.custom != null) {
@@ -436,7 +436,7 @@ public class ProfileHelper {
 
         // Preserve user license — critical for profile to be valid
         if (String.isNotBlank(profile.userLicense)) {
-            xml += '    <userLicense>' + escapeXml(profile.userLicense) + '</userLicense>\n';
+            xml += '    <userLicense>' + MetadataUtils.escapeXml(profile.userLicense) + '</userLicense>\n';
         }
 
         // Preserve object permissions
@@ -500,50 +500,6 @@ public class ProfileHelper {
             return resolved;
         }
         return profileName;
-    }
-
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getSessionId() {
-        if (Test.isRunningTest()) return UserInfo.getSessionId();
-        try {
-            PageReference vfPage = Page.SessionId;
-            String content = vfPage.getContent().toString();
-            Integer s = content.indexOf('Start_Of_Session_Id') + 'Start_Of_Session_Id'.length();
-            Integer e = content.indexOf('End_Of_Session_Id');
-            return content.substring(s, e);
-        } catch (Exception ex) {
-            return UserInfo.getSessionId();
-        }
-    }
-
-    private static String addSuffix(String name) {
-        if (String.isBlank(name)) return name;
-        name = name.trim();
-        return name.endsWith('__c') ? name : name + '__c';
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new ProfileException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class ProfileException extends Exception {}

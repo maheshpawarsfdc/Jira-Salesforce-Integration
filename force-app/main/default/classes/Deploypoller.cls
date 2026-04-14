@@ -43,7 +43,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         p.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
             + '/services/Soap/m/' + API_VERSION;
         p.SessionHeader = new MetadataService.SessionHeader_element();
-        p.SessionHeader.sessionId = UserInfo.getSessionId();
+        p.SessionHeader.sessionId = MetadataUtils.getSessionId();
         return p;
     }
 
@@ -148,11 +148,11 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
     // ─────────────────────────────────────────────────────────────
     // PARSE RESULT — human readable deploy outcome (kept for backwards compat)
     // ─────────────────────────────────────────────────────────────
-    private String parseResult(MetadataService.DeployResult result) {
-        if (result.success) {
-            return 'Deploy successful. '
-                + result.numberComponentsDeployed + ' component(s) deployed.';
-        }
-        return parseFailureResult(result);
-    }
+    // private String parseResult(MetadataService.DeployResult result) {
+    //     if (result.success) {
+    //         return 'Deploy successful. '
+    //             + result.numberComponentsDeployed + ' component(s) deployed.';
+    //     }
+    //     return parseFailureResult(result);
+    // }
 }

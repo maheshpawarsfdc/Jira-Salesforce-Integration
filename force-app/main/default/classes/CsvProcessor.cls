@@ -47,27 +47,27 @@ public class CsvProcessor {
     // ─────────────────────────────────────────────────────────────
     // LIST CSV FILES
     // ─────────────────────────────────────────────────────────────
-    public static Map<String, Object> listCsvFiles(Map<String, Object> args) {
-        System.debug('CsvProcessor.listCsvFiles() called');
+    // public static Map<String, Object> listCsvFiles(Map<String, Object> args) {
+    //     System.debug('CsvProcessor.listCsvFiles() called');
 
-        List<String> csvFiles = new List<String>();
-        List<String> allFiles = new List<String>();
+    //     List<String> csvFiles = new List<String>();
+    //     List<String> allFiles = new List<String>();
 
-        for (String fileName : StaticResourceHelper.currentAttachments.keySet()) {
-            allFiles.add(fileName);
-            if (fileName.toLowerCase().endsWith('.csv')) {
-                csvFiles.add(fileName);
-            }
-        }
+    //     for (String fileName : StaticResourceHelper.currentAttachments.keySet()) {
+    //         allFiles.add(fileName);
+    //         if (fileName.toLowerCase().endsWith('.csv')) {
+    //             csvFiles.add(fileName);
+    //         }
+    //     }
 
-        System.debug('CsvProcessor.listCsvFiles(): found ' + csvFiles.size() + ' CSV file(s)');
+    //     System.debug('CsvProcessor.listCsvFiles(): found ' + csvFiles.size() + ' CSV file(s)');
 
-        return new Map<String, Object>{
-            'csvFiles' => csvFiles,
-            'allFiles' => allFiles,
-            'totalCsv' => csvFiles.size()
-        };
-    }
+    //     return new Map<String, Object>{
+    //         'csvFiles' => csvFiles,
+    //         'allFiles' => allFiles,
+    //         'totalCsv' => csvFiles.size()
+    //     };
+    // }
 
     // ─────────────────────────────────────────────────────────────
     // READ CSV
@@ -81,8 +81,8 @@ public class CsvProcessor {
     //   AFTER:  returns 3 fields → LLM calls csv_bulk_process with fileName only
     // ─────────────────────────────────────────────────────────────
     public static Map<String, Object> readCsv(Map<String, Object> args) {
-        String fileName  = getRequiredArg(args, 'fileName');
-        String delimiter = getOptionalArg(args, 'delimiter', ',');
+        String fileName  = MetadataUtils.getRequired(args, 'fileName');
+        String delimiter = MetadataUtils.getOptional(args, 'delimiter', ',');
 
         System.debug('CsvProcessor.readCsv(): fileName=' + fileName + ', delimiter=[' + delimiter + ']');
 
@@ -154,12 +154,12 @@ public class CsvProcessor {
     //                      validation_rule, custom_setting_field
     // ─────────────────────────────────────────────────────────────
     public static Map<String, Object> process(Map<String, Object> args) {
-        String type     = getRequiredArg(args, 'type').toLowerCase().trim()
+        String type     = MetadataUtils.getRequired(args, 'type').toLowerCase().trim()
                             .replace('settings', 'setting')   
                             .replace('rules', 'rule')          
                             .replace('labels', 'label')        
                             .replaceAll('[^a-z_]', '');
-        String fileName = getRequiredArg(args, 'fileName');
+        String fileName = MetadataUtils.getRequired(args, 'fileName');
 
         System.debug('CsvProcessor.process(): type=' + type + ', fileName=' + fileName);
 
@@ -644,14 +644,14 @@ public class CsvProcessor {
     // XML BUILDERS
     // ─────────────────────────────────────────────────────────────
 
-    // Correct Salesforce Translations XML: <n> = API name, <label> = translation
+    // Correct Salesforce Translations XML: <name> = API name, <label> = translation
     private static String buildTranslationXml(Map<String, String> labelMap) {
         String xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
         xml += '<Translations xmlns="http://soap.sforce.com/2006/04/metadata">\n';
         for (String labelName : labelMap.keySet()) {
             xml += '    <customLabels>\n';
-            xml += '        <name>'     + escapeXml(labelName)                + '</name>\n';
-            xml += '        <label>' + escapeXml(labelMap.get(labelName))  + '</label>\n';
+            xml += '        <name>'     + MetadataUtils.escapeXml(labelName)                + '</name>\n';
+            xml += '        <label>' + MetadataUtils.escapeXml(labelMap.get(labelName))  + '</label>\n';
             xml += '    </customLabels>\n';
         }
         xml += '</Translations>';
@@ -688,11 +688,11 @@ public class CsvProcessor {
 
     private static String buildLabelBlock(Map<String, String> lbl) {
         String xml  = '    <labels>\n';
-        xml += '        <fullName>'         + escapeXml(lbl.get('name'))             + '</fullName>\n';
-        xml += '        <language>'         + escapeXml(lbl.get('language'))         + '</language>\n';
+        xml += '        <fullName>'         + MetadataUtils.escapeXml(lbl.get('name'))             + '</fullName>\n';
+        xml += '        <language>'         + MetadataUtils.escapeXml(lbl.get('language'))         + '</language>\n';
         xml += '        <protected>'        + lbl.get('protected')                   + '</protected>\n';
-        xml += '        <shortDescription>' + escapeXml(lbl.get('shortDescription')) + '</shortDescription>\n';
-        xml += '        <value>'            + escapeXml(lbl.get('value'))            + '</value>\n';
+        xml += '        <shortDescription>' + MetadataUtils.escapeXml(lbl.get('shortDescription')) + '</shortDescription>\n';
+        xml += '        <value>'            + MetadataUtils.escapeXml(lbl.get('value'))            + '</value>\n';
         xml += '    </labels>\n';
         return xml;
     }
@@ -704,14 +704,14 @@ public class CsvProcessor {
         xml += '<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"'
              + ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
              + ' xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n';
-        xml += '    <label>'     + escapeXml(label) + '</label>\n';
+        xml += '    <label>'     + MetadataUtils.escapeXml(label) + '</label>\n';
         xml += '    <protected>' + isProtected       + '</protected>\n';
         for (String fieldApi : fieldValues.keySet()) {
             String val     = fieldValues.get(fieldApi);
             String xsiType = getXsiTypeForValue(fieldApi, val);
             xml += '    <values>\n';
-            xml += '        <field>'                           + escapeXml(fieldApi) + '</field>\n';
-            xml += '        <value xsi:type="' + xsiType + '">' + escapeXml(val)    + '</value>\n';
+            xml += '        <field>'                           + MetadataUtils.escapeXml(fieldApi) + '</field>\n';
+            xml += '        <value xsi:type="' + xsiType + '">' + MetadataUtils.escapeXml(val)    + '</value>\n';
             xml += '    </values>\n';
         }
         xml += '</CustomMetadata>';
@@ -741,12 +741,12 @@ public class CsvProcessor {
         xml += '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n';
         for (Map<String, String> rule : rules) {
             xml += '    <validationRules>\n';
-            xml += '        <fullName>'              + escapeXml(rule.get('ruleName'))              + '</fullName>\n';
+            xml += '        <fullName>'              + MetadataUtils.escapeXml(rule.get('ruleName'))              + '</fullName>\n';
             xml += '        <active>'                + rule.get('active')                           + '</active>\n';
-            xml += '        <errorConditionFormula>' + escapeXml(rule.get('errorConditionFormula')) + '</errorConditionFormula>\n';
-            xml += '        <errorMessage>'          + escapeXml(rule.get('errorMessage'))          + '</errorMessage>\n';
+            xml += '        <errorConditionFormula>' + MetadataUtils.escapeXml(rule.get('errorConditionFormula')) + '</errorConditionFormula>\n';
+            xml += '        <errorMessage>'          + MetadataUtils.escapeXml(rule.get('errorMessage'))          + '</errorMessage>\n';
             if (String.isNotBlank(rule.get('description'))) {
-                xml += '        <description>'       + escapeXml(rule.get('description'))           + '</description>\n';
+                xml += '        <description>'       + MetadataUtils.escapeXml(rule.get('description'))           + '</description>\n';
             }
             xml += '    </validationRules>\n';
         }
@@ -890,14 +890,6 @@ public class CsvProcessor {
         return result;
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                  .replace('"', '&quot;').replace('\'', '&apos;');
-    }
 
     private static String getRowValue(Map<String, Object> row, String key) {
         Object val = row.get(key);
@@ -912,20 +904,6 @@ public class CsvProcessor {
     private static String getRowValueDefault(Map<String, Object> row, String key, String defaultVal) {
         String val = getRowValue(row, key);
         return String.isBlank(val) ? defaultVal : val;
-    }
-
-    private static String getRequiredArg(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val)))
-            throw new CsvException('Required parameter missing: ' + key);
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptionalArg(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        return (String.isBlank(strVal) || strVal == 'null') ? defaultValue : strVal;
     }
 
     public class CsvException extends Exception {}

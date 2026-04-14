@@ -61,17 +61,17 @@ public class NamedCredentialHelper {
     // CREATE
     // ─────────────────────────────────────────────────────────────
     public static void createNamedCredential(Map<String, Object> args) {
-        String apiName     = getRequired(args, 'apiName');
-        String label       = getRequired(args, 'label');
-        String endpointUrl = getRequired(args, 'endpoint');
+        String apiName     = MetadataUtils.getRequired(args, 'apiName');
+        String label       = MetadataUtils.getRequired(args, 'label');
+        String endpointUrl = MetadataUtils.getRequired(args, 'endpoint');
 
         System.debug('NamedCredentialHelper.createNamedCredential(): ' + apiName);
 
         String xml = buildXml(
             apiName, label, endpointUrl,
-            getOptional(args, 'allowMergeFieldsInBody',      'false'),
-            getOptional(args, 'allowMergeFieldsInHeader',    'false'),
-            getOptional(args, 'generateAuthorizationHeader', 'false')
+            MetadataUtils.getOptional(args, 'allowMergeFieldsInBody',      'false'),
+            MetadataUtils.getOptional(args, 'allowMergeFieldsInHeader',    'false'),
+            MetadataUtils.getOptional(args, 'generateAuthorizationHeader', 'false')
         );
         String filePath = 'namedCredentials/' + apiName + '.namedCredential';
         ZipBuilder.addFile('NamedCredential', apiName, filePath, xml);
@@ -84,7 +84,7 @@ public class NamedCredentialHelper {
     // Reads current values from org, applies only the changed fields
     // ─────────────────────────────────────────────────────────────
     public static void updateNamedCredential(Map<String, Object> args) {
-        String apiName = getRequired(args, 'apiName');
+        String apiName = MetadataUtils.getRequired(args, 'apiName');
 
         System.debug('NamedCredentialHelper.updateNamedCredential(): ' + apiName);
 
@@ -122,14 +122,14 @@ public class NamedCredentialHelper {
         String currentEndpoint       = (String) existing.get('Endpoint');
 
         // Apply only the parameters that were passed in
-        String newLabel    = getOptional(args, 'label',    currentLabel);
-        String newEndpoint = getOptional(args, 'endpoint', currentEndpoint);
+        String newLabel    = MetadataUtils.getOptional(args, 'label',    currentLabel);
+        String newEndpoint = MetadataUtils.getOptional(args, 'endpoint', currentEndpoint);
 
         String xml = buildXml(
             apiName, newLabel, newEndpoint,
-            getOptional(args, 'allowMergeFieldsInBody',      'false'),
-            getOptional(args, 'allowMergeFieldsInHeader',    'false'),
-            getOptional(args, 'generateAuthorizationHeader', 'false')
+            MetadataUtils.getOptional(args, 'allowMergeFieldsInBody',      'false'),
+            MetadataUtils.getOptional(args, 'allowMergeFieldsInHeader',    'false'),
+            MetadataUtils.getOptional(args, 'generateAuthorizationHeader', 'false')
         );
         String filePath = 'namedCredentials/' + apiName + '.namedCredential';
         ZipBuilder.addFile('NamedCredential', apiName, filePath, xml);
@@ -141,7 +141,7 @@ public class NamedCredentialHelper {
     // DELETE
     // ─────────────────────────────────────────────────────────────
     public static void deleteNamedCredential(Map<String, Object> args) {
-        String apiName = getRequired(args, 'apiName');
+        String apiName = MetadataUtils.getRequired(args, 'apiName');
 
         System.debug('NamedCredentialHelper.deleteNamedCredential(): ' + apiName);
 
@@ -177,44 +177,16 @@ public class NamedCredentialHelper {
 
         return '<?xml version="1.0" encoding="UTF-8"?>'
             + '<NamedCredential xmlns="' + NAMESPACE + '">'
-            + '<fullName>'                    + escapeXml(apiName)     + '</fullName>'
-            + '<label>'                       + escapeXml(label)       + '</label>'
+            + '<fullName>'                    + MetadataUtils.escapeXml(apiName)     + '</fullName>'
+            + '<label>'                       + MetadataUtils.escapeXml(label)       + '</label>'
             + '<protocol>NoAuthentication</protocol>'
-            + '<endpoint>'                    + escapeXml(endpointUrl) + '</endpoint>'
+            + '<endpoint>'                    + MetadataUtils.escapeXml(endpointUrl) + '</endpoint>'
             + '<principalType>Anonymous</principalType>'
             + '<calloutStatus>Enabled</calloutStatus>'
             + '<allowMergeFieldsInBody>'      + allowBody              + '</allowMergeFieldsInBody>'
             + '<allowMergeFieldsInHeader>'    + allowHeader            + '</allowMergeFieldsInHeader>'
             + '<generateAuthorizationHeader>' + generateAuth           + '</generateAuthorizationHeader>'
             + '</NamedCredential>';
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new NamedCredentialException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class NamedCredentialException extends Exception {}

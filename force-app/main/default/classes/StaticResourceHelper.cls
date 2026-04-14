@@ -60,9 +60,9 @@ public class StaticResourceHelper {
     // into ZipBuilder for a single deploy.
     // ─────────────────────────────────────────────────────────────
     public static void deployStaticResource(Map<String, Object> args) {
-        String apiName      = getRequired(args, 'apiName');
-        String fileName     = getRequired(args, 'fileName');
-        String cacheControl = getOptional(args, 'cacheControl', 'Public');
+        String apiName      = MetadataUtils.getRequired(args, 'apiName');
+        String fileName     = MetadataUtils.getRequired(args, 'fileName');
+        String cacheControl = MetadataUtils.getOptional(args, 'cacheControl', 'Public');
 
         System.debug('StaticResourceHelper.deployStaticResource() called');
         System.debug('apiName=' + apiName + ' fileName=' + fileName + ' cacheControl=' + cacheControl);
@@ -87,7 +87,7 @@ public class StaticResourceHelper {
         String metaXml = '<?xml version="1.0" encoding="UTF-8"?>'
             + '<StaticResource xmlns="' + NAMESPACE + '">'
             + '<cacheControl>' + cacheControl + '</cacheControl>'
-            + '<contentType>' + escapeXml(mimeType) + '</contentType>'
+            + '<contentType>' + MetadataUtils.escapeXml(mimeType) + '</contentType>'
             + '</StaticResource>';
 
         ZipBuilder.addFile('StaticResource', apiName,
@@ -102,7 +102,7 @@ public class StaticResourceHelper {
     // Follows the same pattern as CustomLabelHelper, NamedCredentialHelper etc.
     // ─────────────────────────────────────────────────────────────
     public static void deleteStaticResource(Map<String, Object> args) {
-        String apiName = getRequired(args, 'apiName');
+        String apiName = MetadataUtils.getRequired(args, 'apiName');
 
         System.debug('StaticResourceHelper.deleteStaticResource() called: apiName=' + apiName);
 
@@ -132,34 +132,6 @@ public class StaticResourceHelper {
             'destructiveChangesPost.xml', xml);
 
         System.debug('StaticResourceHelper.deleteStaticResource(): [' + apiName + '] queued for destructive deploy');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&',  '&amp;')
-                  .replace('<',  '&lt;')
-                  .replace('>',  '&gt;')
-                  .replace('"',  '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new StaticResourceException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class StaticResourceException extends Exception {}

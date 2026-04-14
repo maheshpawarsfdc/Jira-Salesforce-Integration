@@ -33,7 +33,7 @@ public class CustomMetadataHelper {
                 port.endpoint_x = 'https://' + DomainCreator.getOrgMyDomainHostname()
                     + '/services/Soap/m/61.0';
                 port.SessionHeader = new MetadataService.SessionHeader_element();
-                port.SessionHeader.sessionId = UserInfo.getSessionId();
+                port.SessionHeader.sessionId = MetadataUtils.getSessionId();
                 System.debug('CustomMetadataHelper: MetadataPort ready.');
             }
             return port;
@@ -93,11 +93,11 @@ public class CustomMetadataHelper {
     // CREATE TYPE
     // ─────────────────────────────────────────────────────────────
     public static void createCustomMetadataType(Map<String, Object> args) {
-        String apiName     = getRequired(args, 'apiName');
-        String label       = getRequired(args, 'label');
-        String pluralLabel = getRequired(args, 'pluralLabel');
-        String description = getOptional(args, 'description', '');
-        String visibility  = getOptional(args, 'visibility', 'Public');
+        String apiName     = MetadataUtils.getRequired(args, 'apiName');
+        String label       = MetadataUtils.getRequired(args, 'label');
+        String pluralLabel = MetadataUtils.getRequired(args, 'pluralLabel');
+        String description = MetadataUtils.getOptional(args, 'description', '');
+        String visibility  = MetadataUtils.getOptional(args, 'visibility', 'Public');
 
         // Ensure __mdt suffix
         String fullApiName = apiName.endsWith('__mdt') ? apiName : apiName + '__mdt';
@@ -106,10 +106,10 @@ public class CustomMetadataHelper {
 
         String xml = '<?xml version="1.0" encoding="UTF-8"?>'
             + '<CustomObject xmlns="' + NAMESPACE + '">'
-            + '<label>'       + escapeXml(label)       + '</label>'
-            + '<pluralLabel>' + escapeXml(pluralLabel) + '</pluralLabel>'
-            + (String.isNotBlank(description) ? '<description>' + escapeXml(description) + '</description>' : '')
-            + '<visibility>'  + escapeXml(visibility)  + '</visibility>'
+            + '<label>'       + MetadataUtils.escapeXml(label)       + '</label>'
+            + '<pluralLabel>' + MetadataUtils.escapeXml(pluralLabel) + '</pluralLabel>'
+            + (String.isNotBlank(description) ? '<description>' + MetadataUtils.escapeXml(description) + '</description>' : '')
+            + '<visibility>'  + MetadataUtils.escapeXml(visibility)  + '</visibility>'
             + '</CustomObject>';
 
         String filePath = 'objects/' + fullApiName + '.object';
@@ -124,10 +124,10 @@ public class CustomMetadataHelper {
     // After staging the field, auto-add it to the default page layout
     // ─────────────────────────────────────────────────────────────
     public static void addFieldToCustomMetadataType(Map<String, Object> args) {
-        String apiName    = getRequired(args, 'apiName');
-        String fieldName  = getRequired(args, 'fieldName');
-        String fieldLabel = getRequired(args, 'fieldLabel');
-        String fieldType  = getRequired(args, 'fieldType');
+        String apiName    = MetadataUtils.getRequired(args, 'apiName');
+        String fieldName  = MetadataUtils.getRequired(args, 'fieldName');
+        String fieldLabel = MetadataUtils.getRequired(args, 'fieldLabel');
+        String fieldType  = MetadataUtils.getRequired(args, 'fieldType');
 
         // Ensure __mdt suffix
         String fullApiName = apiName.endsWith('__mdt') ? apiName : apiName + '__mdt';
@@ -294,7 +294,7 @@ public class CustomMetadataHelper {
     // DELETE TYPE
     // ─────────────────────────────────────────────────────────────
     public static void deleteCustomMetadataType(Map<String, Object> args) {
-        String apiName = getRequired(args, 'apiName');
+        String apiName = MetadataUtils.getRequired(args, 'apiName');
         String fullApiName = apiName.endsWith('__mdt') ? apiName : apiName + '__mdt';
 
         System.debug('CustomMetadataHelper.deleteCustomMetadataType(): ' + fullApiName);
@@ -307,7 +307,7 @@ public class CustomMetadataHelper {
     // LIST RECORDS
     // ─────────────────────────────────────────────────────────────
     public static List<Map<String, Object>> listCustomMetadataRecords(Map<String, Object> args) {
-        String apiName     = getRequired(args, 'apiName');
+        String apiName     = MetadataUtils.getRequired(args, 'apiName');
         String fullApiName = apiName.endsWith('__mdt') ? apiName : apiName + '__mdt';
 
         System.debug('CustomMetadataHelper.listCustomMetadataRecords(): ' + fullApiName);
@@ -367,10 +367,10 @@ public class CustomMetadataHelper {
     // UPSERT RECORD (create or update)
     // ─────────────────────────────────────────────────────────────
     public static void upsertCustomMetadataRecord(Map<String, Object> args) {
-        String apiName      = getRequired(args, 'apiName');
-        String recordName   = getRequired(args, 'recordName');
-        String label        = getOptional(args, 'label', recordName);
-        String isProtected  = getOptional(args, 'protected', 'false');
+        String apiName      = MetadataUtils.getRequired(args, 'apiName');
+        String recordName   = MetadataUtils.getRequired(args, 'recordName');
+        String label        = MetadataUtils.getOptional(args, 'label', recordName);
+        String isProtected  = MetadataUtils.getOptional(args, 'protected', 'false');
 
         String fullApiName  = apiName.endsWith('__mdt') ? apiName : apiName + '__mdt';
         String cleanRecord  = recordName.replaceAll('[^a-zA-Z0-9_]', '_');
@@ -378,7 +378,7 @@ public class CustomMetadataHelper {
         System.debug('CustomMetadataHelper.upsertCustomMetadataRecord(): ' + fullApiName + '.' + cleanRecord);
 
         // fieldValues is a JSON string like {"Field1__c": "value1", "Field2__c": 42}
-        String fieldValuesJson = getOptional(args, 'fieldValues', '{}');
+        String fieldValuesJson = MetadataUtils.getOptional(args, 'fieldValues', '{}');
         Map<String, Object> fieldValues = new Map<String, Object>();
         if (String.isNotBlank(fieldValuesJson) && fieldValuesJson != '{}') {
             fieldValues = (Map<String, Object>) JSON.deserializeUntyped(fieldValuesJson);
@@ -392,7 +392,7 @@ public class CustomMetadataHelper {
             + '<CustomMetadata xmlns="'     + NAMESPACE     + '"'
             + ' xmlns:xsi="'               + NAMESPACE_XSI + '"'
             + ' xmlns:xsd="'               + NAMESPACE_XSD + '">'
-            + '<label>'                    + escapeXml(label)       + '</label>'
+            + '<label>'                    + MetadataUtils.escapeXml(label)       + '</label>'
             + '<protected>'                + isProtected            + '</protected>';
 
         for (String fieldApiName : fieldValues.keySet()) {
@@ -401,8 +401,8 @@ public class CustomMetadataHelper {
             String strVal  = val != null ? String.valueOf(val) : '';
 
             xml += '<values>'
-                + '<field>'  + escapeXml(fieldApiName) + '</field>'
-                + '<value xsi:type="' + xsiType + '">' + escapeXml(strVal) + '</value>'
+                + '<field>'  + MetadataUtils.escapeXml(fieldApiName) + '</field>'
+                + '<value xsi:type="' + xsiType + '">' + MetadataUtils.escapeXml(strVal) + '</value>'
                 + '</values>';
         }
 
@@ -418,8 +418,8 @@ public class CustomMetadataHelper {
     // DELETE RECORD
     // ─────────────────────────────────────────────────────────────
     public static void deleteCustomMetadataRecord(Map<String, Object> args) {
-        String apiName    = getRequired(args, 'apiName');
-        String recordName = getRequired(args, 'recordName');
+        String apiName    = MetadataUtils.getRequired(args, 'apiName');
+        String recordName = MetadataUtils.getRequired(args, 'recordName');
 
         String fullApiName = apiName.endsWith('__mdt') ? apiName : apiName + '__mdt';
         String member      = fullApiName + '.' + recordName;
@@ -438,41 +438,41 @@ public class CustomMetadataHelper {
 
         String safeType = fieldType.capitalize();
         String xml = '<fields>'
-            + '<fullName>'  + escapeXml(fieldName)  + '</fullName>'
-            + '<label>'     + escapeXml(fieldLabel)  + '</label>'
-            + '<type>'      + escapeXml(safeType)    + '</type>';
+            + '<fullName>'  + MetadataUtils.escapeXml(fieldName)  + '</fullName>'
+            + '<label>'     + MetadataUtils.escapeXml(fieldLabel)  + '</label>'
+            + '<type>'      + MetadataUtils.escapeXml(safeType)    + '</type>';
 
         if (safeType == 'Checkbox') {
-            xml += '<defaultValue>' + getOptional(args, 'defaultValue', 'false') + '</defaultValue>';
+            xml += '<defaultValue>' + MetadataUtils.getOptional(args, 'defaultValue', 'false') + '</defaultValue>';
         } else if (safeType == 'Text' || safeType == 'Textarea') {
-            Integer len = Integer.valueOf(getOptional(args, 'length', '255'));
+            Integer len = Integer.valueOf(MetadataUtils.getOptional(args, 'length', '255'));
             xml += '<length>' + len + '</length>';
         } else if (safeType == 'Longtextarea') {
-            Integer len = Integer.valueOf(getOptional(args, 'length', '32768'));
+            Integer len = Integer.valueOf(MetadataUtils.getOptional(args, 'length', '32768'));
             xml += '<length>'      + len + '</length>'
                 + '<visibleLines>3</visibleLines>';
         } else if (safeType == 'Number' || safeType == 'Percent') {
-            Integer precision = Integer.valueOf(getOptional(args, 'precision', '18'));
-            Integer scale     = Integer.valueOf(getOptional(args, 'scale', '0'));
+            Integer precision = Integer.valueOf(MetadataUtils.getOptional(args, 'precision', '18'));
+            Integer scale     = Integer.valueOf(MetadataUtils.getOptional(args, 'scale', '0'));
             xml += '<precision>' + precision + '</precision>'
                 + '<scale>'     + scale     + '</scale>';
         } else if (safeType == 'Picklist') {
-            String picklistValues = getOptional(args, 'picklistValues', '');
+            String picklistValues = MetadataUtils.getOptional(args, 'picklistValues', '');
             if (String.isNotBlank(picklistValues)) {
                 xml += '<valueSet><valueSetDefinition>';
                 for (String pv : picklistValues.split(',')) {
                     String trimmed = pv.trim();
                     xml += '<value>'
-                        + '<fullName>' + escapeXml(trimmed) + '</fullName>'
+                        + '<fullName>' + MetadataUtils.escapeXml(trimmed) + '</fullName>'
                         + '<default>false</default>'
-                        + '<label>'    + escapeXml(trimmed) + '</label>'
+                        + '<label>'    + MetadataUtils.escapeXml(trimmed) + '</label>'
                         + '</value>';
                 }
                 xml += '</valueSetDefinition></valueSet>';
             }
         }
 
-        String required = getOptional(args, 'required', 'false');
+        String required = MetadataUtils.getOptional(args, 'required', 'false');
         if (safeType != 'Checkbox') {
             xml += '<required>' + required + '</required>';
         }
@@ -602,10 +602,10 @@ public class CustomMetadataHelper {
 
             return '<?xml version="1.0" encoding="UTF-8"?>'
                 + '<CustomObject xmlns="' + NAMESPACE + '">'
-                + '<label>'       + escapeXml(label)       + '</label>'
-                + '<pluralLabel>' + escapeXml(pluralLabel) + '</pluralLabel>'
+                + '<label>'       + MetadataUtils.escapeXml(label)       + '</label>'
+                + '<pluralLabel>' + MetadataUtils.escapeXml(pluralLabel) + '</pluralLabel>'
                 + (String.isNotBlank(description)
-                    ? '<description>' + escapeXml(description) + '</description>' : '')
+                    ? '<description>' + MetadataUtils.escapeXml(description) + '</description>' : '')
                 + '</CustomObject>';
 
         } catch (Exception e) {
@@ -639,34 +639,6 @@ public class CustomMetadataHelper {
         }
 
         ZipBuilder.addFile('__destructive__', member, 'destructiveChangesPost.xml', xml);
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Helpers
-    // ─────────────────────────────────────────────────────────────
-    private static String escapeXml(String val) {
-        if (String.isBlank(val)) return '';
-        return val.replace('&', '&amp;')
-                  .replace('<', '&lt;')
-                  .replace('>', '&gt;')
-                  .replace('"', '&quot;')
-                  .replace('\'', '&apos;');
-    }
-
-    private static String getRequired(Map<String, Object> args, String key) {
-        Object val = args?.get(key);
-        if (val == null || String.isBlank(String.valueOf(val))) {
-            throw new CustomMetadataException('Required parameter missing: ' + key);
-        }
-        return String.valueOf(val).trim();
-    }
-
-    private static String getOptional(Map<String, Object> args, String key, String defaultValue) {
-        Object val = args?.get(key);
-        if (val == null) return defaultValue;
-        String strVal = String.valueOf(val).trim();
-        if (String.isBlank(strVal) || strVal == 'null') return defaultValue;
-        return strVal;
     }
 
     public class CustomMetadataException extends Exception {}

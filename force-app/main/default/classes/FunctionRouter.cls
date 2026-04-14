@@ -97,8 +97,8 @@ public class FunctionRouter {
         else if (functionName == 'static_resource_delete') result = FunctionHelper.callStaticResourceDelete(args);
 
         // ── CSV OPERATIONS ────────────────────────────────────
-        else if (functionName == 'csv_list_files')  result = FunctionHelper.callCsvListFiles(args);
-        else if (functionName == 'csv_read')        result = FunctionHelper.callCsvRead(args);
+        // else if (functionName == 'csv_list_files')  result = FunctionHelper.callCsvListFiles(args);
+        // else if (functionName == 'csv_read')        result = FunctionHelper.callCsvRead(args);
         else if (functionName == 'csv_bulk_process') result = FunctionHelper.callCsvBulkProcess(args);
 
         // ── QUERY ─────────────────────────────────────────────
