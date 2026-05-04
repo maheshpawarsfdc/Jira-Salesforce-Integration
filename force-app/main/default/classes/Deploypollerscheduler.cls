@@ -19,11 +19,19 @@ public class Deploypollerscheduler implements Schedulable {
     private String  jobId;
     private String  issueKey;
     private Integer attempt;
+    private String  pendingZip2DataJson;
 
     public DeployPollerScheduler(String jobId, String issueKey, Integer attempt) {
         this.jobId    = jobId;
         this.issueKey = issueKey;
         this.attempt  = attempt;
+    }
+
+    public DeployPollerScheduler(String jobId, String issueKey, Integer attempt, String pendingZip2DataJson) {
+        this.jobId               = jobId;
+        this.issueKey            = issueKey;
+        this.attempt             = attempt;
+        this.pendingZip2DataJson = pendingZip2DataJson;
     }
 
     public void execute(SchedulableContext ctx) {
@@ -38,6 +46,8 @@ public class Deploypollerscheduler implements Schedulable {
         }
 
         // Enqueue the next DeployPoller — fresh queueable stack, depth = 1
-        System.enqueueJob(new DeployPoller(jobId, issueKey, attempt));
+        DeployPoller poller = new DeployPoller(jobId, issueKey, attempt);
+        poller.pendingZip2DataJson = pendingZip2DataJson;
+        System.enqueueJob(poller);
     }
 }

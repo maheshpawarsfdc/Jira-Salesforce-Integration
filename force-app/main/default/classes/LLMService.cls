@@ -437,6 +437,19 @@ public class LLMService {
                         }
                     }
 
+                    // Skip non-field sections (Custom Links, Mobile Cards, related-list
+                    // placeholders, etc.). These contain <customLinks> / mobile-card items
+                    // — NOT <field> items — so there is no valid way for the LLM to re-emit
+                    // them. Including them in org state causes the LLM to output empty
+                    // <layoutItems><behavior></behavior><field></field></layoutItems> blocks
+                    // which the Metadata API rejects with:
+                    //   "'' is not a valid value for the enum 'UiBehavior'".
+                    if (leftFields.isEmpty() && rightFields.isEmpty()) {
+                        System.debug('getLayoutStructure: skipping non-field section ['
+                            + section.label + '] in layout [' + fullName + ']');
+                        continue;
+                    }
+
                     sections.add(new Map<String, Object>{
                         'label'          => section.label,
                         'leftFields'     => leftFields,
@@ -647,7 +660,7 @@ public class LLMService {
         System.debug('── STAGE 2 raw LLM response: ' + content);
 
         // Parse and process the XML generation response
-        return processXmlGenerationResponse(content, issueKey);
+        return processXmlGenerationResponse(content, issueKey, orgState);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -656,7 +669,8 @@ public class LLMService {
     // ─────────────────────────────────────────────────────────────
     private static String processXmlGenerationResponse(
         String llmResponse,
-        String issueKey
+        String issueKey,
+        Map<String, Object> orgState
     ) {
 
         String cleaned = cleanJsonResponse(llmResponse);
@@ -709,12 +723,22 @@ public class LLMService {
         }
         System.debug('processXmlGenerationResponse: deployScenario=' + deployScenario
             + ', zip2FilePaths=' + zip2FilePaths);
+        System.debug('[DEPLOY-TRACE] LLM picked scenario=' + deployScenario
+            + ' | zip2FilePaths=' + zip2FilePaths
+            + ' | rawDeploymentPlan=' + JSON.serialize(deploymentPlan));
 
         Map<String, String>       zip2Files         = new Map<String, String>();
         Map<String, Set<String>>  zip2MetadataTypes = new Map<String, Set<String>>();
 
-        // ── Process regular files ──────────────────────────────
+        // ── Process regular files ──────────────────────
         List<Object> files = (List<Object>) parsed.get('files');
+
+        // ── Scenario B violation detector ────────────────────────────────────────────
+        // If the LLM is emitting a CustomObject/CustomField on an existing object that
+        // has layouts in orgState.existingLayouts, files[] MUST also contain a Layout entry
+        // for that object. Detect violation up-front and log a loud trace marker.
+        detectScenarioBViolation(files, orgState);
+
         if (files != null && !files.isEmpty()) {
             System.debug('processXmlGenerationResponse: processing ' + files.size() + ' file(s)');
 
@@ -759,11 +783,13 @@ public class LLMService {
                     }
                     zip2MetadataTypes.get(metadataType).add(memberName);
                     System.debug('processXmlGenerationResponse: held back [' + filePath + '] for ZIP 2');
+                    System.debug('[DEPLOY-TRACE] route ZIP2 <- ' + metadataType + ' / ' + filePath);
                     continue;
                 }
 
                 ZipBuilder.addFile(metadataType, memberName, filePath, xmlContent);
                 System.debug('processXmlGenerationResponse: added [' + filePath + '] to ZipBuilder');
+                System.debug('[DEPLOY-TRACE] route ZIP1 <- ' + metadataType + ' / ' + filePath);
 
                 // ADD THIS — see exactly what XML is going into the ZIP
                 System.debug('=== FILE ADDED TO ZIP ===');
@@ -819,13 +845,75 @@ public class LLMService {
             pendingZip2DataJson = JSON.serialize(zip2Data);
             System.debug('processXmlGenerationResponse: zip2 data staged — '
                 + zip2Files.size() + ' file(s) for ZIP 2');
+            System.debug('[DEPLOY-TRACE] ZIP2 staged | fileCount=' + zip2Files.size()
+                + ' | files=' + zip2Files.keySet());
         } else {
             pendingZip2DataJson = null;
+            System.debug('[DEPLOY-TRACE] ZIP2 staged | fileCount=0 (single-deploy mode)');
         }
 
         // ── Return summary ─────────────────────────────────────
         String summary = (String) parsed.get('summary');
         return String.isNotBlank(summary) ? summary : 'Changes staged for deployment.';
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SCENARIO B VIOLATION DETECTOR
+    // The LLM is required to emit a Layout file for each existing layout
+    // when adding a new CustomField to an object that already has layouts
+    // (Scenario B in the system prompt). This method detects when the LLM
+    // skipped that requirement and logs a loud trace marker so we can see
+    // it in the deploy log instead of silently shipping a layout-less field.
+    // Detection only — no behavior change yet.
+    // ─────────────────────────────────────────────────────────────
+    private static void detectScenarioBViolation(List<Object> files, Map<String, Object> orgState) {
+        if (orgState == null) return;
+        Object rawExistingLayouts = orgState.get('existingLayouts');
+        if (!(rawExistingLayouts instanceof Map<String, Object>)) return;
+        Map<String, Object> existingLayouts = (Map<String, Object>) rawExistingLayouts;
+        if (existingLayouts.isEmpty()) return;
+
+        Object rawExistingObjects = orgState.get('existingObjects');
+        Set<String> existingObjects = new Set<String>();
+        if (rawExistingObjects instanceof List<Object>) {
+            for (Object o : (List<Object>) rawExistingObjects) {
+                if (o != null) existingObjects.add(String.valueOf(o));
+            }
+        }
+
+        Set<String> objectsReceivingNewFields = new Set<String>();
+        Set<String> objectsWithLayoutEmitted  = new Set<String>();
+
+        if (files != null) {
+            for (Object rawFile : files) {
+                Map<String, Object> file = (Map<String, Object>) rawFile;
+                String metadataType = (String) file.get('metadataType');
+                String memberName   = (String) file.get('memberName');
+                if (String.isBlank(metadataType) || String.isBlank(memberName)) continue;
+
+                if (metadataType == 'CustomObject' && existingObjects.contains(memberName)) {
+                    objectsReceivingNewFields.add(memberName);
+                } else if (metadataType == 'CustomField' && memberName.contains('.')) {
+                    String parent = memberName.substringBefore('.');
+                    if (existingObjects.contains(parent)) objectsReceivingNewFields.add(parent);
+                } else if (metadataType == 'Layout' && memberName.contains('-')) {
+                    String parent = memberName.substringBefore('-');
+                    objectsWithLayoutEmitted.add(parent);
+                }
+            }
+        }
+
+        for (String objName : objectsReceivingNewFields) {
+            if (!existingLayouts.containsKey(objName)) continue;
+            if (objectsWithLayoutEmitted.contains(objName)) continue;
+            Object layoutsRaw = existingLayouts.get(objName);
+            Integer layoutCount = (layoutsRaw instanceof List<Object>)
+                ? ((List<Object>) layoutsRaw).size() : 0;
+            System.debug('[DEPLOY-TRACE] *** SCENARIO B VIOLATION *** object=' + objName
+                + ' is in existingObjects with ' + layoutCount + ' existing layout(s),'
+                + ' but the LLM emitted a CustomObject/CustomField without a matching Layout file.'
+                + ' The new field will land in the palette only and will NOT appear in any layout section.');
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2064,15 +2152,33 @@ public class LLMService {
 
             + '\n\n== LAYOUT SCENARIOS =='
 
+            + '\n\n*** MANDATORY PRE-FLIGHT (run BEFORE choosing any scenario) ***'
+            + '\nFor every CustomField you are about to emit on an existing object, run this check:'
+            + '\n  IF the field\'s parent object is in orgState.existingObjects'
+            + '\n  AND orgState.existingLayouts contains one or more layouts for that object'
+            + '\n  THEN Scenario B FIRES — you MUST also emit a Layout file entry for EACH layout'
+            + '\n  of that object listed in existingLayouts. This is non-negotiable.'
+            + '\nThis rule fires even when the ticket text never mentions "layout", "section", or "page".'
+            + '\nA response that adds a CustomField on an existing object listed in existingLayouts'
+            + '\nbut omits the corresponding Layout file is INCORRECT and will be rejected.'
+            + '\nReason: without the Layout file the new field lands only in the field palette and'
+            + '\nis never placed in any section, so admins/users cannot see it on records.'
+
             + '\n\n-- SCENARIO A: Create brand new layout from scratch --'
-            + '\nUse when: ticket says "create layout", "new layout", or you are creating a new object'
-            + '\nAction: Generate a complete Layout XML with all sections and fields as specified'
+            + '\nUse when: the ticket creates a brand-new custom object (present in files[] but NOT in existingObjects).'
+            + '\nAction: You MUST emit a complete Layout XML alongside the CustomObject XML —'
+            + '\n  even if the ticket does not mention "layout" or "page layout". Creating a new object'
+            + '\n  without a layout leaves admins without a way to see the new fields in the UI.'
             + '\nNaming: For a new object, default layout name = "{ObjectLabel} Layout"'
-            + '\n        e.g. Car__c (label "Car") → memberName = Car__c-Car Layout'
+            + '\n        e.g. Car__c (label "Car") → memberName = Car__c-Car Layout, filePath = layouts/Car__c-Car Layout.layout'
             + '\nSections: If the ticket specifies sections, use those. Otherwise use:'
             + '\n  - Section 1 "Information": Name + all required fields + main custom fields'
             + '\n  - Section 2 "Additional Information": remaining custom fields'
-            + '\nALWAYS generate a layout when creating a new object'
+            + '\nDEPLOYMENT PLAN: whenever Scenario A fires, you MUST set deploymentPlan.scenario = "chained".'
+            + '\n  zip1Files = object + tab + profile + permissionSet + etc. (everything EXCEPT the layout)'
+            + '\n  zip2Files = the layout file for the new object'
+            + '\n  Reason: the Layout XML references field API names that only exist after the object deploys.'
+            + '\n  Single-deploy scenarios would fail with "Invalid field ..." errors.'
 
             + '\n\n-- SCENARIO B: Add fields to an existing layout --'
             + '\nUse when ANY of the following is true:'
@@ -2676,16 +2782,17 @@ public class LLMService {
             + '\nEvery response MUST include a top-level "deploymentPlan" field.'
             + '\n'
             + '\n-- WHEN TO USE "single" --'
-            + '\nUse "single" in ALL cases except creating a brand new custom object that also requires a page layout.'
-            + '\nThis includes: adding fields to existing objects, any ticket with no layout, any ticket'
-            + '\nthat does not create a new object. Single is the default — use it when in doubt.'
+            + '\nUse "single" whenever files[] does NOT contain any brand-new CustomObject.'
+            + '\nThis covers: adding fields to existing objects (with Scenario B layout updates in zip1),'
+            + '\nupdating existing layouts, creating labels, profiles, permission sets, apex, validation rules,'
+            + '\nor any other metadata that does not introduce a new custom object.'
             + '\n'
             + '\n-- WHEN TO USE "chained" --'
-            + '\nUse "chained" ONLY when BOTH conditions are true:'
-            + '\n  1. The ticket creates a brand new custom object (not present in existingObjects in org state)'
-            + '\n  2. The ticket also requires a page layout for that new object'
-            + '\nThe Layout XML references field API names that do not exist until the object is committed,'
-            + '\nso the layout MUST be deployed in a separate second step after the object succeeds.'
+            + '\nUSE "chained" WHENEVER files[] contains a brand-new CustomObject (a path like'
+            + '\n"objects/XYZ__c.object" where XYZ__c is NOT in existingObjects from org state).'
+            + '\nThis is MANDATORY for every new-object ticket — Scenario A requires a Layout, and the Layout'
+            + '\nreferences field API names that only exist after the object deploys, so the layout MUST be'
+            + '\ndeployed in a separate second step after the object succeeds.'
             + '\n'
             + '\n-- FORMAT --'
             + '\nSingle (default — use in almost all cases):'

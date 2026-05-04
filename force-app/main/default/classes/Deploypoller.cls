@@ -23,6 +23,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
     public String  jobId;
     public String  issueKey;
     public Integer attempt;
+    public String  pendingZip2DataJson;
 
     // ─────────────────────────────────────────────────────────────
     // CONSTRUCTORS
@@ -63,17 +64,31 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
 
             if (result.done) {
                 System.debug('[7] Deploy DONE at: ' + Datetime.now());
+                System.debug('[DEPLOY-TRACE] DeployPoller DONE | issue=' + issueKey
+                    + ' | jobId=' + jobId + ' | success=' + result.success
+                    + ' | hasPendingZip2=' + String.isNotBlank(pendingZip2DataJson)
+                    + ' | components=' + result.numberComponentsDeployed);
                 
                 // ── Check if deployment was successful ────────────
                 if (result.success) {
-                    String successMsg = 'Successfully deployed! '
-                        + result.numberComponentsDeployed + ' component(s) deployed.';
-                    System.debug('DeployPoller: deploy SUCCESS. Posting to Jira: ' + successMsg);
-                    postStatusToJira(issueKey, 'success', successMsg, jobId);
+                    if (String.isNotBlank(pendingZip2DataJson)) {
+                        System.debug('DeployPoller: ZIP 1 succeeded — enqueuing ZIP 2 deploy for issue: ' + issueKey);
+                        System.debug('[DEPLOY-TRACE] ZIP1 SUCCESS -> enqueuing ZIP2 for issue=' + issueKey);
+                        System.enqueueJob(ZipDeployQueueable.forZip2(issueKey, pendingZip2DataJson));
+                    } else {
+                        String successMsg = 'Successfully deployed! '
+                            + result.numberComponentsDeployed + ' component(s) deployed.';
+                        System.debug('DeployPoller: deploy SUCCESS. Posting to Jira: ' + successMsg);
+                        System.debug('[DEPLOY-TRACE] FINAL SUCCESS (no chained ZIP2) for issue=' + issueKey);
+                        postStatusToJira(issueKey, 'success', successMsg, jobId);
+                    }
                 } else {
                     // ── Deploy failed — extract error details ─────
                     String errorMsg = parseFailureResult(result);
                     System.debug('DeployPoller: deploy FAILED. Posting to Jira: ' + errorMsg);
+                    System.debug('[DEPLOY-TRACE] FAILED (chain stops) | issue=' + issueKey
+                        + ' | hadPendingZip2=' + String.isNotBlank(pendingZip2DataJson)
+                        + ' | errorPreview=' + errorMsg.abbreviate(300));
                     postStatusToJira(issueKey, 'error', errorMsg, jobId);
                 }
 
@@ -93,7 +108,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
                 // Salesforce queueable stack depth limit (max 5 chained queueables).
                 String cronExp = buildCronIn2Seconds();
                 String jobName = 'DeployPoller_' + jobId + '_' + attempt;
-                System.schedule(jobName, cronExp, new Deploypollerscheduler(jobId, issueKey, attempt + 1));
+                System.schedule(jobName, cronExp, new Deploypollerscheduler(jobId, issueKey, attempt + 1, pendingZip2DataJson));
             }
 
         } catch (Exception e) {
