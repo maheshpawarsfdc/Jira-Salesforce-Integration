@@ -767,6 +767,13 @@ public class LLMService {
                     xmlContent = rewriteRelationshipNamesInCustomObjectXml(xmlContent, sourceObj);
                 }
 
+                // Strip broken <layoutItems> blocks (empty <field>/<behavior>) from any
+                // Layout XML. Protects both Scenario A (new object + new layout) and
+                // Scenario B (existing object + field + regenerated layout).
+                if (metadataType == 'Layout') {
+                    xmlContent = sanitizeLayoutXml(xmlContent);
+                }
+
                 // Validate XML before adding to ZipBuilder
                 String validationError = validateXml(metadataType, memberName, xmlContent);
                 if (String.isNotBlank(validationError)) {
@@ -799,6 +806,11 @@ public class LLMService {
                 System.debug('========================');
             }
         }
+
+        // ── Scenario A backstop — force layout for any new CustomObject when
+        // the LLM forgot to emit one. Adds synthesized Layout entries directly
+        // to zip2Files so the staging block below picks them up.
+        backstopMissingLayoutsForNewObjects(files, orgState, zip2Files, zip2MetadataTypes);
 
         // ── Process destructive changes ────────────────────────
         List<Object> destructiveFiles = (List<Object>) parsed.get('destructiveFiles');
@@ -914,6 +926,114 @@ public class LLMService {
                 + ' but the LLM emitted a CustomObject/CustomField without a matching Layout file.'
                 + ' The new field will land in the palette only and will NOT appear in any layout section.');
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SCENARIO A BACKSTOP
+    // The LLM is required to emit a Layout file for every NEW CustomObject
+    // and to mark the deployment as "chained". When it forgets (e.g. picks
+    // scenario=single with zero layout files), this backstop synthesizes a
+    // minimal default Layout from the object's <fields> and force-stages it
+    // for ZIP2. Result: chained deploy fires regardless of LLM compliance.
+    // ─────────────────────────────────────────────────────────────
+    private static void backstopMissingLayoutsForNewObjects(
+        List<Object> files,
+        Map<String, Object> orgState,
+        Map<String, String> zip2Files,
+        Map<String, Set<String>> zip2MetadataTypes
+    ) {
+        if (files == null || files.isEmpty()) return;
+
+        Set<String> existingObjects = new Set<String>();
+        if (orgState != null) {
+            Object raw = orgState.get('existingObjects');
+            if (raw instanceof List<Object>) {
+                for (Object o : (List<Object>) raw) {
+                    if (o != null) existingObjects.add(String.valueOf(o));
+                }
+            }
+        }
+
+        Map<String, String> newObjectXml = new Map<String, String>();
+        Set<String> objectsWithLayout = new Set<String>();
+
+        for (Object rawFile : files) {
+            Map<String, Object> file = (Map<String, Object>) rawFile;
+            String metadataType = (String) file.get('metadataType');
+            String memberName   = (String) file.get('memberName');
+            String xmlContent   = (String) file.get('xmlContent');
+            if (String.isBlank(metadataType) || String.isBlank(memberName)) continue;
+            if (metadataType == 'CustomObject' && !existingObjects.contains(memberName)) {
+                newObjectXml.put(memberName, xmlContent);
+            } else if (metadataType == 'Layout' && memberName.contains('-')) {
+                objectsWithLayout.add(memberName.substringBefore('-'));
+            }
+        }
+
+        for (String objApi : newObjectXml.keySet()) {
+            if (objectsWithLayout.contains(objApi)) {
+                System.debug('[DEPLOY-TRACE] backstop: Layout already present for new object '
+                    + objApi + ' — no synthesis needed');
+                continue;
+            }
+
+            List<String> fieldNames = extractFieldFullNamesFromObjectXml(newObjectXml.get(objApi));
+            String objLabel    = objApi.endsWith('__c') ? objApi.removeEnd('__c').replace('_', ' ') : objApi;
+            String layoutMember = objApi + '-' + objLabel + ' Layout';
+            String layoutPath   = 'layouts/' + layoutMember + '.layout';
+            String layoutXml    = buildDefaultLayoutXml(fieldNames);
+
+            zip2Files.put(layoutPath, layoutXml);
+            if (!zip2MetadataTypes.containsKey('Layout')) {
+                zip2MetadataTypes.put('Layout', new Set<String>());
+            }
+            zip2MetadataTypes.get('Layout').add(layoutMember);
+
+            System.debug('[DEPLOY-TRACE] *** SCENARIO A BACKSTOP FIRED *** object=' + objApi
+                + ' | LLM omitted Layout — synthesized default with ' + fieldNames.size()
+                + ' field(s) | path=' + layoutPath + ' | layoutMember=' + layoutMember);
+        }
+    }
+
+    private static List<String> extractFieldFullNamesFromObjectXml(String customObjectXml) {
+        List<String> result = new List<String>();
+        if (String.isBlank(customObjectXml)) return result;
+        Pattern fieldsBlock = Pattern.compile('(?s)<fields>(.*?)</fields>');
+        Matcher fbm = fieldsBlock.matcher(customObjectXml);
+        Pattern fnPat = Pattern.compile('<fullName>([^<]+)</fullName>');
+        while (fbm.find()) {
+            Matcher fnm = fnPat.matcher(fbm.group(1));
+            if (fnm.find()) result.add(fnm.group(1));
+        }
+        return result;
+    }
+
+    private static String buildDefaultLayoutXml(List<String> fieldNames) {
+        String s = '<?xml version="1.0" encoding="UTF-8"?>\n';
+        s += '<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n';
+        s += '    <layoutSections>\n';
+        s += '        <editHeading>true</editHeading>\n';
+        s += '        <label>Information</label>\n';
+        s += '        <layoutColumns>\n';
+        s += '            <layoutItems>\n';
+        s += '                <behavior>Required</behavior>\n';
+        s += '                <field>Name</field>\n';
+        s += '            </layoutItems>\n';
+        if (fieldNames != null) {
+            for (String f : fieldNames) {
+                if (String.isBlank(f)) continue;
+                s += '            <layoutItems>\n';
+                s += '                <behavior>Edit</behavior>\n';
+                s += '                <field>' + f + '</field>\n';
+                s += '            </layoutItems>\n';
+            }
+        }
+        s += '        </layoutColumns>\n';
+        s += '        <layoutColumns/>\n';
+        s += '        <style>TwoColumnsTopToBottom</style>\n';
+        s += '    </layoutSections>\n';
+        s += '</Layout>';
+        return s;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1205,6 +1325,52 @@ public class LLMService {
         Matcher m = p.matcher(xml);
         if (m.find()) return m.group(1).trim();
         return null;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // LAYOUT XML SANITIZER
+    // The LLM occasionally emits non-field placeholder sections in Layout XML
+    // (Custom Links, Mobile Cards, etc.) with empty <field></field> and empty
+    // <behavior></behavior> tags. The Metadata API rejects these with:
+    //   "'' is not a valid value for the enum 'UiBehavior'".
+    // This helper strips any <layoutItems>...</layoutItems> block whose <field>
+    // or <behavior> tag is empty. It runs unconditionally for every Layout file
+    // before it is added to ZipBuilder, so both Scenario A (new object + layout)
+    // and Scenario B (existing object + field + layout) are protected.
+    // ─────────────────────────────────────────────────────────────
+    private static String sanitizeLayoutXml(String xml) {
+        if (String.isBlank(xml)) return xml;
+        if (!xml.contains('<layoutItems>')) return xml;
+
+        String cleaned = xml;
+        Integer removed = 0;
+        Integer safety  = 500;   // bounded to avoid pathological loops
+
+        while (safety-- > 0) {
+            Integer emptyBehaviorIdx = cleaned.indexOf('<behavior></behavior>');
+            Integer emptyFieldIdx    = cleaned.indexOf('<field></field>');
+            Integer target = -1;
+            if (emptyBehaviorIdx >= 0 && (emptyFieldIdx < 0 || emptyBehaviorIdx < emptyFieldIdx)) {
+                target = emptyBehaviorIdx;
+            } else if (emptyFieldIdx >= 0) {
+                target = emptyFieldIdx;
+            }
+            if (target < 0) break;
+
+            Integer itemStart = cleaned.lastIndexOf('<layoutItems>', target);
+            Integer itemEnd   = cleaned.indexOf('</layoutItems>', target);
+            if (itemStart < 0 || itemEnd < 0) break;
+            itemEnd += '</layoutItems>'.length();
+
+            cleaned = cleaned.substring(0, itemStart) + cleaned.substring(itemEnd);
+            removed++;
+        }
+
+        if (removed > 0) {
+            System.debug('[DEPLOY-TRACE] sanitizeLayoutXml: stripped ' + removed
+                + ' broken <layoutItems> block(s) from Layout XML');
+        }
+        return cleaned;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2174,6 +2340,12 @@ public class LLMService {
             + '\nSections: If the ticket specifies sections, use those. Otherwise use:'
             + '\n  - Section 1 "Information": Name + all required fields + main custom fields'
             + '\n  - Section 2 "Additional Information": remaining custom fields'
+            + '\nFORBIDDEN: Do NOT include "Custom Links", "Mobile Cards", related-list placeholder'
+            + '\n  sections, or any <layoutSections> block that contains <layoutItems> with empty'
+            + '\n  <field></field> or empty <behavior></behavior> tags. The Metadata API rejects'
+            + '\n  these with "\'\' is not a valid value for the enum \'UiBehavior\'".'
+            + '\n  EVERY <layoutItems> you emit MUST have a non-empty <field>API_Name</field>'
+            + '\n  and a non-empty <behavior>Edit|Required|Readonly</behavior>.'
             + '\nDEPLOYMENT PLAN: whenever Scenario A fires, you MUST set deploymentPlan.scenario = "chained".'
             + '\n  zip1Files = object + tab + profile + permissionSet + etc. (everything EXCEPT the layout)'
             + '\n  zip2Files = the layout file for the new object'
