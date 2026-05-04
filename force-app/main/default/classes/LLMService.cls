@@ -12,6 +12,8 @@ public class LLMService {
     private static Integer totalCompletionTokens = 0;
     private static Integer totalTokens          = 0;
 
+    private static String pendingZip2DataJson;
+
     // ── METADATA PORT (lazy-init, same pattern as ProfileHelper) ──
     private static MetadataPort metaPort {
         get {
@@ -71,7 +73,8 @@ public class LLMService {
     if (ZipBuilder.hasFiles()) {
         flushDmlQueues();
         System.debug('LLMService: ZipBuilder has files, enqueueing deploy...');
-        System.enqueueJob(new ZipDeployQueueable(issueKey));
+        System.enqueueJob(new ZipDeployQueueable(issueKey, pendingZip2DataJson));
+        pendingZip2DataJson = null;
         ZipBuilder.clear();
         return result + '\n⏳ Deploying...';
     }
@@ -202,14 +205,11 @@ public class LLMService {
             orgState.put('sharingModels', sharingModels);
 
             // ── Get layout structure for relevant objects ──────────────
-            // Only fetch if ticket mentions layout-related work
-            String ticketTextLower = (summary + ' ' + description).toLowerCase();
-            Boolean layoutRelevant = ticketTextLower.contains('layout')
-                || ticketTextLower.contains('page layout')
-                || ticketTextLower.contains('section')
-                || ticketTextLower.contains('field order');
-
-            if (layoutRelevant) {
+            // Always fetch layouts for custom objects already in scope. Adding
+            // fields to an existing object implicitly requires the layout XML
+            // to be regenerated so the new fields appear on the page layout,
+            // even when the ticket text does not mention "layout" or "section".
+            if (!existingObjects.isEmpty()) {
                 Map<String, List<Map<String, Object>>> layoutsByObject = new Map<String, List<Map<String, Object>>>();
 
                 for (String objName : existingObjects) {
@@ -266,7 +266,7 @@ public class LLMService {
                     orgState.put('csvFiles', csvSummaries);
                 }
             }
-
+            String ticketTextLower = (summary + ' ' + description).toLowerCase();
             // ── Fetch existing Queues via pure Apex SOQL ──────────────
             // No LLM tool loop needed — SOQL is fast and free of token cost
             if (ticketTextLower.contains('queue')) {
@@ -409,14 +409,19 @@ public class LLMService {
                     // Flatten columns back to an ordered field list
                     // Fields go: left[0], right[0], left[1], right[1]...
                     // so we interleave them to preserve the original left/right distribution
-                    List<String> leftFields  = new List<String>();
-                    List<String> rightFields = new List<String>();
+                    List<String> leftFields     = new List<String>();
+                    List<String> leftBehaviors  = new List<String>();
+                    List<String> rightFields    = new List<String>();
+                    List<String> rightBehaviors = new List<String>();
 
                     if (section.layoutColumns != null && section.layoutColumns.size() > 0) {
                         Metadata.LayoutColumn leftCol = section.layoutColumns[0];
                         if (leftCol.layoutItems != null) {
                             for (Metadata.LayoutItem item : leftCol.layoutItems) {
-                                if (String.isNotBlank(item.field)) leftFields.add(item.field);
+                                if (String.isNotBlank(item.field)) {
+                                    leftFields.add(item.field);
+                                    leftBehaviors.add(behaviorToString(item.behavior));
+                                }
                             }
                         }
                     }
@@ -424,15 +429,20 @@ public class LLMService {
                         Metadata.LayoutColumn rightCol = section.layoutColumns[1];
                         if (rightCol.layoutItems != null) {
                             for (Metadata.LayoutItem item : rightCol.layoutItems) {
-                                if (String.isNotBlank(item.field)) rightFields.add(item.field);
+                                if (String.isNotBlank(item.field)) {
+                                    rightFields.add(item.field);
+                                    rightBehaviors.add(behaviorToString(item.behavior));
+                                }
                             }
                         }
                     }
 
                     sections.add(new Map<String, Object>{
-                        'label'       => section.label,
-                        'leftFields'  => leftFields,
-                        'rightFields' => rightFields
+                        'label'          => section.label,
+                        'leftFields'     => leftFields,
+                        'leftBehaviors'  => leftBehaviors,
+                        'rightFields'    => rightFields,
+                        'rightBehaviors' => rightBehaviors
                     });
                 }
             }
@@ -446,6 +456,18 @@ public class LLMService {
             System.debug('getLayoutStructure failed for [' + fullName + ']: ' + e.getMessage());
             return null;
         }
+    }
+
+    // Maps a Metadata.UiBehavior enum to the XML string used in Layout files.
+    // Used by getLayoutStructure so org state carries the existing behavior of
+    // every layout item — the LLM can then re-emit the layout with the SAME
+    // behavior and avoid errors like "Field:Name must be Readonly" on objects
+    // whose Name field is AutoNumber.
+    private static String behaviorToString(Metadata.UiBehavior b) {
+        if (b == null) return 'Edit';
+        if (b == Metadata.UiBehavior.Required) return 'Required';
+        if (b == Metadata.UiBehavior.Readonly) return 'Readonly';
+        return 'Edit';
     }
 
 
@@ -674,6 +696,23 @@ public class LLMService {
             processDmlOperations(cloneOps);
         }
 
+        // ── Read deployment plan — determines single vs chained deploy ──
+        Map<String, Object> deploymentPlan = (Map<String, Object>) parsed.get('deploymentPlan');
+        String deployScenario = (deploymentPlan != null && deploymentPlan.get('scenario') != null)
+            ? (String) deploymentPlan.get('scenario') : 'single';
+        Set<String> zip2FilePaths = new Set<String>();
+        if (deployScenario == 'chained' && deploymentPlan != null) {
+            List<Object> zip2List = (List<Object>) deploymentPlan.get('zip2Files');
+            if (zip2List != null) {
+                for (Object p : zip2List) { zip2FilePaths.add((String) p); }
+            }
+        }
+        System.debug('processXmlGenerationResponse: deployScenario=' + deployScenario
+            + ', zip2FilePaths=' + zip2FilePaths);
+
+        Map<String, String>       zip2Files         = new Map<String, String>();
+        Map<String, Set<String>>  zip2MetadataTypes = new Map<String, Set<String>>();
+
         // ── Process regular files ──────────────────────────────
         List<Object> files = (List<Object>) parsed.get('files');
         if (files != null && !files.isEmpty()) {
@@ -697,6 +736,13 @@ public class LLMService {
                 
                 }
 
+                // Rewrite <relationshipName> for every Lookup/MasterDetail field in a CustomObject
+                // so names never collide with orphans left by prior partial deploys.
+                if (metadataType == 'CustomObject') {
+                    String sourceObj = extractSourceObjectFromObjectPath(filePath);
+                    xmlContent = rewriteRelationshipNamesInCustomObjectXml(xmlContent, sourceObj);
+                }
+
                 // Validate XML before adding to ZipBuilder
                 String validationError = validateXml(metadataType, memberName, xmlContent);
                 if (String.isNotBlank(validationError)) {
@@ -704,6 +750,16 @@ public class LLMService {
                         + filePath + ']: ' + validationError);
                     FunctionHelper.hadError = true;
                     return 'Error: Invalid XML generated for ' + filePath + ': ' + validationError;
+                }
+
+                if (zip2FilePaths.contains(filePath)) {
+                    zip2Files.put(filePath, xmlContent);
+                    if (!zip2MetadataTypes.containsKey(metadataType)) {
+                        zip2MetadataTypes.put(metadataType, new Set<String>());
+                    }
+                    zip2MetadataTypes.get(metadataType).add(memberName);
+                    System.debug('processXmlGenerationResponse: held back [' + filePath + '] for ZIP 2');
+                    continue;
                 }
 
                 ZipBuilder.addFile(metadataType, memberName, filePath, xmlContent);
@@ -751,6 +807,20 @@ public class LLMService {
             System.debug('processXmlGenerationResponse: processing '
                 + nonCloneOps.size() + ' non-clone DML operation(s)');
             processDmlOperations(nonCloneOps);
+        }
+
+        // ── Persist zip2 data for chained deploy ──────────────
+        if (!zip2Files.isEmpty()) {
+            Map<String, Object> zip2Data = new Map<String, Object>{
+                'files'             => zip2Files,
+                'binaryFiles'       => new Map<String, String>(),
+                'metadataTypesJson' => JSON.serialize(zip2MetadataTypes)
+            };
+            pendingZip2DataJson = JSON.serialize(zip2Data);
+            System.debug('processXmlGenerationResponse: zip2 data staged — '
+                + zip2Files.size() + ' file(s) for ZIP 2');
+        } else {
+            pendingZip2DataJson = null;
         }
 
         // ── Return summary ─────────────────────────────────────
@@ -872,6 +942,181 @@ public class LLMService {
             }
 
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // RELATIONSHIP NAME POST-PROCESSING (CustomObject XML)
+    //
+    // The LLM emits <relationshipName> values like "Reservation_AI_Message"
+    // directly in the CustomObject XML. When a prior deploy of the same ticket
+    // partially succeeded, that name survives as an orphan on the parent object
+    // and every re-deploy fails with "There is already a Child Relationship
+    // named X on Y". We rewrite every Lookup/MasterDetail relationshipName to
+    // a SHA1-suffixed unique value so:
+    //   - same ticket → same name (idempotent across re-runs)
+    //   - different {child,field,parent} → different name (no collisions)
+    //   - never equals the legacy "{Child}_{Field}" pattern (clears the org)
+    // ─────────────────────────────────────────────────────────────
+    private static String uniqueRelationshipName(
+        String childObjectApiName, String fieldApiName, String parentObjectApiName) {
+
+        String child  = sanitizeRelToken(String.isBlank(childObjectApiName) ? 'Child' : childObjectApiName);
+        String field  = sanitizeRelToken(fieldApiName);
+        String parent = sanitizeRelToken(parentObjectApiName);
+
+        // Look up names already in use on the parent object (avoids known orphans).
+        Set<String> taken = getExistingChildRelationshipNames(parentObjectApiName);
+
+        Integer maxLen = 40;
+        String base = child;
+        if (String.isNotBlank(field)) base = base + '_' + field;
+
+        // Sanity guard: Salesforce API names ALWAYS start with a letter, so after
+        // sanitization `base` is guaranteed to start alpha. We deliberately do NOT
+        // prepend any prefix here — earlier versions had a bug where Apex's
+        // case-insensitive String == made an "if first char isn't alpha" guard
+        // fire spuriously and prefix every name with "R".
+        System.debug('uniqueRelationshipName[v2]: child=' + child + ' field=' + field
+            + ' parent=' + parent + ' base=' + base);
+
+        // Per-deploy timestamp makes the name NON-deterministic across deploy
+        // attempts — essential because soft-deleted (recycle-bin) relationships
+        // are not visible to Schema.describe, so a deterministic hash will
+        // happily regenerate a name that the deploy validator still considers
+        // "taken". A fresh timestamp per call avoids that failure mode entirely.
+        String nonce = String.valueOf(DateTime.now().getTime());
+        String fallback = null;
+        for (Integer salt = 0; salt < 32; salt++) {
+            String seed = child + '|' + field + '|' + parent + '|T' + nonce
+                + (salt > 0 ? '|S' + String.valueOf(salt) : '');
+            String hex    = EncodingUtil.convertToHex(
+                Crypto.generateDigest('SHA1', Blob.valueOf(seed))).toUpperCase();
+            String suffix = hex.substring(0, 6);
+
+            Integer maxBaseLen = Math.max(1, maxLen - (1 + suffix.length()));
+            String b = (base.length() > maxBaseLen) ? base.substring(0, maxBaseLen) : base;
+            String rel = b + '_' + suffix;
+
+            if (fallback == null) fallback = rel;
+            if (!taken.contains(rel)) {
+                System.debug('uniqueRelationshipName[v2]: → ' + rel
+                    + ' (salt=' + salt + ', collisions checked against '
+                    + taken.size() + ' existing rel name(s) on ' + parentObjectApiName + ')');
+                return rel;
+            }
+            System.debug('uniqueRelationshipName[v2]: name [' + rel
+                + '] already taken on ' + parentObjectApiName + ', re-hashing (salt=' + (salt + 1) + ')');
+        }
+        System.debug('uniqueRelationshipName[v2]: exhausted salts, returning fallback ' + fallback);
+        return fallback;
+    }
+
+    // Returns the set of relationshipName values already in use on the parent's
+    // child relationships. This is what the deploy validator checks against.
+    // Soft-deleted (recycle-bin) relationships are NOT returned by describe — those
+    // can only be cleared by emptying the recycle bin in setup.
+    private static Set<String> getExistingChildRelationshipNames(String parentApiName) {
+        Set<String> names = new Set<String>();
+        if (String.isBlank(parentApiName)) return names;
+        try {
+            Schema.SObjectType t = Schema.getGlobalDescribe().get(parentApiName);
+            if (t == null) return names;
+            Schema.DescribeSObjectResult d = t.getDescribe();
+            for (Schema.ChildRelationship cr : d.getChildRelationships()) {
+                String n = cr.getRelationshipName();
+                if (String.isNotBlank(n)) names.add(n);
+            }
+        } catch (Exception e) {
+            System.debug('getExistingChildRelationshipNames failed for ['
+                + parentApiName + ']: ' + e.getMessage());
+        }
+        return names;
+    }
+
+    private static String sanitizeRelToken(String token) {
+        if (String.isBlank(token)) return '';
+        String t = token.trim();
+        if (t.endsWith('__c'))   t = t.substring(0, t.length() - 3);
+        if (t.endsWith('__mdt')) t = t.substring(0, t.length() - 5);
+        // Only alphanumeric + underscore
+        t = t.replaceAll('[^A-Za-z0-9_]', '_');
+        // Collapse multiple underscores
+        while (t.contains('__')) t = t.replace('__', '_');
+        if (t.startsWith('_')) t = t.substring(1);
+        if (t.endsWith('_'))   t = t.substring(0, t.length() - 1);
+        return t;
+    }
+
+    // Derive "Reservation__c" from "objects/Reservation__c.object".
+    private static String extractSourceObjectFromObjectPath(String filePath) {
+        if (String.isBlank(filePath)) return '';
+        String name = filePath;
+        Integer slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        if (name.toLowerCase().endsWith('.object')) {
+            name = name.substring(0, name.length() - '.object'.length());
+        }
+        return name;
+    }
+
+    // Rewrites <relationshipName>…</relationshipName> inside every <fields> block
+    // whose <type> is Lookup or MasterDetail. Injects one if missing.
+    private static String rewriteRelationshipNamesInCustomObjectXml(String xmlContent, String sourceObjectApiName) {
+        if (String.isBlank(xmlContent) || !xmlContent.contains('<fields>')) return xmlContent;
+
+        Pattern fieldsBlock = Pattern.compile('(?s)<fields>(.*?)</fields>');
+        Matcher m = fieldsBlock.matcher(xmlContent);
+
+        List<String> oldBlocks = new List<String>();
+        List<String> newBlocks = new List<String>();
+
+        while (m.find()) {
+            String fullMatch = m.group(0);
+            String inners     = m.group(1);
+
+            String typeVal  = extractFirstTagValue(inners, 'type');
+            if (typeVal != 'Lookup' && typeVal != 'MasterDetail') continue;
+
+            String fieldApi = extractFirstTagValue(inners, 'fullName');
+            String parent   = extractFirstTagValue(inners, 'referenceTo');
+            if (String.isBlank(fieldApi) || String.isBlank(parent)) continue;
+
+            String uniqueName = uniqueRelationshipName(sourceObjectApiName, fieldApi, parent);
+            String newInner;
+
+            if (inners.contains('<relationshipName>')) {
+                // Replace the first <relationshipName>…</relationshipName>
+                newInner = inners.replaceFirst(
+                    '<relationshipName>.*?</relationshipName>',
+                    '<relationshipName>' + uniqueName + '</relationshipName>');
+            } else {
+                // Inject right after the <referenceTo>…</referenceTo> tag
+                newInner = inners.replaceFirst(
+                    '(</referenceTo>)',
+                    '$1<relationshipName>' + uniqueName + '</relationshipName>');
+            }
+
+            oldBlocks.add(fullMatch);
+            newBlocks.add('<fields>' + newInner + '</fields>');
+
+            System.debug('rewriteRelationshipNames: ' + sourceObjectApiName + '.' + fieldApi
+                + ' → ' + uniqueName);
+        }
+
+        String result = xmlContent;
+        for (Integer i = 0; i < oldBlocks.size(); i++) {
+            result = result.replace(oldBlocks[i], newBlocks[i]);
+        }
+        return result;
+    }
+
+    // Pulls the text value of the first <tagName>…</tagName> found in xml.
+    private static String extractFirstTagValue(String xml, String tagName) {
+        if (String.isBlank(xml) || String.isBlank(tagName)) return null;
+        Pattern p = Pattern.compile('(?s)<' + tagName + '>(.*?)</' + tagName + '>');
+        Matcher m = p.matcher(xml);
+        if (m.find()) return m.group(1).trim();
+        return null;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1276,6 +1521,7 @@ public class LLMService {
             + '\n      "username": "john@example.com"'
             + '\n    }'
             + '\n  ],'
+            + '\n  "deploymentPlan": { "scenario": "single" },'
             + '\n  "summary": "Created Reservation__c object with Status__c field"'
             + '\n}'
 
@@ -1458,12 +1704,8 @@ public class LLMService {
             + '\n    <label>Field Label</label>'
             + '\n    <type>Lookup</type>'
             + '\n    <referenceTo>ParentObject__c</referenceTo>'
-            + '\n    <relationshipName>ChildObjectName_FieldName</relationshipName>'  // NO random suffix
+            + '\n    <relationshipName>ChildObject_FieldName</relationshipName>'
             + '\n</fields>'
-            + '\nRULE: relationshipName = {ChildObjectWithout__c}_{FieldNameWithout__c}'
-            + '\nExample: Reservation__c.AI_Message__c → relationshipName = Reservation_AI_Message'
-            + '\nExample: Reservation__c.Account__c → relationshipName = Reservation_Account'
-            + '\nThis must be DETERMINISTIC — same inputs always produce the same name. Never use random suffixes.'
 
             + '\n-- MasterDetail --'
             + '\n<fields>'
@@ -1471,10 +1713,19 @@ public class LLMService {
             + '\n    <label>Field Label</label>'
             + '\n    <type>MasterDetail</type>'
             + '\n    <referenceTo>ParentObject__c</referenceTo>'
-            + '\n    <relationshipName>ChildObject_FieldName_ABC123</relationshipName>'
+            + '\n    <relationshipName>ChildObject_FieldName</relationshipName>'
             + '\n    <reparentableMasterDetail>false</reparentableMasterDetail>'
             + '\n    <writeRequiresMasterRead>false</writeRequiresMasterRead>'
             + '\n</fields>'
+
+            + '\n-- RELATIONSHIP NAME RULES --'
+            + '\n<relationshipName> is REQUIRED on every Lookup / MasterDetail field.'
+            + '\nYou MUST include the <relationshipName> tag. A reasonable default is {ChildObjectWithout__c}_{FieldNameWithout__c}.'
+            + '\nApex will AUTOMATICALLY rewrite the <relationshipName> value to a unique hash-suffixed name'
+            + '\n(e.g. Reservation_AI_Message_7A3F2C) before the XML is deployed. This prevents collisions'
+            + '\nwith orphan child relationships left in the org from prior failed deploys.'
+            + '\nDo NOT worry about uniqueness — just emit the simple {Child}_{Field} form and Apex handles the rest.'
+
             + '\nCRITICAL RULE: When a MasterDetail field exists, the object sharingModel MUST be ControlledByParent'
 
             // ── CUSTOM LABEL XML ───────────────────────────────────────
@@ -1790,11 +2041,22 @@ public class LLMService {
             + '\n   - Left column  gets: F0, F2, F4... (even positions)'
             + '\n   - Right column gets: F1, F3, F5... (odd positions)'
             + '\n   - This must be preserved when modifying existing layouts'
-            + '\n4. behavior values:'
-            + '\n   - "Required" → Name field + any field that is required in org state'
-            + '\n   - "Readonly" → system fields: Id, OwnerId, CreatedById, CreatedDate,'
-            + '\n                  LastModifiedById, LastModifiedDate, SystemModstamp, IsDeleted'
-            + '\n   - "Edit"     → all other custom fields'
+            + '\n4. behavior values — CRITICAL for reliable deploys:'
+            + '\n   a) If the field is ALREADY PRESENT in an existing layout in org state:'
+            + '\n      USE THE EXACT BEHAVIOR FROM ORG STATE — do NOT re-derive it.'
+            + '\n      Read it from existingLayouts[ObjectName][n].sections[s].leftBehaviors[i]'
+            + '\n      or .rightBehaviors[i] (parallel to leftFields / rightFields at the same index).'
+            + '\n      This is MANDATORY. Changing an existing field\'s behavior will fail with errors like'
+            + '\n      "Field:Name must be Readonly" (happens when Name is an AutoNumber field).'
+            + '\n   b) If the field is NEW (being added in this ticket) — apply these defaults:'
+            + '\n      - "Readonly" → system fields: Id, OwnerId, CreatedById, CreatedDate,'
+            + '\n                     LastModifiedById, LastModifiedDate, SystemModstamp, IsDeleted,'
+            + '\n                     AND any AutoNumber field (including Name when Name is AutoNumber)'
+            + '\n      - "Required" → required custom fields and the Name field ONLY when Name is a'
+            + '\n                     standard Text-type name (i.e. Name is NOT AutoNumber)'
+            + '\n      - "Edit"     → all other custom fields'
+            + '\n   RULE OF THUMB: if existingLayouts shows Name with behavior Readonly for an object,'
+            + '\n   that object has an AutoNumber Name — always emit <behavior>Readonly</behavior> for Name.'
             + '\n5. style is always TwoColumnsTopToBottom'
             + '\n6. customLabel, detailHeading, editHeading are always true'
             + '\n7. Multiple sections → multiple <layoutSections> blocks in the same Layout XML'
@@ -1813,15 +2075,29 @@ public class LLMService {
             + '\nALWAYS generate a layout when creating a new object'
 
             + '\n\n-- SCENARIO B: Add fields to an existing layout --'
-            + '\nUse when: ticket says "add field to layout", "show X on layout", "add to page layout"'
+            + '\nUse when ANY of the following is true:'
+            + '\n  (1) ticket says "add field to layout", "show X on layout", "add to page layout", OR'
+            + '\n  (2) the ticket creates one or more new custom fields on an EXISTING object that has'
+            + '\n      layouts in existingLayouts — EVEN IF the ticket does not mention "layout".'
+            + '\nRULE: whenever you emit a new CustomField on an existing object, you MUST ALSO emit a'
+            + '\nLayout file for EACH existing layout of that object in existingLayouts, appending the'
+            + '\nnew field(s) to the "Information" section (or the first section if no "Information"'
+            + '\nexists). This is the default behavior — creating fields without updating the layout is'
+            + '\nconsidered incomplete.'
             + '\nAction: Regenerate the COMPLETE Layout XML including ALL existing sections and fields'
             + '\n  PLUS the new fields added to the specified section (or "Information" if not specified)'
             + '\nHow to reconstruct from org state:'
-            + '\n  existingLayouts[ObjectName][n].sections gives you sections with leftFields + rightFields'
-            + '\n  For each section: interleave leftFields and rightFields back into an ordered list:'
-            + '\n    ordered = [left[0], right[0], left[1], right[1], ...]'
-            + '\n  Then append new fields to the end of that ordered list before re-splitting left/right'
-            + '\nCRITICAL: Never drop existing fields — include ALL fields from org state plus the new ones'
+            + '\n  existingLayouts[ObjectName][n].sections gives you sections with four parallel arrays:'
+            + '\n    leftFields, leftBehaviors, rightFields, rightBehaviors'
+            + '\n  For each section: interleave the fields AND their behaviors into an ordered pair list:'
+            + '\n    ordered = [(left[0], leftBeh[0]), (right[0], rightBeh[0]),'
+            + '\n               (left[1], leftBeh[1]), (right[1], rightBeh[1]), ...]'
+            + '\n  PRESERVE each existing field\'s behavior EXACTLY — do NOT change Readonly to Required'
+            + '\n  or vice versa (doing so breaks AutoNumber Name fields with "must be Readonly" errors).'
+            + '\n  Append the NEW fields to the end of the ordered list with their own computed behaviors'
+            + '\n  (Edit by default; Readonly for system/AutoNumber fields).'
+            + '\nCRITICAL: Never drop existing fields AND never change existing behaviors —'
+            + '\n  include ALL fields from org state with their ORIGINAL behaviors plus the new ones.'
 
             + '\n\n-- SCENARIO C: Remove fields from an existing layout --'
             + '\nUse when: ticket says "remove field from layout", "hide X from layout"'
@@ -2394,6 +2670,46 @@ public class LLMService {
             + '\nThe ONLY way Salesforce knows it is a Custom Metadata Type is because the API name ends in __mdt.'
             + '\nThe XML structure is simply <label>, <pluralLabel>, optional <description>, <visibility>, and <fields>.'
             + '\nNever add <customMetadataType>, <customSettingsType>, or any other discriminator tag to __mdt objects.'
+
+            // ── DEPLOYMENT PLAN ────────────────────────────────────────
+            + '\n\n== DEPLOYMENT PLAN =='
+            + '\nEvery response MUST include a top-level "deploymentPlan" field.'
+            + '\n'
+            + '\n-- WHEN TO USE "single" --'
+            + '\nUse "single" in ALL cases except creating a brand new custom object that also requires a page layout.'
+            + '\nThis includes: adding fields to existing objects, any ticket with no layout, any ticket'
+            + '\nthat does not create a new object. Single is the default — use it when in doubt.'
+            + '\n'
+            + '\n-- WHEN TO USE "chained" --'
+            + '\nUse "chained" ONLY when BOTH conditions are true:'
+            + '\n  1. The ticket creates a brand new custom object (not present in existingObjects in org state)'
+            + '\n  2. The ticket also requires a page layout for that new object'
+            + '\nThe Layout XML references field API names that do not exist until the object is committed,'
+            + '\nso the layout MUST be deployed in a separate second step after the object succeeds.'
+            + '\n'
+            + '\n-- FORMAT --'
+            + '\nSingle (default — use in almost all cases):'
+            + '\n  "deploymentPlan": { "scenario": "single" }'
+            + '\n'
+            + '\nChained (new object + layout only):'
+            + '\n  "deploymentPlan": {'
+            + '\n    "scenario": "chained",'
+            + '\n    "zip1Files": ['
+            + '\n      "objects/MyObject__c.object",'
+            + '\n      "tabs/MyObject__c.tab",'
+            + '\n      "profiles/Admin.profile"'
+            + '\n    ],'
+            + '\n    "zip2Files": ['
+            + '\n      "layouts/MyObject__c-My Object Layout.layout"'
+            + '\n    ]'
+            + '\n  }'
+            + '\n'
+            + '\nRULES:'
+            + '\n- zip1Files lists the filePaths of ALL files for the first deploy (object, tab, profile)'
+            + '\n- zip2Files lists the filePaths of ALL layout files for the second deploy'
+            + '\n- zip1Files + zip2Files MUST together equal ALL filePaths listed in files[]'
+            + '\n- If scenario is "single", omit zip1Files and zip2Files entirely'
+            + '\n- NEVER use "chained" for an existing object — the object and its fields deploy fine together'
 
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
             + '\nCurrent User: ' + UserInfo.getUserName();
