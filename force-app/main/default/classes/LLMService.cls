@@ -1456,6 +1456,33 @@ public class LLMService {
                 new List<String>{ '<fullName>', '<value>' });
         }
 
+        if (metadataType == 'NamedCredential') {
+            // Always required
+            String baseError = validateRequiredElements(xmlContent,
+                new List<String>{ '<label>', '<endpoint>', '<protocol>', '<principalType>' });
+            if (String.isNotBlank(baseError)) return baseError;
+
+            // Reject old incorrect patterns
+            if (xmlContent.contains('<principalType>Anonymous</principalType>')) {
+                return 'Invalid principalType — Named Principal credentials must use NamedUser, not Anonymous';
+            }
+            if (xmlContent.contains('<fullName>')) {
+                return 'Invalid element <fullName> inside NamedCredential XML — remove it, the file name is the identity';
+            }
+
+            // Protocol-specific required fields
+            if (xmlContent.contains('<protocol>Oauth</protocol>')) {
+                return validateRequiredElements(xmlContent,
+                    new List<String>{ '<authProvider>', '<oauthScope>' });
+            }
+            if (xmlContent.contains('<protocol>Password</protocol>')) {
+                return validateRequiredElements(xmlContent,
+                    new List<String>{ '<username>', '<password>' });
+            }
+
+            return null;
+        }
+
         return null; // Valid
     }
 
@@ -1524,10 +1551,9 @@ public class LLMService {
             try {
                 response = callGroq(messages, tools, 'auto');
             } catch (Exception e) {
-                // Read stage is advisory. If tool-calling fails (for example Groq tool_use_failed),
-                // continue the ticket using Apex org check + XML generation stage.
-                System.debug('runToolCallingLoop: read stage call failed, falling back to empty read state: ' + e.getMessage());
-                ErrorLogger.log(e);
+                System.debug('runToolCallingLoop: read stage call failed, falling back: ' + e.getMessage());
+                // Do NOT call ErrorLogger.log(e) here — it does DML which breaks
+                // the subsequent Stage 2 Groq callout with "uncommitted work pending"
                 return '{}';
             }
             List<Object> choices         = (List<Object>) response.get('choices');
@@ -2035,23 +2061,81 @@ public class LLMService {
             + '\nFile path: namedCredentials/ApiName.namedCredential'
             + '\nmetadataType: NamedCredential'
             + '\nmemberName: ApiName (no __c suffix)'
+            + '\n'
+            + '\nIDENTITY TYPE is always Named Principal → principalType = NamedUser'
+            + '\nPick the correct protocol template based on what the ticket specifies.'
+            + '\n'
+            + '\nCRITICAL — ELEMENT ORDER: elements MUST appear in strict alphabetical order.'
+            + '\nSalesforce rejects Named Credential XML with wrong element order.'
+            + '\nDo NOT include <fullName> inside the XML body — the file name is the identity.'
+            + '\n'
+
+            // ── PROTOCOL 1: No Authentication ──────────────────
+            + '\n-- PROTOCOL: No Authentication --'
+            + '\nUse when ticket says: "No Authentication", "No Auth", "anonymous"'
             + '\n<?xml version="1.0" encoding="UTF-8"?>'
             + '\n<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">'
-            + '\n    <fullName>ApiName</fullName>'
-            + '\n    <label>Label</label>'
-            + '\n    <protocol>NoAuthentication</protocol>'
-            + '\n    <endpoint>https://api.example.com</endpoint>'
-            + '\n    <principalType>Anonymous</principalType>'
-            + '\n    <calloutStatus>Enabled</calloutStatus>'
             + '\n    <allowMergeFieldsInBody>false</allowMergeFieldsInBody>'
             + '\n    <allowMergeFieldsInHeader>false</allowMergeFieldsInHeader>'
-            + '\n    <generateAuthorizationHeader>false</generateAuthorizationHeader>'
+            + '\n    <calloutStatus>Enabled</calloutStatus>'
+            + '\n    <endpoint>https://api.example.com</endpoint>'
+            + '\n    <generateAuthorizationHeader>true</generateAuthorizationHeader>'
+            + '\n    <label>Label</label>'
+            + '\n    <principalType>NamedUser</principalType>'
+            + '\n    <protocol>NoAuthentication</protocol>'
             + '\n</NamedCredential>'
+            + '\n'
+
+            // ── PROTOCOL 2: OAuth 2.0 ──────────────────────────
+            + '\n-- PROTOCOL: OAuth 2.0 --'
+            + '\nUse when ticket says: "OAuth 2.0", "OAuth"'
+            + '\nRequired from ticket: Authentication Provider name + Scope'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <allowMergeFieldsInBody>false</allowMergeFieldsInBody>'
+            + '\n    <allowMergeFieldsInHeader>false</allowMergeFieldsInHeader>'
+            + '\n    <authProvider>AuthProviderDeveloperName</authProvider>'
+            + '\n    <calloutStatus>Enabled</calloutStatus>'
+            + '\n    <endpoint>https://api.example.com</endpoint>'
+            + '\n    <generateAuthorizationHeader>true</generateAuthorizationHeader>'
+            + '\n    <label>Label</label>'
+            + '\n    <oauthScope>api refresh_token</oauthScope>'
+            + '\n    <principalType>NamedUser</principalType>'
+            + '\n    <protocol>Oauth</protocol>'
+            + '\n</NamedCredential>'
+            + '\n'
+
+            // ── PROTOCOL 3: Password Authentication ────────────
+            + '\n-- PROTOCOL: Password Authentication --'
+            + '\nUse when ticket says: "Password Authentication", "Password Auth", "Basic Auth"'
+            + '\nRequired from ticket: Username + Password'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <allowMergeFieldsInBody>false</allowMergeFieldsInBody>'
+            + '\n    <allowMergeFieldsInHeader>false</allowMergeFieldsInHeader>'
+            + '\n    <calloutStatus>Enabled</calloutStatus>'
+            + '\n    <endpoint>https://api.example.com</endpoint>'
+            + '\n    <generateAuthorizationHeader>true</generateAuthorizationHeader>'
+            + '\n    <label>Label</label>'
+            + '\n    <password>thepassword</password>'
+            + '\n    <principalType>NamedUser</principalType>'
+            + '\n    <protocol>Password</protocol>'
+            + '\n    <username>user@example.com</username>'
+            + '\n</NamedCredential>'
+            + '\n'
+
+            // ── NAMED CREDENTIAL RULES ─────────────────────────
             + '\nRULES:'
-            + '\n- protocol is always NoAuthentication'
-            + '\n- principalType is always Anonymous'
-            + '\n- calloutStatus is always Enabled'
-            + '\n- allowMergeFieldsInBody, allowMergeFieldsInHeader, generateAuthorizationHeader default to false'
+            + '\n- principalType is ALWAYS NamedUser — never Anonymous'
+            + '\n- calloutStatus is ALWAYS Enabled'
+            + '\n- generateAuthorizationHeader is ALWAYS true'
+            + '\n- allowMergeFieldsInBody and allowMergeFieldsInHeader default to false unless ticket says otherwise'
+            + '\n- Element order MUST be strictly alphabetical — any deviation causes deploy failure'
+            + '\n- Do NOT include <fullName> inside the XML body'
+            + '\n- For OAuth 2.0: authProvider value = the DeveloperName of the Auth Provider stated in the ticket'
+            + '\n- For OAuth 2.0: oauthScope value = scope string stated in the ticket (e.g. "api refresh_token")'
+            + '\n- For Password: username and password come directly from the ticket'
+            + '\n- NEVER invent or guess authProvider, username, or password — use only what the ticket provides'
             + '\n- Each Named Credential is its own separate file — do NOT merge into one file'
             + '\n- For DELETING a Named Credential, use destructiveFiles with type NamedCredential and member = apiName'
             + '\n- For UPDATING: use all existing values from org state, only change what the ticket requests'
