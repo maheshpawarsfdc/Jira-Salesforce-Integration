@@ -235,6 +235,7 @@ public class PageLayoutHelper {
         } catch (PageLayoutException e) {
             throw e;
         } catch (Exception e) {
+            ErrorLogger.log(e);
             throw new PageLayoutException('Failed to retrieve layout '
                 + fullName + ': ' + e.getMessage());
         }
@@ -560,6 +561,7 @@ public class PageLayoutHelper {
             }
         } catch (Exception e) {
             System.debug('PageLayoutHelper.parseSectionDefs() failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             List<Object> reqList = new List<Object>();
             for (String r : requiredFields) reqList.add(r);
             sections.add(new Map<String, Object>{
@@ -637,6 +639,7 @@ public class PageLayoutHelper {
             }
         } catch (Exception e) {
             System.debug('PageLayoutHelper.getRequiredFields() failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             required.add('Name');
         }
         return required;
@@ -671,6 +674,7 @@ public class PageLayoutHelper {
             }
         } catch (Exception e) {
             System.debug('PageLayoutHelper.getAllProfileNames() failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             names.add('System Administrator');
         }
         return names;
@@ -738,6 +742,7 @@ public class PageLayoutHelper {
             List<Object> parsed = (List<Object>) JSON.deserializeUntyped(jsonStr);
             for (Object o : parsed) result.add(String.valueOf(o).trim());
         } catch (Exception e) {
+            ErrorLogger.log(e);
             for (String s : jsonStr.split(',')) {
                 result.add(s.trim().replaceAll('"', '').replaceAll('\'', ''));
             }

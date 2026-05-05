@@ -520,6 +520,7 @@ public class ProfileHelper {
             Integer e = content.indexOf('End_Of_Session_Id');
             return content.substring(s, e);
         } catch (Exception ex) {
+            ErrorLogger.log(ex);
             return UserInfo.getSessionId();
         }
     }

@@ -43,6 +43,7 @@ public class Deploypollerscheduler implements Schedulable {
             System.abortJob(ctx.getTriggerId());
         } catch (Exception e) {
             System.debug('DeployPollerScheduler: could not abort scheduled job: ' + e.getMessage());
+            ErrorLogger.log(e, issueKey);
         }
 
         // Enqueue the next DeployPoller — fresh queueable stack, depth = 1

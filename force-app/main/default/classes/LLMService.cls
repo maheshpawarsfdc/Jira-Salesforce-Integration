@@ -36,6 +36,9 @@ public class LLMService {
     // ─────────────────────────────────────────────────────────────
     public static String processJiraTicket(String issueKey, String summary, String description) {
 
+        // Ambient ticket context so any ErrorLogger.log() in deep helpers tags this key.
+        ErrorLogger.currentJiraKey = issueKey;
+
         System.debug('JIRA AI ASSISTANT — NEW REQUEST');
         System.debug('► Issue Key  : ' + issueKey);
         System.debug('► Summary    : ' + summary);
@@ -104,6 +107,7 @@ public class LLMService {
         );
     } catch (Exception e) {
         System.debug('LLMService: storeDeploymentStatus FAILED — ' + e.getMessage());
+        ErrorLogger.log(e);
     }
 
     // DML flush comes AFTER the callout — safe now
@@ -232,6 +236,7 @@ public class LLMService {
                         }
                     } catch (Exception e) {
                         System.debug('runOrgCheck: layout fetch failed for [' + objName + ']: ' + e.getMessage());
+                        ErrorLogger.log(e);
                     }
                 }
 
@@ -258,6 +263,7 @@ public class LLMService {
                                 + readResult.get('totalRows') + ' rows, columns=' + readResult.get('columns'));
                         } catch (Exception e) {
                             System.debug('runOrgCheck: CSV read failed [' + fileName + '] — ' + e.getMessage());
+                            ErrorLogger.log(e);
                         }
                     }
                 }
@@ -314,6 +320,7 @@ public class LLMService {
                     
                 } catch (Exception e) {
                     System.debug('runOrgCheck: queue fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
                 }
             }
 
@@ -353,6 +360,7 @@ public class LLMService {
                     }
                 } catch (Exception e) {
                     System.debug('runOrgCheck: public group fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
                 }
             }
 
@@ -375,11 +383,13 @@ public class LLMService {
                     }
                 } catch (Exception e) {
                     System.debug('runOrgCheck: assignment rules fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
                 }
             }
 
         } catch (Exception e) {
             System.debug('runOrgCheck failed: ' + e.getMessage());
+            ErrorLogger.log(e);
         }
 
         return orgState;
@@ -467,6 +477,7 @@ public class LLMService {
 
         } catch (Exception e) {
             System.debug('getLayoutStructure failed for [' + fullName + ']: ' + e.getMessage());
+            ErrorLogger.log(e);
             return null;
         }
     }
@@ -555,6 +566,7 @@ public class LLMService {
 
         } catch (Exception e) {
             System.debug('getAssignmentRulesState failed for [' + objectType + ']: ' + e.getMessage());
+            ErrorLogger.log(e);
             return null;
         }
     }
@@ -620,6 +632,7 @@ public class LLMService {
             return orgState;
         } catch (Exception e) {
             System.debug('── STAGE 1 JSON parse failed: ' + e.getMessage() + ' — using empty state');
+            ErrorLogger.log(e);
             return new Map<String, Object>{ 'rawResponse' => orgStateJson };
         }
     }
@@ -685,6 +698,7 @@ public class LLMService {
             parsed = (Map<String, Object>) JSON.deserializeUntyped(cleaned);
         } catch (Exception e) {
             System.debug('processXmlGenerationResponse: JSON parse failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             FunctionHelper.hadError = true;
             return 'Error: LLM returned invalid JSON. Raw response: ' + llmResponse;
         }
@@ -1237,6 +1251,7 @@ public class LLMService {
         } catch (Exception e) {
             System.debug('getExistingChildRelationshipNames failed for ['
                 + parentApiName + ']: ' + e.getMessage());
+            ErrorLogger.log(e);
         }
         return names;
     }
@@ -1388,6 +1403,7 @@ public class LLMService {
             Dom.Document doc = new Dom.Document();
             doc.load(xmlContent);
         } catch (Exception e) {
+            ErrorLogger.log(e);
             return 'Malformed XML: ' + e.getMessage();
         }
 
@@ -1511,6 +1527,7 @@ public class LLMService {
                 // Read stage is advisory. If tool-calling fails (for example Groq tool_use_failed),
                 // continue the ticket using Apex org check + XML generation stage.
                 System.debug('runToolCallingLoop: read stage call failed, falling back to empty read state: ' + e.getMessage());
+                ErrorLogger.log(e);
                 return '{}';
             }
             List<Object> choices         = (List<Object>) response.get('choices');
@@ -1609,6 +1626,7 @@ public class LLMService {
             return FunctionRouter.execute(functionName, arguments);
         } catch (Exception e) {
             System.debug('executeReadFunction: failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             return JSON.serialize(new Map<String, Object>{
                 'success' => false,
                 'error'   => e.getMessage()
@@ -1909,6 +1927,8 @@ public class LLMService {
             + '\n    <length>32768</length>'
             + '\n    <visibleLines>5</visibleLines>'
             + '\n</fields>'
+            + '\nCRITICAL: <visibleLines> is MANDATORY for LongTextArea — Salesforce will reject the deploy without it.'
+            + '\nAlways include <visibleLines> on every LongTextArea field, no exceptions.'
 
             + '\n-- Picklist --'
             + '\n<fields>'
@@ -3089,6 +3109,7 @@ public class LLMService {
             Integer e = content.indexOf('End_Of_Session_Id');
             return content.substring(s, e);
         } catch (Exception ex) {
+            ErrorLogger.log(ex);
             return UserInfo.getSessionId();
         }
     }

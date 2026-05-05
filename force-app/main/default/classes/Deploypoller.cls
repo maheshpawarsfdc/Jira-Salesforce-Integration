@@ -113,6 +113,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
 
         } catch (Exception e) {
             System.debug('DeployPoller: ERROR - ' + e.getMessage());
+            ErrorLogger.log(e, issueKey);
             String exceptionMsg = 'Deploy poller error: ' + e.getMessage() + ' | ' + e.getStackTraceString();
             postStatusToJira(issueKey, 'error', exceptionMsg, jobId);
         }
@@ -126,6 +127,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
             JiraCallbackService.storeDeploymentStatus(issueKey, status, message, deployId);
         } catch (Exception e) {
             System.debug('postStatusToJira error: ' + e.getMessage());
+            ErrorLogger.log(e, issueKey);
         }
     }
 
