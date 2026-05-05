@@ -387,6 +387,24 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch existing Named Credentials via Metadata API ─────────
+            // Fetched directly in runOrgCheck (not via LLM read stage) so the
+            // LLM gets full NC details — protocol, authProvider, oauthScope,
+            // username — without needing a separate tool-calling loop.
+            // Note: password is NEVER returned by any API (stored encrypted).
+            if (ticketTextLower.contains('named credential')) {
+                try {
+                    List<Map<String, Object>> ncState = getNamedCredentialsState();
+                    if (ncState != null && !ncState.isEmpty()) {
+                        orgState.put('existingNamedCredentials', ncState);
+                        System.debug('runOrgCheck: fetched ' + ncState.size() + ' named credential(s)');
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: named credentials fetch failed — ' + e.getMessage());
+                    //ErrorLogger.log(e);
+                }
+            }
+
         } catch (Exception e) {
             System.debug('runOrgCheck failed: ' + e.getMessage());
             ErrorLogger.log(e);
@@ -573,6 +591,88 @@ public class LLMService {
 
 
     // ─────────────────────────────────────────────────────────────
+    // GET NAMED CREDENTIALS STATE
+    // Reads all Named Credentials via:
+    //   Step 1 — SOQL on NamedCredential to get DeveloperNames
+    //   Step 2 — MetadataService.readMetadata() to get full details
+    //            (protocol, authProvider, oauthScope, username etc.)
+    //
+    // Called directly from runOrgCheck() — no LLM tool loop needed.
+    // password is NEVER returned by any Salesforce API (stored encrypted).
+    // For Password NC updates the ticket MUST supply the password.
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getNamedCredentialsState() {
+        try {
+            // Step 1 — get DeveloperNames via SOQL (fast, no callout)
+            List<String> names = new List<String>();
+            for (NamedCredential nc : [
+                SELECT DeveloperName FROM NamedCredential ORDER BY DeveloperName
+            ]) {
+                names.add(nc.DeveloperName);
+            }
+
+            if (names.isEmpty()) {
+                System.debug('getNamedCredentialsState: no Named Credentials found in org');
+                return null;
+            }
+
+            System.debug('getNamedCredentialsState: reading ' + names.size() + ' NC(s) via readMetadata: ' + names);
+
+            // Step 2 — read full metadata via SOAP (same pattern as getAssignmentRulesState)
+            MetadataService.IReadResult readResult = metaPort.readMetadata(
+                'NamedCredential', names
+            );
+            MetadataService.Metadata[] records = readResult.getRecords();
+
+            if (records == null || records.isEmpty()) {
+                System.debug('getNamedCredentialsState: readMetadata returned no records');
+                return null;
+            }
+
+            List<Map<String, Object>> result = new List<Map<String, Object>>();
+
+            for (MetadataService.Metadata raw : records) {
+                if (raw == null) continue;
+                MetadataService.NamedCredential nc = (MetadataService.NamedCredential) raw;
+
+                // Build map with fields guaranteed to be in MetadataService stub
+                // calloutStatus is always Enabled — not exposed as a field in the stub
+                Map<String, Object> ncMap = new Map<String, Object>{
+                    'apiName'                     => nc.fullName,
+                    'label'                       => nc.label,
+                    'endpoint'                    => nc.endpoint,
+                    'protocol'                    => nc.protocol,
+                    'principalType'               => nc.principalType,
+                    'calloutStatus'               => 'Enabled',
+                    'generateAuthorizationHeader' => nc.generateAuthorizationHeader,
+                    'allowMergeFieldsInBody'      => nc.allowMergeFieldsInBody,
+                    'allowMergeFieldsInHeader'    => nc.allowMergeFieldsInHeader
+                };
+
+                // OAuth 2.0 specific — only populated when protocol = Oauth
+                try { if (nc.authProvider != null) ncMap.put('authProvider', nc.authProvider); } catch (Exception ex) {}
+                try { if (nc.oauthScope   != null) ncMap.put('oauthScope',   nc.oauthScope);   } catch (Exception ex) {}
+
+                // Password specific — username returned, password NEVER returned by any API
+                try { if (nc.username != null) ncMap.put('username', nc.username); } catch (Exception ex) {}
+
+                result.add(ncMap);
+                System.debug('getNamedCredentialsState: read NC [' + nc.fullName
+                    + '] protocol=[' + nc.protocol + ']');
+            }
+
+            System.debug('getNamedCredentialsState: returning ' + result.size() + ' NC(s)');
+            return result;
+
+        } catch (Exception e) {
+            System.debug('getNamedCredentialsState failed: ' + e.getMessage());
+            //ErrorLogger.log(e);
+            return null;
+        }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────
     // NEEDS READ STAGE?
     // Determines whether the ticket requires a full LLM read stage
     // (tool-calling loop) on top of the lean Apex-only runOrgCheck.
@@ -590,14 +690,16 @@ public class LLMService {
     private static Boolean needsReadStage(String summary, String description) {
         String t = (summary + ' ' + description).toLowerCase();
 
+        // NOTE: 'named credential' intentionally removed — NC state is now fetched
+        // directly in runOrgCheck() via getNamedCredentialsState() (Metadata SOAP),
+        // so no LLM tool-calling loop is needed for NC tickets.
         return t.contains('apex class')
             || t.contains('class access')
             || t.contains('apex classes')
             || t.contains('visualforce')
             || t.contains('page access')
             || t.contains('custom label')
-            || t.contains('update label')
-            || t.contains('named credential');
+            || t.contains('update label');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -2137,8 +2239,43 @@ public class LLMService {
             + '\n- For Password: username and password come directly from the ticket'
             + '\n- NEVER invent or guess authProvider, username, or password — use only what the ticket provides'
             + '\n- Each Named Credential is its own separate file — do NOT merge into one file'
-            + '\n- For DELETING a Named Credential, use destructiveFiles with type NamedCredential and member = apiName'
-            + '\n- For UPDATING: use all existing values from org state, only change what the ticket requests'
+            + '\n'
+            + '\n-- UPDATE --'
+            + '\nThe current state of all Named Credentials is in orgState.existingNamedCredentials.'
+            + '\nEach entry contains: apiName, label, endpoint, protocol, principalType, calloutStatus,'
+            + '\ngenerateAuthorizationHeader, allowMergeFieldsInBody, allowMergeFieldsInHeader,'
+            + '\nand protocol-specific fields: authProvider + oauthScope (OAuth), username (Password).'
+            + '\n'
+            + '\nTo UPDATE a Named Credential:'
+            + '\n1. Find the NC in existingNamedCredentials by apiName'
+            + '\n2. If NOT found in orgState → return an error in summary, do NOT generate any files'
+            + '\n3. Regenerate the COMPLETE XML using ALL existing values from orgState'
+            + '\n4. Only change the specific field(s) the ticket requests'
+            + '\n5. Preserve protocol — do NOT change protocol unless ticket explicitly requests it'
+            + '\n6. For Password protocol: username comes from orgState (already known).'
+            + '\n   password is NEVER returned by any API — it MUST come from the ticket.'
+            + '\n   If the ticket does not provide a password → return error in summary, do NOT deploy'
+            + '\n7. Use metadataType=NamedCredential, memberName=apiName, filePath=namedCredentials/{apiName}.namedCredential'
+            + '\n'
+            + '\nEXAMPLE — update endpoint only (protocol=Password, username from orgState):'
+            + '\n{'
+            + '\n  "metadataType": "NamedCredential",'
+            + '\n  "memberName": "My_API",'
+            + '\n  "filePath": "namedCredentials/My_API.namedCredential",'
+            + '\n  "xmlContent": "<?xml ...><NamedCredential>...<endpoint>https://new.example.com</endpoint>...<password>FROM_TICKET</password>...<username>FROM_ORG_STATE</username>...</NamedCredential>"'
+            + '\n}'
+            + '\n'
+            + '\n-- DELETE --'
+            + '\nTo DELETE a Named Credential:'
+            + '\n1. Confirm the apiName exists in existingNamedCredentials in orgState'
+            + '\n2. If NOT found → return error in summary, do NOT generate destructiveFiles'
+            + '\n3. Use the shorthand destructiveFiles entry (no xmlContent needed — Apex builds it):'
+            + '\n   {'
+            + '\n     "metadataType": "NamedCredential",'
+            + '\n     "member": "My_API"'
+            + '\n   }'
+            + '\n4. Do NOT generate any files[] entry for delete'
+            + '\n5. Do NOT generate xmlContent — Apex builds destructiveChangesPost.xml automatically'
 
             // ── TRANSLATION XML ────────────────────────────────────────
             + '\n\n== TRANSLATION XML FORMAT =='
