@@ -46,6 +46,10 @@ public class DeployService {
     // Returns jobId for tracking
     // ─────────────────────────────────────────────────────────────
     public static String deploy(String base64Zip, String issueKey) {
+        return deploy(base64Zip, issueKey, null);
+    }
+
+    public static String deploy(String base64Zip, String issueKey, String pendingZip2DataJson) {
         System.debug('DeployService.deploy() called for issue: ' + issueKey);
 
         // Build deploy options
@@ -73,9 +77,10 @@ public class DeployService {
             throw new DeployServiceException('DeployPoller class not found — ensure it is deployed');
         }
         DeployPoller poller = (DeployPoller) pollerType.newInstance();
-        poller.jobId    = jobId;
-        poller.issueKey = issueKey;
-        poller.attempt  = 1;
+        poller.jobId               = jobId;
+        poller.issueKey            = issueKey;
+        poller.attempt             = 1;
+        poller.pendingZip2DataJson = pendingZip2DataJson;
         System.enqueueJob(poller);
         System.debug('DeployService: DeployPoller enqueued for jobId = ' + jobId);
 

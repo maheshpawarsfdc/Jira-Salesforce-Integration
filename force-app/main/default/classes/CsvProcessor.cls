@@ -208,6 +208,7 @@ public class CsvProcessor {
         else if (type == 'custom_setting_field')  processed = processCustomSettingFields(rawRows);
         else if (type == 'custom_setting')        processed = processCustomSettings(rawRows);
         else if (type == 'custom_metadata_type')  processed = processCustomMetadataTypes(rawRows);
+        else if (type == 'group_member')          processed = processGroupMembers(rawRows);
         else {
             throw new CsvException(
                 'Unknown type: [' + type + ']. '
@@ -418,6 +419,124 @@ public class CsvProcessor {
         }
 
         return count;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // HANDLER: PUBLIC GROUP MEMBERS
+    // Columns: groupDeveloperName, username
+    // Queries Group + User records in bulk, checks existing membership,
+    // then queues net-new GroupMember records into FunctionHelper.recordsToInsert.
+    // ─────────────────────────────────────────────────────────────
+    private static Integer processGroupMembers(List<Object> rawRows) {
+        Set<String> groupDevNames = new Set<String>();
+        Set<String> usernames     = new Set<String>();
+
+        List<Map<String, String>> memberRows = new List<Map<String, String>>();
+
+        for (Object raw : rawRows) {
+            Map<String, Object> row    = (Map<String, Object>) raw;
+            String groupDeveloperName  = getRowValue(row, 'groupDeveloperName');
+            String username            = getRowValue(row, 'username');
+
+            if (String.isBlank(groupDeveloperName) || String.isBlank(username)) {
+                System.debug('CsvProcessor: skipping incomplete group member row: ' + row);
+                continue;
+            }
+
+            groupDevNames.add(groupDeveloperName);
+            usernames.add(username);
+            memberRows.add(new Map<String, String>{
+                'groupDeveloperName' => groupDeveloperName,
+                'username'           => username
+            });
+        }
+
+        if (memberRows.isEmpty()) {
+            throw new CsvException(
+                'No valid group member rows. Required columns: groupDeveloperName, username'
+            );
+        }
+
+        // ── Bulk-query all referenced groups ──────────────────────
+        Map<String, Id> groupIdByDevName = new Map<String, Id>();
+        for (Group g : [
+            SELECT Id, DeveloperName
+            FROM   Group
+            WHERE  DeveloperName IN :groupDevNames
+            AND    Type = 'Regular'
+        ]) {
+            groupIdByDevName.put(g.DeveloperName, g.Id);
+        }
+
+        // ── Bulk-query all referenced users ───────────────────────
+        Map<String, Id> userIdByUsername = new Map<String, Id>();
+        for (User u : [
+            SELECT Id, Username
+            FROM   User
+            WHERE  Username IN :usernames
+            AND    IsActive = true
+        ]) {
+            userIdByUsername.put(u.Username, u.Id);
+        }
+
+        // ── Fetch existing memberships to skip duplicates ─────────
+        Set<String> existingKeys = new Set<String>();
+        if (!groupIdByDevName.isEmpty() && !userIdByUsername.isEmpty()) {
+            for (GroupMember gm : [
+                SELECT GroupId, UserOrGroupId
+                FROM   GroupMember
+                WHERE  GroupId       IN :groupIdByDevName.values()
+                AND    UserOrGroupId IN :userIdByUsername.values()
+            ]) {
+                existingKeys.add(String.valueOf(gm.GroupId) + '_' + String.valueOf(gm.UserOrGroupId));
+            }
+        }
+
+        // ── Build net-new GroupMember records ─────────────────────
+        Integer skipped  = 0;
+        Integer queued   = 0;
+
+        for (Map<String, String> row : memberRows) {
+            String devName  = row.get('groupDeveloperName');
+            String username = row.get('username');
+
+            Id groupId = groupIdByDevName.get(devName);
+            Id userId  = userIdByUsername.get(username);
+
+            if (groupId == null) {
+                System.debug('CsvProcessor: public group not found [' + devName + '] — skipping row');
+                skipped++;
+                continue;
+            }
+            if (userId == null) {
+                System.debug('CsvProcessor: active user not found [' + username + '] — skipping row');
+                skipped++;
+                continue;
+            }
+
+            String key = String.valueOf(groupId) + '_' + String.valueOf(userId);
+            if (existingKeys.contains(key)) {
+                System.debug('CsvProcessor: [' + username + '] already member of [' + devName + '] — skipping');
+                skipped++;
+                continue;
+            }
+
+            GroupMember gm    = new GroupMember();
+            gm.GroupId        = groupId;
+            gm.UserOrGroupId  = userId;
+            FunctionHelper.recordsToInsert.add(gm);
+
+            existingKeys.add(key);  // guard against duplicate rows in the same CSV
+            queued++;
+        }
+
+        System.debug('CsvProcessor: queued ' + queued + ' GroupMember record(s), skipped ' + skipped);
+
+        if (queued == 0 && skipped > 0) {
+            System.debug('CsvProcessor: all rows were skipped — groups/users not found or already members');
+        }
+
+        return queued;
     }
 
     // ─────────────────────────────────────────────────────────────

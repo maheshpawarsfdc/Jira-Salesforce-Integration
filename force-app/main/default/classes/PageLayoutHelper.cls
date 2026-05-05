@@ -38,8 +38,29 @@ public class PageLayoutHelper {
         String objectApiName = getRequired(args, 'objectApiName');
         System.debug('PageLayoutHelper.listPageLayouts(): ' + objectApiName);
 
+        // NOTE: For CUSTOM objects, Layout.TableEnumOrId stores the 15-char CustomObject Id,
+        // NOT the API name — only standard objects store the API name there.
+        // Tooling API also forbids `WHERE FullName ...` on Layout. So for custom objects we
+        // first look up the CustomObject's Id, then filter TableEnumOrId by it.
+        String tableEnumOrIdFilter;
+        if (objectApiName.endsWith('__c')) {
+            String developerName = objectApiName.removeEnd('__c');
+            String coQuery = 'SELECT Id FROM CustomObject WHERE DeveloperName = \''
+                + String.escapeSingleQuotes(developerName) + '\'';
+            Map<String, Object> coResp = toolingQuery(coQuery);
+            List<Object> coRecs = (List<Object>) coResp.get('records');
+            if (coRecs == null || coRecs.isEmpty()) {
+                System.debug('PageLayoutHelper.listPageLayouts(): no CustomObject row for ['
+                    + objectApiName + '] — returning empty layout list');
+                return new List<Map<String, Object>>();
+            }
+            tableEnumOrIdFilter = (String) ((Map<String, Object>) coRecs[0]).get('Id');
+        } else {
+            tableEnumOrIdFilter = objectApiName;
+        }
+
         String query = 'SELECT Id, FullName, TableEnumOrId FROM Layout '
-            + 'WHERE TableEnumOrId = \'' + objectApiName + '\'';
+            + 'WHERE TableEnumOrId = \'' + String.escapeSingleQuotes(tableEnumOrIdFilter) + '\'';
 
         Map<String, Object> response = toolingQuery(query);
         List<Object> records = (List<Object>) response.get('records');
@@ -60,7 +81,8 @@ public class PageLayoutHelper {
             }
         }
 
-        System.debug('PageLayoutHelper.listPageLayouts(): found ' + result.size());
+        System.debug('PageLayoutHelper.listPageLayouts(): found ' + result.size()
+            + ' for object [' + objectApiName + ']');
         return result;
     }
 
@@ -213,6 +235,7 @@ public class PageLayoutHelper {
         } catch (PageLayoutException e) {
             throw e;
         } catch (Exception e) {
+            ErrorLogger.log(e);
             throw new PageLayoutException('Failed to retrieve layout '
                 + fullName + ': ' + e.getMessage());
         }
@@ -538,6 +561,7 @@ public class PageLayoutHelper {
             }
         } catch (Exception e) {
             System.debug('PageLayoutHelper.parseSectionDefs() failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             List<Object> reqList = new List<Object>();
             for (String r : requiredFields) reqList.add(r);
             sections.add(new Map<String, Object>{
@@ -615,6 +639,7 @@ public class PageLayoutHelper {
             }
         } catch (Exception e) {
             System.debug('PageLayoutHelper.getRequiredFields() failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             required.add('Name');
         }
         return required;
@@ -649,6 +674,7 @@ public class PageLayoutHelper {
             }
         } catch (Exception e) {
             System.debug('PageLayoutHelper.getAllProfileNames() failed: ' + e.getMessage());
+            ErrorLogger.log(e);
             names.add('System Administrator');
         }
         return names;
@@ -716,6 +742,7 @@ public class PageLayoutHelper {
             List<Object> parsed = (List<Object>) JSON.deserializeUntyped(jsonStr);
             for (Object o : parsed) result.add(String.valueOf(o).trim());
         } catch (Exception e) {
+            ErrorLogger.log(e);
             for (String s : jsonStr.split(',')) {
                 result.add(s.trim().replaceAll('"', '').replaceAll('\'', ''));
             }

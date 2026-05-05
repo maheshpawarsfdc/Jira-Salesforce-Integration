@@ -422,6 +422,7 @@ public class MetadataHelper {
 
         } catch (Exception e) {
             // Non-fatal — field is already staged successfully
+            ErrorLogger.log(e);
             System.debug('            ⚠ MetadataHelper.autoAddFieldToPageLayout(): '
                 + 'WARNING — could not update layout: ' + e.getMessage()
                 + ' | Field will still be created, but may not appear on layout.');
@@ -475,6 +476,7 @@ public class MetadataHelper {
         } catch (Exception e) {
             System.debug('            ── MetadataHelper.getObjectLabel(): '
                 + 'Schema describe failed: ' + e.getMessage());
+            ErrorLogger.log(e);
         }
 
         // ── 2. Try Metadata API ────────────────────────────────
@@ -498,6 +500,7 @@ public class MetadataHelper {
         } catch (Exception e) {
             System.debug('            ── MetadataHelper.getObjectLabel(): '
                 + 'Metadata API read failed: ' + e.getMessage());
+            ErrorLogger.log(e);
         }
 
         // ── 3. Fallback — derive from API name ─────────────────
@@ -882,6 +885,7 @@ public class MetadataHelper {
             Integer e = content.indexOf('End_Of_Session_Id');
             return content.substring(s, e);
         } catch (Exception ex) {
+            ErrorLogger.log(ex);
             return UserInfo.getSessionId();
         }
     }

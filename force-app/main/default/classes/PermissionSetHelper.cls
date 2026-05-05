@@ -15,6 +15,12 @@
  * 4. MetadataPort sends it to Salesforce as SOAP
  */
 public class PermissionSetHelper {
+    // NOTE:
+    // In the LLMService XML-generation flow, this helper is clone-only:
+    // - clonePermissionSet(...) is used for permission set cloning.
+    // - Create/update/delete are generated as PermissionSet XML in files[]
+    //   and deployed via ZipBuilder/metadata deploy.
+    // Existing non-clone methods remain for legacy/manual tool paths.
 
     // ─────────────────────────────────────────────────────────────
     // PORT — same MetadataPort the rest of the system uses
@@ -265,6 +271,52 @@ public class PermissionSetHelper {
     //                viewAllRecords, modifyAllRecords
     //                (all default to false if not provided)
     // ─────────────────────────────────────────────────────────────
+    // Applies parent-object read dependency handling to a raw PermissionSet XML.
+    // Used by LLMService when PermissionSet XML is generated directly in files[].
+    public static String ensureParentReadAccessForXml(String xml) {
+        if (String.isBlank(xml)) return xml;
+
+        String updatedXml = xml;
+        Set<String> objectsInXml = new Set<String>();
+        Integer cursor = 0;
+
+        while (true) {
+            Integer blockStart = updatedXml.indexOf('<objectPermissions>', cursor);
+            if (blockStart < 0) break;
+
+            Integer blockEnd = updatedXml.indexOf('</objectPermissions>', blockStart);
+            if (blockEnd < 0) break;
+            blockEnd += '</objectPermissions>'.length();
+
+            String block = updatedXml.substring(blockStart, blockEnd);
+            Boolean hasAnyAccess = block.contains('<allowRead>true</allowRead>')
+                || block.contains('<allowCreate>true</allowCreate>')
+                || block.contains('<allowEdit>true</allowEdit>')
+                || block.contains('<allowDelete>true</allowDelete>')
+                || block.contains('<viewAllRecords>true</viewAllRecords>')
+                || block.contains('<modifyAllRecords>true</modifyAllRecords>');
+
+            if (hasAnyAccess) {
+                Integer objStart = block.indexOf('<object>');
+                Integer objEnd = block.indexOf('</object>', objStart + '<object>'.length());
+                if (objStart >= 0 && objEnd > objStart) {
+                    String objectName = block.substring(objStart + '<object>'.length(), objEnd);
+                    if (String.isNotBlank(objectName)) {
+                        objectsInXml.add(objectName.trim());
+                    }
+                }
+            }
+
+            cursor = blockEnd;
+        }
+
+        for (String objectName : objectsInXml) {
+            updatedXml = injectParentReadAccess(updatedXml, objectName, new Set<String>());
+        }
+
+        return updatedXml;
+    }
+
     public static void grantObjectAccess(Map<String, Object> args) {
         String permSetName = getRequired(args, 'permissionSetName');
         String objectName  = addSuffix(getRequired(args, 'objectName'));
@@ -842,6 +894,7 @@ public class PermissionSetHelper {
             Integer e = content.indexOf('End_Of_Session_Id');
             return content.substring(s, e);
         } catch (Exception ex) {
+            ErrorLogger.log(ex);
             return UserInfo.getSessionId();
         }
     }

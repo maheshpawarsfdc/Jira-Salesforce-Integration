@@ -21,6 +21,9 @@ global class JiraInboundController {
             String summary     = (String) payload.get('summary');
             String description = (String) payload.get('description');
 
+            // Ambient context so any ErrorLogger.log() deep in the stack tags this ticket.
+            ErrorLogger.currentJiraKey = issueKey;
+
             System.debug('JiraInbound: Received ticket ' + issueKey + ' — ' + summary);
 
             // ── STEP 2: Validate ──
@@ -56,6 +59,7 @@ global class JiraInboundController {
                         System.debug('JiraInbound: Validated attachment [' + fileName + '], size=' + testBlob.size() + ' bytes');
                     } catch (Exception e) {
                         System.debug('JiraInbound: Invalid base64 for [' + fileName + ']: ' + e.getMessage());
+                        ErrorLogger.log(e, issueKey);
                         continue;
                     }
                     
@@ -81,17 +85,20 @@ global class JiraInboundController {
             llmResponse = 'Error: ' + e.getMessage();
             System.debug('JiraInbound: Exception — ' + e.getMessage());
             System.debug('JiraInbound: Stack trace — ' + e.getStackTraceString());
+            ErrorLogger.log(e, issueKey);
 
             if (issueKey != null) {
                 try {
                     JiraCallbackService.storeDeploymentStatus(issueKey, 'error', llmResponse, 'exception');
                 } catch (Exception je) {
                     System.debug('JiraInbound: Failed to store error status — ' + je.getMessage());
+                    ErrorLogger.log(je, issueKey);
                 }
             }
         } finally {
             // Clear attachments for next request
             StaticResourceHelper.currentAttachments.clear();
+            ErrorLogger.currentJiraKey = null;
         }
 
         return new Map<String, String>{

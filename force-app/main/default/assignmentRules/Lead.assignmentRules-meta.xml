@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AssignmentRules xmlns="http://soap.sforce.com/2006/04/metadata">
+    <assignmentRule>
+        <fullName>Standard</fullName>
+        <active>false</active>
+        <ruleEntry>
+            <assignedTo>epic.c32e8a307b05@orgfarm.salesforce.com</assignedTo>
+            <assignedToType>User</assignedToType>
+            <criteriaItems>
+                <field>Lead.Country</field>
+                <operation>equals</operation>
+                <value>US,USA,United States,United States of America</value>
+            </criteriaItems>
+        </ruleEntry>
+        <ruleEntry>
+            <assignedTo>epic.c32e8a307b05@orgfarm.salesforce.com</assignedTo>
+            <assignedToType>User</assignedToType>
+            <criteriaItems>
+                <field>Lead.Country</field>
+                <operation>notEqual</operation>
+                <value>US,USA,United States,United States of America</value>
+            </criteriaItems>
+        </ruleEntry>
+    </assignmentRule>
+    <assignmentRule>
+        <fullName>Test</fullName>
+        <active>true</active>
+        <ruleEntry>
+            <assignedTo>mahesh.pawar367@agentforce.com</assignedTo>
+            <assignedToType>User</assignedToType>
+            <criteriaItems>
+                <field>Lead.Email</field>
+                <operation>contains</operation>
+                <value>.com</value>
+            </criteriaItems>
+        </ruleEntry>
+        <ruleEntry>
+            <assignedTo>Lead_Queue</assignedTo>
+            <assignedToType>Queue</assignedToType>
+            <formula>ISBLANK( Email )</formula>
+        </ruleEntry>
+    </assignmentRule>
+</AssignmentRules>

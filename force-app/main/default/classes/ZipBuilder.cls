@@ -100,6 +100,7 @@ public class ZipBuilder {
             return null;
         } catch (Exception e) {
             System.debug('ZipBuilder.extractFileFromZip(): ERROR - ' + e.getMessage());
+            ErrorLogger.log(e);
             throw new ZipBuilderException('Failed to extract [' + filePath + '] from ZIP: ' + e.getMessage());
         }
     }
@@ -153,6 +154,7 @@ public class ZipBuilder {
                 zip.addFile(filePath, fileBlob, crc32);
             } catch (Exception e) {
                 System.debug('ZipBuilder: ERROR with binary file [' + filePath + ']: ' + e.getMessage());
+                ErrorLogger.log(e);
                 throw new ZipBuilderException('Failed to add binary file ' + filePath + ': ' + e.getMessage());
             }
         }

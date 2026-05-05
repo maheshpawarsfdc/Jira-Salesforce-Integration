@@ -39,9 +39,13 @@ public class JiraCallbackService {
         System.debug('JiraCallbackService: Response body: ' + res.getBody());
         
         if (res.getStatusCode() != 200 && res.getStatusCode() != 201) {
-            System.debug('JiraCallbackService: Failed to store status in Jira property');
+            System.debug('JiraCallbackService: Failed to record deploy-status property in Jira for '
+                + issueKey + ' (deploy outcome was [' + status + '])');
         } else {
-            System.debug('JiraCallbackService: Successfully stored deployment status for ' + issueKey);
+            // NOTE: this confirms the Jira property write succeeded — the deploy
+            // itself may have failed. Always read `status` to see the real result.
+            System.debug('JiraCallbackService: Recorded deploy-status property in Jira for '
+                + issueKey + ' (deploy outcome was [' + status + '])');
         }
     }
     

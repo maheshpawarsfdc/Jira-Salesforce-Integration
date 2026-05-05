@@ -52,6 +52,7 @@ public class Zippex
                 return;
             }
         } catch (Exception e){
+            ErrorLogger.log(e);
             unzipAttachment(srcAttId, destObjId, fileNames, false);
             return;
         }
