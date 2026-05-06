@@ -105,6 +105,16 @@ public class ZipBuilder {
         }
     }
 
+
+    // Tracks extra package.xml members that have no separate file
+    public static Map<String, Set<String>> extraPackageMembers = new Map<String, Set<String>>();
+
+    public static void registerMember(String metadataType, String memberName) {
+        if (!extraPackageMembers.containsKey(metadataType)) {
+            extraPackageMembers.put(metadataType, new Set<String>());
+        }
+        extraPackageMembers.get(metadataType).add(memberName);
+    }
     // ─────────────────────────────────────────────────────────────
     // BUILD BASE64 ZIP
     // Builds the complete ZIP and returns base64 encoded string
