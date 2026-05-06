@@ -405,6 +405,24 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch existing Auth Providers via SOQL ────────────────────────
+            // Fetched directly in runOrgCheck() (same pattern as Named Credentials)
+            // so the LLM gets full AP details without a separate tool-calling loop.
+            // Note: consumerSecret is NEVER returned by any API (stored encrypted).
+            if (ticketTextLower.contains('auth provider')
+                || ticketTextLower.contains('authentication provider')
+                || ticketTextLower.contains('authprovider')) {
+                try {
+                    List<Map<String, Object>> apState = getAuthProvidersState();
+                    if (apState != null && !apState.isEmpty()) {
+                        orgState.put('existingAuthProviders', apState);
+                        System.debug('runOrgCheck: fetched ' + apState.size() + ' auth provider(s)');
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: auth providers fetch failed — ' + e.getMessage());
+                }
+            }
+
         } catch (Exception e) {
             System.debug('runOrgCheck failed: ' + e.getMessage());
             ErrorLogger.log(e);
@@ -843,6 +861,34 @@ public class LLMService {
             + ' | zip2FilePaths=' + zip2FilePaths
             + ' | rawDeploymentPlan=' + JSON.serialize(deploymentPlan));
 
+
+        if (deployScenario == 'chained') {
+            Boolean hasNewCustomObject = false;
+            Set<String> existingObjs = new Set<String>();
+            if (orgState != null && orgState.get('existingObjects') instanceof List<Object>) {
+                for (Object o : (List<Object>) orgState.get('existingObjects')) {
+                    existingObjs.add(String.valueOf(o));
+                }
+            }
+            List<Object> filesCheck = (List<Object>) parsed.get('files');
+            if (filesCheck != null) {
+                for (Object rawFile : filesCheck) {
+                    Map<String, Object> f = (Map<String, Object>) rawFile;
+                    String mt = (String) f.get('metadataType');
+                    String mn = (String) f.get('memberName');
+                    if (mt == 'CustomObject' && !existingObjs.contains(mn)) {
+                        hasNewCustomObject = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasNewCustomObject) {
+                System.debug('[DEPLOY-TRACE] *** SCENARIO OVERRIDE *** LLM chose chained but no new CustomObject — forcing single');
+                deployScenario = 'single';
+                zip2FilePaths.clear();
+            }
+        }
+
         Map<String, String>       zip2Files         = new Map<String, String>();
         Map<String, Set<String>>  zip2MetadataTypes = new Map<String, Set<String>>();
 
@@ -888,6 +934,18 @@ public class LLMService {
                 // Scenario B (existing object + field + regenerated layout).
                 if (metadataType == 'Layout') {
                     xmlContent = sanitizeLayoutXml(xmlContent);
+                }
+
+                if (metadataType == 'AuthProvider') {
+                    filePath = 'authproviders/' + memberName + '.authprovider';
+                }
+
+                // Strip invalid elements from AuthProvider XML before validation.
+                // Removes <developerName>, <fullName>, <urlSuffix> and renames
+                // wrong element names like <tokenEndpointUrl> → <tokenUrl> etc.
+                if (metadataType == 'AuthProvider') {
+                    xmlContent = sanitizeAuthProviderXml(xmlContent);
+                    System.debug('[DEPLOY-TRACE] sanitizeAuthProviderXml applied to [' + filePath + ']');
                 }
 
                 // Validate XML before adding to ZipBuilder
@@ -1444,6 +1502,53 @@ public class LLMService {
         return null;
     }
 
+
+    // ─────────────────────────────────────────────────────────────
+    // GET AUTH PROVIDERS STATE
+    // Reads all Auth Providers via SOQL.
+    // ConsumerSecret is NEVER returned by any Salesforce API (encrypted).
+    // For create/update, the secret MUST come from the ticket.
+    // ─────────────────────────────────────────────────────────────
+    private static List<Map<String, Object>> getAuthProvidersState() {
+        try {
+            List<Map<String, Object>> result = new List<Map<String, Object>>();
+ 
+            for (AuthProvider ap : [
+                SELECT DeveloperName, FriendlyName, ProviderType,
+                       ConsumerKey, DefaultScopes, AuthorizeUrl,
+                       TokenUrl, UserInfoUrl, IconUrl
+                FROM AuthProvider
+                ORDER BY DeveloperName
+            ]) {
+                Map<String, Object> apMap = new Map<String, Object>{
+                    'developerName' => ap.DeveloperName,
+                    'friendlyName'  => ap.FriendlyName,
+                    'providerType'  => ap.ProviderType
+                };
+ 
+                // Optional fields — only include when non-null
+                if (ap.ConsumerKey    != null) apMap.put('consumerKey',    ap.ConsumerKey);
+                if (ap.DefaultScopes  != null) apMap.put('defaultScopes',  ap.DefaultScopes);
+                if (ap.AuthorizeUrl   != null) apMap.put('authorizeUrl',   ap.AuthorizeUrl);
+                if (ap.TokenUrl       != null) apMap.put('tokenUrl',       ap.TokenUrl);
+                if (ap.UserInfoUrl    != null) apMap.put('userInfoUrl',    ap.UserInfoUrl);
+                if (ap.IconUrl        != null) apMap.put('iconUrl',        ap.IconUrl);
+ 
+                result.add(apMap);
+                System.debug('getAuthProvidersState: read AP [' + ap.DeveloperName
+                    + '] type=[' + ap.ProviderType + ']');
+            }
+ 
+            System.debug('getAuthProvidersState: returning ' + result.size() + ' AP(s)');
+            return result.isEmpty() ? null : result;
+ 
+        } catch (Exception e) {
+            System.debug('getAuthProvidersState failed: ' + e.getMessage());
+            ErrorLogger.log(e);
+            return null;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────
     // LAYOUT XML SANITIZER
     // The LLM occasionally emits non-field placeholder sections in Layout XML
@@ -1568,8 +1673,9 @@ public class LLMService {
             if (xmlContent.contains('<principalType>Anonymous</principalType>')) {
                 return 'Invalid principalType — Named Principal credentials must use NamedUser, not Anonymous';
             }
-            if (xmlContent.contains('<fullName>')) {
-                return 'Invalid element <fullName> inside NamedCredential XML — remove it, the file name is the identity';
+            if (xmlContent.contains('<developerName>')) {
+                return 'Invalid element <developerName> inside AuthProvider XML — remove it, '
+                    + 'the file name IS the developerName identity';
             }
 
             // Protocol-specific required fields
@@ -1585,7 +1691,94 @@ public class LLMService {
             return null;
         }
 
+        if (metadataType == 'AuthProvider') {
+            // Always required
+            String baseError = validateRequiredElements(xmlContent,
+                new List<String>{ '<friendlyName>', '<providerType>' });
+            if (String.isNotBlank(baseError)) return baseError;
+
+            // Reject identity fields — file name IS the identity
+            if (xmlContent.contains('<fullName>')) {
+                return 'Invalid element <fullName> inside AuthProvider XML — remove it, the file name is the identity';
+            }
+            if (xmlContent.contains('<developerName>')) {
+                return 'Invalid element <developerName> inside AuthProvider XML — remove it, the file name IS the developerName';
+            }
+
+            // Reject wrong element names LLM commonly hallucinates
+            if (xmlContent.contains('<tokenEndpointUrl>')) {
+                return 'Invalid element <tokenEndpointUrl> — correct element name is <tokenUrl>';
+            }
+            if (xmlContent.contains('<authorizeEndpointUrl>')) {
+                return 'Invalid element <authorizeEndpointUrl> — correct element name is <authorizeUrl>';
+            }
+            if (xmlContent.contains('<scope>')) {
+                return 'Invalid element <scope> — correct element name is <defaultScopes>';
+            }
+            if (xmlContent.contains('<urlSuffix>')) {
+                return 'Invalid element <urlSuffix> — this element does not exist in AuthProvider metadata XML';
+            }
+
+            // Validate providerType enum value
+            Set<String> validTypes = new Set<String>{
+                'Apple', 'Bitbucket', 'Confluence3LO', 'Facebook', 'GitHub',
+                'Google', 'Janrain', 'LinkedIn', 'Microsoft', 'MicrosoftACS',
+                'MuleSoft', 'OpenIdConnect', 'Salesforce', 'Slack', 'Twitter'
+            };
+            Pattern ptPat = Pattern.compile('<providerType>([^<]+)</providerType>');
+            Matcher ptMat = ptPat.matcher(xmlContent);
+            if (ptMat.find()) {
+                String pt = ptMat.group(1).trim();
+                if (!validTypes.contains(pt)) {
+                    return 'Invalid providerType [' + pt + ']. Valid values: '
+                        + String.join(new List<String>(validTypes), ', ');
+                }
+                if ((pt == 'OpenIdConnect' || pt == 'MicrosoftACS')
+                    && !xmlContent.contains('<authorizeUrl>')) {
+                    return 'providerType ' + pt + ' requires <authorizeUrl> and <tokenUrl>';
+                }
+            }
+            return null;
+        }
+
         return null; // Valid
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // AUTH PROVIDER XML SANITIZER
+    // The LLM occasionally injects invalid identity elements like
+    // <developerName>, <fullName>, or wrong element names like
+    // <tokenEndpointUrl>, <authorizeEndpointUrl>, <scope>, <urlSuffix>.
+    // Strip them before validation so the deploy proceeds cleanly.
+    // ─────────────────────────────────────────────────────────────
+    private static String sanitizeAuthProviderXml(String xml) {
+        if (String.isBlank(xml)) return xml;
+
+        // Remove entire tags that must never appear in AuthProvider XML
+        List<String> forbiddenTags = new List<String>{
+            'developerName', 'fullName', 'urlSuffix'
+        };
+        for (String tag : forbiddenTags) {
+            xml = xml.replaceAll('(?i)\\s*<' + tag + '>[^<]*</' + tag + '>', '');
+        }
+
+        // Rename wrong element names to correct ones
+       
+        xml = xml.replace('<tokenEndpointUrl>',    '<tokenUrl>')
+                .replace('</tokenEndpointUrl>',   '</tokenUrl>')
+                .replace('<authorizeEndpointUrl>', '<authorizeUrl>')
+                .replace('</authorizeEndpointUrl>','</authorizeUrl>')
+                .replace('<scope>',               '<defaultScopes>')
+                .replace('</scope>',              '</defaultScopes>');
+
+        // LLM sometimes uses <name> instead of <friendlyName>
+        // In AuthProvider XML there is no <name> element — safe to rename
+        if (!xml.contains('<friendlyName>') && xml.contains('<name>')) {
+            xml = xml.replace('<name>', '<friendlyName>')
+                    .replace('</name>', '</friendlyName>');
+        }
+
+        return xml;
     }
 
     // Adds a single destructive member entry to destructiveChangesPost.xml,
@@ -1862,6 +2055,434 @@ public class LLMService {
         }
 
         return response;
+    }
+
+    private static String buildAuthProviderPromptSection() {
+        return
+ 
+            // ── HEADER ─────────────────────────────────────────────────────────
+            '\n\n== AUTH PROVIDER XML FORMAT =='
+            + '\nFile path: authproviders/DeveloperName.authprovider'
+            + '\nmetadataType: AuthProvider'
+            + '\nmemberName: DeveloperName  (no spaces, no __c — e.g. My_Google_Provider)'
+            + '\n'
+            + '\nCRITICAL — ELEMENT ORDER: elements MUST appear in STRICT ALPHABETICAL ORDER.'
+            + '\nSalesforce rejects AuthProvider XML with wrong element order.'
+            + '\nDo NOT include <fullName> inside the XML body — the file name is the identity.'
+            + '\n'
+            + '\nALL PROVIDERS share these optional trailing elements (include only if needed):'
+            + '\n  <customErrorUrl>   — Custom Error URL (optional)'
+            + '\n  <customLogoutUrl>  — Custom Logout URL (optional)'
+            + '\n  <iconUrl>          — Icon URL (optional)'
+            + '\n  <registrationHandler>ApexClassName</registrationHandler> (optional — Apex class name only, no quotes)'
+            + '\n  <requireMfa>false</requireMfa> — defaults to false; set true only when ticket requests Salesforce MFA'
+            + '\n'
+            + '\nCONSUMER SECRET RULE:'
+            + '\n  consumerSecret is NEVER returned by any Salesforce API (stored encrypted).'
+            + '\n  For CREATE or UPDATE: consumerSecret MUST come from the ticket.'
+            + '\n  If the ticket does not provide it → return error in summary, do NOT deploy.'
+            + '\n'
+ 
+            // ── PROVIDER 1: Salesforce ─────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Salesforce --'
+            + '\nUse when: ticket says "Salesforce OAuth", "Salesforce Auth Provider", "Salesforce SSO"'
+            + '\nRequired from ticket: consumerKey, consumerSecret'
+            + '\nPre-filled URLs (use exactly as shown — do NOT override unless ticket says sandbox):'
+            + '\n  Prod: https://login.salesforce.com/...'
+            + '\n  Sandbox: https://test.salesforce.com/...'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://login.salesforce.com/services/oauth2/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>api refresh_token</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <includeOrgIdInIdentifier>false</includeOrgIdInIdentifier>'
+            + '\n    <isPkceEnabled>true</isPkceEnabled>'
+            + '\n    <providerType>Salesforce</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendAccessTokenInHeader>false</sendAccessTokenInHeader>'
+            + '\n    <sendClientCredentialsInHeader>false</sendClientCredentialsInHeader>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://login.salesforce.com/services/oauth2/token</tokenUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 2: Google ─────────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Google --'
+            + '\nUse when: ticket says "Google OAuth", "Google Auth Provider", "Google SSO", "Google Workspace"'
+            + '\nRequired from ticket: consumerKey (Client ID), consumerSecret (Client Secret)'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://accounts.google.com/o/oauth2/auth</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>openid email profile</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <isPkceEnabled>true</isPkceEnabled>'
+            + '\n    <providerType>Google</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://accounts.google.com/o/oauth2/token</tokenUrl>'
+            + '\n    <userInfoUrl>https://www.googleapis.com/oauth2/v3/userinfo</userInfoUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 3: Microsoft ──────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Microsoft --'
+            + '\nUse when: ticket says "Microsoft OAuth", "Azure AD", "Microsoft Entra", "Microsoft SSO", "Azure OAuth"'
+            + '\nRequired from ticket: consumerKey (Application/Client ID), consumerSecret (Client Secret)'
+            + '\nOptional from ticket: tokenIssuer (e.g. https://login.microsoftonline.com/{tenant_id}/v2.0)'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://login.microsoftonline.com/common/oauth2/v2.0/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>openid email profile</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <isPkceEnabled>true</isPkceEnabled>'
+            + '\n    <providerType>Microsoft</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <!-- Include tokenIssuer ONLY when ticket provides a tenant-specific issuer -->'
+            + '\n    <!-- <tokenIssuer>https://login.microsoftonline.com/{tenantId}/v2.0</tokenIssuer> -->'
+            + '\n    <tokenUrl>https://login.microsoftonline.com/common/oauth2/v2.0/token</tokenUrl>'
+            + '\n    <userInfoUrl>https://graph.microsoft.com/oidc/userinfo</userInfoUrl>'
+            + '\n</AuthProvider>'
+            + '\nNOTE: tokenIssuer goes between sendSecretInApis and tokenUrl (alphabetical). Include only if ticket specifies a tenant.'
+            + '\n'
+ 
+            // ── PROVIDER 4: Open ID Connect ────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: OpenIdConnect --'
+            + '\nUse when: ticket says "Open ID Connect", "OpenID Connect", "OIDC", "Custom OAuth 2.0"'
+            + '\nRequired from ticket: consumerKey, consumerSecret, authorizeUrl, tokenUrl'
+            + '\nOptional from ticket: userInfoUrl, defaultScopes, tokenIssuer'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>FROM_TICKET</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>openid email profile</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <isPkceEnabled>true</isPkceEnabled>'
+            + '\n    <providerType>OpenIdConnect</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendAccessTokenInHeader>true</sendAccessTokenInHeader>'
+            + '\n    <sendClientCredentialsInHeader>false</sendClientCredentialsInHeader>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <!-- Include tokenIssuer ONLY if ticket provides one -->'
+            + '\n    <!-- <tokenIssuer>https://issuer.example.com</tokenIssuer> -->'
+            + '\n    <tokenUrl>FROM_TICKET</tokenUrl>'
+            + '\n    <!-- Include userInfoUrl ONLY if ticket provides one -->'
+            + '\n    <!-- <userInfoUrl>FROM_TICKET</userInfoUrl> -->'
+            + '\n</AuthProvider>'
+            + '\nNOTE: tokenIssuer goes between sendSecretInApis and tokenUrl (alphabetical).'
+            + '\nNOTE: userInfoUrl goes after tokenUrl (alphabetical).'
+            + '\n'
+ 
+            // ── PROVIDER 5: Facebook ───────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Facebook --'
+            + '\nUse when: ticket says "Facebook OAuth", "Facebook Login", "Meta OAuth"'
+            + '\nRequired from ticket: consumerKey (App ID), consumerSecret (App Secret)'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://www.facebook.com/dialog/oauth</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>email</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <isPkceEnabled>true</isPkceEnabled>'
+            + '\n    <providerType>Facebook</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://graph.facebook.com/oauth/access_token</tokenUrl>'
+            + '\n    <userInfoUrl>https://graph.facebook.com/me</userInfoUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 6: GitHub ─────────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: GitHub --'
+            + '\nUse when: ticket says "GitHub OAuth", "GitHub Auth Provider"'
+            + '\nRequired from ticket: consumerKey (Client ID), consumerSecret (Client Secret)'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://github.com/login/oauth/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>user</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>GitHub</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://github.com/login/oauth/access_token</tokenUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 7: LinkedIn ───────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: LinkedIn --'
+            + '\nUse when: ticket says "LinkedIn OAuth", "LinkedIn Auth Provider"'
+            + '\nRequired from ticket: consumerKey, consumerSecret'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://www.linkedin.com/oauth/v2/authorization</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>r_liteprofile r_emailaddress</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>LinkedIn</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://www.linkedin.com/oauth/v2/accessToken</tokenUrl>'
+            + '\n    <userInfoUrl>https://api.linkedin.com/v2/userinfo</userInfoUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 8: Slack ──────────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Slack --'
+            + '\nUse when: ticket says "Slack OAuth", "Slack Auth Provider", "Slack SSO"'
+            + '\nRequired from ticket: consumerKey, consumerSecret'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://slack.com/openid/connect/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>openid email profile</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>Slack</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://slack.com/api/openid.connect.token</tokenUrl>'
+            + '\n    <userInfoUrl>https://slack.com/api/openid.connect.userInfo</userInfoUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 9: Bitbucket ──────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Bitbucket --'
+            + '\nUse when: ticket says "Bitbucket OAuth", "Bitbucket Auth Provider", "Atlassian Bitbucket"'
+            + '\nRequired from ticket: consumerKey, consumerSecret'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://bitbucket.org/site/oauth2/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>Bitbucket</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://bitbucket.org/site/oauth2/access_token</tokenUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 10: Confluence 3LO ────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Confluence3LO --'
+            + '\nUse when: ticket says "Confluence OAuth", "Atlassian Confluence", "Confluence 3LO"'
+            + '\nRequired from ticket: consumerKey, consumerSecret'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://auth.atlassian.com/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>Confluence3LO</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://auth.atlassian.com/oauth/token</tokenUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 11: MuleSoft ──────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: MuleSoft --'
+            + '\nUse when: ticket says "MuleSoft OAuth", "Anypoint Auth Provider", "MuleSoft SSO"'
+            + '\nRequired from ticket: consumerKey, consumerSecret'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>https://anypoint.mulesoft.com/accounts/api/v2/oauth2/authorize</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <defaultScopes>offline_access</defaultScopes>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>MuleSoft</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>https://anypoint.mulesoft.com/accounts/api/v2/oauth2/token</tokenUrl>'
+            + '\n    <userInfoUrl>https://anypoint.mulesoft.com/accounts/api/v2/oauth2/userinfo</userInfoUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 12: Microsoft Access Control Service ──────────────────
+            + '\n\n-- PROVIDER TYPE: MicrosoftACS --'
+            + '\nUse when: ticket says "Microsoft Access Control Service", "Azure ACS", "Microsoft ACS"'
+            + '\nRequired from ticket: consumerKey, consumerSecret, authorizeUrl, tokenUrl'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <authorizeUrl>FROM_TICKET</authorizeUrl>'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>MicrosoftACS</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n    <tokenUrl>FROM_TICKET</tokenUrl>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 13: Twitter ───────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Twitter --'
+            + '\nUse when: ticket says "Twitter OAuth", "Twitter Auth Provider", "X OAuth"'
+            + '\nRequired from ticket: consumerKey (API Key), consumerSecret (API Secret)'
+            + '\nNote: Twitter uses OAuth 1.0a — no authorizeUrl/tokenUrl needed in XML'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <consumerKey>FROM_TICKET</consumerKey>'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>Twitter</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 14: Janrain ───────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Janrain --'
+            + '\nUse when: ticket says "Janrain Auth Provider", "Janrain Identity"'
+            + '\nNote: Janrain uses only consumerSecret (no consumerKey)'
+            + '\nRequired from ticket: consumerSecret only'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <consumerSecret>FROM_TICKET</consumerSecret>'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <providerType>Janrain</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <sendSecretInApis>true</sendSecretInApis>'
+            + '\n</AuthProvider>'
+            + '\n'
+ 
+            // ── PROVIDER 15: Apple ─────────────────────────────────────────────
+            + '\n\n-- PROVIDER TYPE: Apple --'
+            + '\nUse when: ticket says "Apple OAuth", "Sign in with Apple", "Apple Auth Provider"'
+            + '\nRequired from ticket: teamId, servicesId, keyId'
+            + '\nNote: Apple uses JWT / private key authentication — NOT consumerKey/consumerSecret.'
+            + '\nNote: The private key file CANNOT be embedded in metadata XML.'
+            + '\n      It must be uploaded manually via Setup → Auth Providers → Apple → Edit → Key.'
+            + '\n      Generate the XML below for all text fields, then inform the user in summary'
+            + '\n      that the private key file must be uploaded manually after deployment.'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <friendlyName>FROM_TICKET</friendlyName>'
+            + '\n    <keyId>FROM_TICKET</keyId>'
+            + '\n    <providerType>Apple</providerType>'
+            + '\n    <requireMfa>false</requireMfa>'
+            + '\n    <servicesId>FROM_TICKET</servicesId>'
+            + '\n    <teamId>FROM_TICKET</teamId>'
+            + '\n</AuthProvider>'
+            + '\nAfter deploying Apple AuthProvider XML, the summary MUST include:'
+            + '\n"⚠️ Apple private key file must be manually uploaded via Setup → Auth Providers → [Name] → Edit → Key."'
+            + '\n'
+ 
+            // ── COMMON RULES ───────────────────────────────────────────────────
+            + '\n\n== AUTH PROVIDER RULES =='
+            + '\n'
+            + '\n-- URL SUFFIX = DEVELOPER NAME --'
+            + '\nWhen the ticket provides a "URL Suffix" field:'
+            + '\n  - Use the URL Suffix value as the DeveloperName → memberName AND file name'
+            + '\n  - Use the "Name" field value as <friendlyName> inside the XML'
+            + '\n  - NEVER use the Name/friendlyName value as the memberName'
+            + '\n  - NEVER use the URL Suffix as a <urlSuffix> XML element (that element does not exist)'
+  
+            +'\n    Example:'
+            + '\n      Ticket:  Name = "Salesforce_Test", URL Suffix = "Salesforce_OAuth"'
+            + '\n      CORRECT: memberName = "Salesforce_OAuth", filePath = "authproviders/Salesforce_OAuth.authprovider"'
+            + '\n              <friendlyName>Salesforce_Test</friendlyName>'
+            + '\n      WRONG:   memberName = "Salesforce_Test", filePath = "authproviders/Salesforce_Test.authprovider"'
+            + '\n'
+            + '\n-- ELEMENT ORDER --'
+            + '\nElements MUST be in STRICT ALPHABETICAL ORDER. This is identical to Named Credentials.'
+            + '\nProviderType-specific reference orders:'
+            + '\n  Salesforce: authorizeUrl, consumerKey, consumerSecret, defaultScopes, friendlyName,'
+            + '\n              includeOrgIdInIdentifier, isPkceEnabled, providerType, requireMfa,'
+            + '\n              sendAccessTokenInHeader, sendClientCredentialsInHeader, sendSecretInApis, tokenUrl'
+            + '\n  Google/Facebook/LinkedIn/Slack/MuleSoft: authorizeUrl, consumerKey, consumerSecret,'
+            + '\n              defaultScopes, friendlyName, [isPkceEnabled,] providerType, requireMfa,'
+            + '\n              sendSecretInApis, tokenUrl, userInfoUrl'
+            + '\n  GitHub/Bitbucket/Confluence3LO/Twitter/Janrain/MicrosoftACS: fewer fields, same alpha order'
+            + '\n  Microsoft/OpenIdConnect: same as Google but may include tokenIssuer (between sendSecretInApis and tokenUrl)'
+            + '\n'
+            + '\n-- FIELD NAMING --'
+            + '\n  friendlyName = "Name" field in the Salesforce UI'
+            + '\n  urlSuffix    = "URL Suffix" field (include only when ticket specifies one)'
+            + '\n  sendSecretInApis = "Include Consumer Secret in SOAP API Responses" checkbox'
+            + '\n  isPkceEnabled    = "Use Proof Key for Code Exchange (PKCE) Extension" checkbox'
+            + '\n  requireMfa       = "Use Salesforce MFA for this SSO Provider" checkbox'
+            + '\n  sendAccessTokenInHeader     = "Send access token in header" (OpenIdConnect only)'
+            + '\n  sendClientCredentialsInHeader = "Send client credentials in header" (OpenIdConnect only)'
+            + '\n  includeOrgIdInIdentifier    = Salesforce provider specific'
+            + '\n  tokenIssuer  = "Token Issuer" field (Microsoft + OpenIdConnect only)'
+            + '\n'
+            + '\n-- CREATE --'
+            + '\n1. Identify the correct providerType from the ticket'
+            + '\n2. Use the matching template above with pre-filled URLs'
+            + '\n3. Replace all FROM_TICKET placeholders with values from the ticket'
+            + '\n4. consumerSecret MUST come from the ticket — if missing, return error in summary'
+            + '\n5. memberName = DeveloperName (no spaces, no __c) — e.g. My_Google_Provider'
+            + '\n6. deploymentPlan.scenario = "single" (no chaining needed for AuthProvider alone)'
+            + '\n'
+            + '\n-- UPDATE --'
+            + '\n1. Find the AP in existingAuthProviders in orgState by developerName'
+            + '\n2. If NOT found in orgState → return error in summary, do NOT generate files'
+            + '\n3. Regenerate COMPLETE XML using ALL existing values from orgState'
+            + '\n4. Only change the specific field(s) the ticket requests'
+            + '\n5. consumerSecret is NEVER in orgState (stored encrypted by Salesforce).'
+            + '\n6. - If the ticket provides a new consumerSecret → include it in the XML.'
+            + '\n   - If the ticket does NOT provide consumerSecret → OMIT <consumerSecret> entirely'
+            + '\n       Salesforce preserves the existing encrypted value automatically'
+            + '\n6. Use same metadataType=AuthProvider, memberName=developerName (URL Suffix),'
+            + '\n   filePath=authproviders/{developerName}.authprovider'
+            + '\n'
+            + '\n-- UPDATE: PRIORITY RULE --'
+            + '\nWhen updating an Auth Provider, the correct priority is:'
+            + '\n'
+            + '\n  TICKET VALUE  →  always wins over orgState'
+            + '\n  ORGSTATE VALUE →  only used when ticket does NOT mention that field'
+            + '\n'
+
+            + '\nStep by step:'
+            + '\n1. Start with ALL values from orgState as the base'
+            + '\n2. For every field the ticket explicitly provides → OVERRIDE with ticket value'
+            + '\n3. For every field the ticket does NOT mention → keep orgState value as-is'
+            + '\n4. consumerSecret: if ticket provides it → include it. If not → OMIT entirely.'
+            + '\n5. providerType is IMMUTABLE — never change it even if ticket mentions it'
+            + '\nEXAMPLE for your case:'
+            + '\n  Ticket provides: authorizeUrl, tokenUrl, defaultScopes'
+            + '\n  → Use ticket values for all three'
+            + '\n  orgState has: consumerKey, consumerSecret (not in ticket)'
+            + '\n  → Keep consumerKey from orgState, OMIT consumerSecret'
+
+            + '\n  NEVER let orgState overwrite a value that the ticket explicitly provides.'
+            + '\n'
+            + '\n-- DELETE --'
+            + '\n1. Confirm the developerName exists in existingAuthProviders in orgState'
+            + '\n2. If NOT found → return error in summary, do NOT generate destructiveFiles'
+            + '\n3. Use the shorthand destructiveFiles entry (Apex builds destructiveChangesPost.xml):'
+            + '\n   {'
+            + '\n     "metadataType": "AuthProvider",'
+            + '\n     "member": "DeveloperName"'
+            + '\n   }'
+            + '\n4. Do NOT generate any files[] entry for delete'
+            + '\n'
+            + '\n'
+            + '\n-- NEVER --'
+            + '\n- Never include <fullName> or <developerName> inside AuthProvider XML body — the file name IS the identity'
+            + '\n- Never fabricate consumerKey, consumerSecret, teamId, servicesId, keyId'
+            + '\n- Never change providerType during an update (providerType is immutable after creation)'
+            + '\n- Never mix up consumerKey/consumerSecret with tokenIssuer'
+            + '\n- Never use <tokenEndpointUrl> — the correct element is <tokenUrl>'
+            + '\n- Never use <authorizeEndpointUrl> — the correct element is <authorizeUrl>'
+            + '\n- Never use <scope> — the correct element is <defaultScopes>'
+            + '\n- Never include <developerName> or <fullName> inside AuthProvider XML body'
+            + '\n- Never use <name> — the correct element for the display name is <friendlyName>'
+            + '\n- Never use the "Name" field value as the memberName — URL Suffix IS the DeveloperName'
+            + '\n- Never use the "friendlyName" value as the file name or package.xml member'
+            + '\n- Never include <urlSuffix> — this element does not exist in AuthProvider metadata';
     }
 
     // ─────────────────────────────────────────────────────────────
