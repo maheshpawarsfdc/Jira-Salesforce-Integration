@@ -423,6 +423,114 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch layout names for standard objects mentioned in record-type tickets ──
+            // Stored under "standardObjectLayoutNames" (NOT "existingLayouts") so the
+            // LLM gets the correct fullName (e.g. "Account-Account Layout") without
+            // triggering the Scenario B / MANDATORY PRE-FLIGHT rule, which would force
+            // it to generate a Layout XML file for a standard object — something that
+            // must NEVER happen (standard layouts already exist in every org).
+            if (ticketTextLower.contains('record type')) {
+                Set<String> stdObjects = new Set<String>{
+                    'Account', 'Case', 'Contact', 'Lead', 'Opportunity',
+                    'Task', 'Event', 'Campaign', 'Order', 'Contract',
+                    'Asset', 'Solution', 'Product2', 'Pricebook2'
+                };
+                Map<String, Object> stdLayoutNames = new Map<String, Object>();
+                for (String stdObj : stdObjects) {
+                    if (!ticketTextLower.contains(stdObj.toLowerCase())) continue;
+                    try {
+                        List<Map<String, Object>> layouts = PageLayoutHelper.listPageLayouts(
+                            new Map<String, Object>{ 'objectApiName' => stdObj }
+                        );
+                        List<String> fullNames = new List<String>();
+                        for (Map<String, Object> layout : layouts) {
+                            String fn = (String) layout.get('fullName');
+                            if (String.isNotBlank(fn)) fullNames.add(fn);
+                        }
+                        if (!fullNames.isEmpty()) {
+                            stdLayoutNames.put(stdObj, fullNames);
+                            System.debug('runOrgCheck: standardObjectLayoutNames['
+                                + stdObj + '] = ' + fullNames);
+                        }
+                    } catch (Exception e) {
+                        System.debug('runOrgCheck: layout fetch failed for std obj ['
+                            + stdObj + ']: ' + e.getMessage());
+                    }
+                }
+                if (!stdLayoutNames.isEmpty()) {
+                    orgState.put('standardObjectLayoutNames', stdLayoutNames);
+                }
+            }
+
+            // ── Fetch existing Business Processes ────────────────────────────────
+            // Case, Lead, Opportunity and Solution record types REQUIRE a
+            // <businessProcess> element. Without it Salesforce rejects with:
+            //   "Required field is missing: businessProcess"
+            if (ticketTextLower.contains('record type')) {
+                Set<String> processDrivenObjects = new Set<String>{ 'case', 'lead', 'opportunity', 'solution' };
+                Boolean mentionsProcessObject = false;
+                for (String pObj : processDrivenObjects) {
+                    if (ticketTextLower.contains(pObj)) { mentionsProcessObject = true; break; }
+                }
+                if (mentionsProcessObject) {
+                    try {
+                        Map<String, List<String>> bpByObject = new Map<String, List<String>>();
+                        for (BusinessProcess bp : [
+                            SELECT Id, Name, TableEnumOrId, IsActive
+                            FROM BusinessProcess
+                            WHERE IsActive = true
+                            ORDER BY TableEnumOrId, Name
+                        ]) {
+                            String objKey = bp.TableEnumOrId;
+                            if (!bpByObject.containsKey(objKey)) {
+                                bpByObject.put(objKey, new List<String>());
+                            }
+                            bpByObject.get(objKey).add(bp.Name);
+                        }
+                        if (!bpByObject.isEmpty()) {
+                            orgState.put('existingBusinessProcesses', bpByObject);
+                            System.debug('runOrgCheck: existingBusinessProcesses = '
+                                + JSON.serialize(bpByObject));
+                        } else {
+                            System.debug('runOrgCheck: no active Business Processes found in org');
+                        }
+                    } catch (Exception e) {
+                        System.debug('runOrgCheck: business process fetch failed — ' + e.getMessage());
+                    }
+                }
+            }
+
+            // ── Fetch existing Record Types via SOQL ──────────────────────
+            if (ticketTextLower.contains('record type')) {
+                try {
+                    List<Map<String, Object>> rtList = new List<Map<String, Object>>();
+
+                    for (RecordType rt : [
+                        SELECT Id, Name, DeveloperName, SobjectType,
+                            IsActive, Description
+                        FROM RecordType
+                        WHERE NamespacePrefix = null
+                        ORDER BY SobjectType, DeveloperName
+                    ]) {
+                        rtList.add(new Map<String, Object>{
+                            'developerName' => rt.DeveloperName,
+                            'label'         => rt.Name,
+                            'sobjectType'   => rt.SobjectType,
+                            'isActive'      => rt.IsActive,
+                            'description'   => rt.Description
+                        });
+                    }
+
+                    if (!rtList.isEmpty()) {
+                        orgState.put('existingRecordTypes', rtList);
+                        System.debug('runOrgCheck: fetched ' + rtList.size() + ' record type(s)');
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: record type fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
         } catch (Exception e) {
             System.debug('runOrgCheck failed: ' + e.getMessage());
             ErrorLogger.log(e);
@@ -936,6 +1044,42 @@ public class LLMService {
                     xmlContent = sanitizeLayoutXml(xmlContent);
                 }
 
+                // ── Skip CustomTab for standard objects ───────────────────
+                // Standard objects (Account, Case etc.) have built-in tabs.
+                // Generating a CustomTab for them causes:
+                //   "Master label must be provided for non-custom object tabs"
+                //   "no CustomTab named Account found" (in Profile tabVisibilities)
+                if (metadataType == 'CustomTab' && !memberName.endsWith('__c')) {
+                    System.debug('[DEPLOY-TRACE] skipping CustomTab for standard object ['
+                        + memberName + '] — standard objects have built-in tabs');
+                    continue;
+                }
+
+                // ── Sanitize CustomObject XML for standard objects ─────────
+                // Standard objects forbid <nameField>, <pluralLabel>,
+                // <deploymentStatus>, <sharingModel> in their XML.
+                // These cause: "Cannot specify a name field for a standard object"
+                if (metadataType == 'CustomObject'
+                        && !memberName.endsWith('__c')
+                        && !memberName.endsWith('__mdt')) {
+                    xmlContent = sanitizeStandardObjectXml(xmlContent);
+                    System.debug('[DEPLOY-TRACE] sanitizeStandardObjectXml applied to ['
+                        + filePath + ']');
+                    // Auto-inject <businessProcess> for Case/Lead/Opportunity/Solution
+                    xmlContent = injectBusinessProcessIfMissing(xmlContent, memberName, orgState);
+                }
+
+                // ── Strip standard-object tabVisibilities from Profile XML ──
+                // Profile <tabVisibilities> must only reference existing CustomTabs.
+                // Standard objects (Account, Case etc.) have no CustomTab —
+                // referencing them causes: "no CustomTab named X found".
+                if (metadataType == 'Profile') {
+                    xmlContent = sanitizeProfileStandardObjectTabs(xmlContent);
+                    // Fix bare layout names: "Account Layout" -> "Account-Account Layout"
+                    xmlContent = sanitizeProfileLayoutAssignments(xmlContent);
+                     xmlContent = sanitizeProfileMasterRecordType(xmlContent);
+                }
+
                 if (metadataType == 'AuthProvider') {
                     filePath = 'authproviders/' + memberName + '.authprovider';
                 }
@@ -968,7 +1112,27 @@ public class LLMService {
                     continue;
                 }
 
+                // Safety net: NEVER deploy Layout files for standard objects.
+                // They already exist in every org; deploying an LLM-generated one
+                // causes "Layout must contain an item for required layout field".
+                if (metadataType == 'Layout' && isStandardObjectLayout(memberName)) {
+                    System.debug('[DEPLOY-TRACE] SKIPPED standard-object Layout file ['
+                        + filePath + '] — standard layouts must not be deployed.');
+                    continue;
+                }
                 ZipBuilder.addFile(metadataType, memberName, filePath, xmlContent);
+
+                // Auto-register RecordType members in package.xml
+                // The actual definition lives inside the CustomObject file
+                if (metadataType == 'CustomObject') {
+                    List<String> rtNames = extractRecordTypeNamesFromObjectXml(xmlContent);
+                    for (String rtName : rtNames) {
+                        ZipBuilder.registerMember('RecordType', memberName + '.' + rtName);
+                        System.debug('[DEPLOY-TRACE] registered RecordType member: '
+                            + memberName + '.' + rtName);
+                    }
+                }
+
                 System.debug('processXmlGenerationResponse: added [' + filePath + '] to ZipBuilder');
                 System.debug('[DEPLOY-TRACE] route ZIP1 <- ' + metadataType + ' / ' + filePath);
 
@@ -1041,6 +1205,24 @@ public class LLMService {
         // ── Return summary ─────────────────────────────────────
         String summary = (String) parsed.get('summary');
         return String.isNotBlank(summary) ? summary : 'Changes staged for deployment.';
+    }
+
+
+    private static List<String> extractRecordTypeNamesFromObjectXml(String xmlContent) {
+        List<String> result = new List<String>();
+        if (String.isBlank(xmlContent) || !xmlContent.contains('<recordTypes>')) return result;
+
+        Pattern rtBlock = Pattern.compile('(?s)<recordTypes>(.*?)</recordTypes>');
+        Matcher m = rtBlock.matcher(xmlContent);
+        Pattern fnPat = Pattern.compile('<fullName>([^<]+)</fullName>');
+
+        while (m.find()) {
+            Matcher fnm = fnPat.matcher(m.group(1));
+            if (fnm.find()) {
+                result.add(fnm.group(1));
+            }
+        }
+        return result;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1137,7 +1319,17 @@ public class LLMService {
             String memberName   = (String) file.get('memberName');
             String xmlContent   = (String) file.get('xmlContent');
             if (String.isBlank(metadataType) || String.isBlank(memberName)) continue;
-            if (metadataType == 'CustomObject' && !existingObjects.contains(memberName)) {
+            // Only backstop CUSTOM objects (__c / __mdt).
+            // Standard objects (Account, Case, Contact, Lead etc.) are deployed
+            // as CustomObject files for record types but they NEVER need a
+            // synthesized layout — their layouts already exist in every org.
+            // Before this guard, the backstop saw Account in the deploy list,
+            // noticed it was not in existingObjects (only custom objects land there),
+            // and synthesized a blank layout that failed with:
+            //   "Layout must contain an item for required layout field: ParentId"
+            Boolean isCustomObj = memberName != null
+                && (memberName.endsWith('__c') || memberName.endsWith('__mdt'));
+            if (metadataType == 'CustomObject' && isCustomObj && !existingObjects.contains(memberName)) {
                 newObjectXml.put(memberName, xmlContent);
             } else if (metadataType == 'Layout' && memberName.contains('-')) {
                 objectsWithLayout.add(memberName.substringBefore('-'));
@@ -1616,6 +1808,24 @@ public class LLMService {
 
         // ── Check 2: Type-specific required elements ───────────
         if (metadataType == 'CustomObject') {
+            // ── Standard object guard ──────────────────────────────────
+            // Standard objects forbid <nameField>, <sharingModel>, <pluralLabel>,
+            // <deploymentStatus>. They should have already been stripped by
+            // sanitizeStandardObjectXml, but if something slips through, reject early.
+            if (!memberName.endsWith('__c') && !memberName.endsWith('__mdt')) {
+                if (xmlContent.contains('<nameField>')) {
+                    return 'Standard object [' + memberName + '] must not contain <nameField>';
+                }
+                if (xmlContent.contains('<sharingModel>')) {
+                    return 'Standard object [' + memberName + '] must not contain <sharingModel>';
+                }
+                if (xmlContent.contains('<pluralLabel>')) {
+                    return 'Standard object [' + memberName + '] must not contain <pluralLabel>';
+                }
+                // Standard objects only need the <CustomObject> wrapper — no further required elements.
+                return null;
+            }
+
             // Check __mdt FIRST — before any content checks
             if (memberName != null && memberName.endsWith('__mdt')) {
                 // Reject invalid tags LLM might hallucinate
@@ -1779,6 +1989,303 @@ public class LLMService {
         }
 
         return xml;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // STANDARD OBJECT XML SANITIZER
+    // The LLM occasionally emits elements that are only valid on custom
+    // objects inside the CustomObject wrapper for standard objects like
+    // Account, Case, Contact, Lead, Opportunity etc.
+    //
+    // Salesforce rejects these with errors like:
+    //   "Cannot specify a name field for a standard object"
+    //
+    // Strips: <nameField>, <pluralLabel>, <deploymentStatus>, <sharingModel>
+    // Safe to run on all non-__c non-__mdt CustomObject files.
+    // ─────────────────────────────────────────────────────────────
+    private static String sanitizeStandardObjectXml(String xml) {
+        if (String.isBlank(xml)) return xml;
+
+        Integer removedCount = 0;
+        List<String> forbiddenBlocks = new List<String>{
+            'nameField', 'pluralLabel', 'deploymentStatus', 'sharingModel'
+        };
+
+        for (String tag : forbiddenBlocks) {
+            Pattern p = Pattern.compile('(?s)\\s*<' + tag + '>.*?</' + tag + '>');
+            Matcher m = p.matcher(xml);
+            String cleaned = m.replaceAll('');
+            if (cleaned != xml) {
+                removedCount++;
+                xml = cleaned;
+            }
+        }
+
+        if (removedCount > 0) {
+            System.debug('[DEPLOY-TRACE] sanitizeStandardObjectXml: removed '
+                + removedCount + ' forbidden element(s) from standard object XML');
+        }
+        return xml;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PROFILE STANDARD-OBJECT TAB SANITIZER
+    // The LLM occasionally adds <tabVisibilities> blocks for standard
+    // objects (Account, Case, Contact etc.) in Profile XML.
+    //
+    // Salesforce rejects these with:
+    //   "no CustomTab named Account found"
+    // because standard objects use built-in tabs, not CustomTabs.
+    //
+    // Strips any <tabVisibilities> block whose <tab> value does NOT
+    // end with __c (i.e. is a standard-object tab reference).
+    // ─────────────────────────────────────────────────────────────
+    private static String sanitizeProfileStandardObjectTabs(String xml) {
+        if (String.isBlank(xml) || !xml.contains('<tabVisibilities>')) return xml;
+
+        // Match full <tabVisibilities>…</tabVisibilities> blocks
+        Pattern tvPat = Pattern.compile(
+            '(?s)\\s*<tabVisibilities>\\s*<tab>([^<]+)</tab>.*?</tabVisibilities>'
+        );
+        Matcher m = tvPat.matcher(xml);
+
+        List<String> toRemove = new List<String>();
+        while (m.find()) {
+            String tabName = m.group(1).trim();
+            if (!tabName.endsWith('__c')) {
+                toRemove.add(m.group(0));
+                System.debug('[DEPLOY-TRACE] sanitizeProfileStandardObjectTabs: '
+                    + 'removing tabVisibilities for standard object tab [' + tabName + ']');
+            }
+        }
+
+        for (String block : toRemove) {
+            xml = xml.replace(block, '');
+        }
+
+        if (!toRemove.isEmpty()) {
+            System.debug('[DEPLOY-TRACE] sanitizeProfileStandardObjectTabs: removed '
+                + toRemove.size() + ' standard-object tabVisibilities block(s)');
+        }
+        return xml;
+    }
+
+    // ── FIX: AUTO-INJECT <businessProcess> FOR PROCESS-DRIVEN OBJECTS ─────────
+    // Case, Lead, Opportunity and Solution record types REQUIRE <businessProcess>.
+    // If the LLM omits it → "Required field is missing: businessProcess"
+    // This injects the first available process from orgState after <active>.
+    private static final Map<String, String> PROCESS_DRIVEN_OBJECTS = new Map<String, String>{
+        'Case' => 'Case', 'Lead' => 'Lead', 'Opportunity' => 'Opportunity', 'Solution' => 'Solution'
+    };
+
+    private static String injectBusinessProcessIfMissing(
+        String xml, String memberName, Map<String, Object> orgState
+    ) {
+        if (String.isBlank(xml) || !xml.contains('<recordTypes>')) return xml;
+        if (!PROCESS_DRIVEN_OBJECTS.containsKey(memberName)) return xml;
+        String tableEnumOrId = PROCESS_DRIVEN_OBJECTS.get(memberName);
+
+        String bpName = null;
+        Object rawBps = orgState != null ? orgState.get('existingBusinessProcesses') : null;
+        if (rawBps != null) {
+            try {
+                Map<String, Object> bpMap = (Map<String, Object>) JSON.deserializeUntyped(
+                    JSON.serialize(rawBps)
+                );
+                Object bpListRaw = bpMap.get(tableEnumOrId);
+                if (bpListRaw instanceof List<Object>) {
+                    List<Object> bpList = (List<Object>) bpListRaw;
+                    if (!bpList.isEmpty()) bpName = String.valueOf(bpList[0]);
+                }
+            } catch (Exception e) {
+                System.debug('[DEPLOY-TRACE] injectBusinessProcess: failed to parse bps — ' + e.getMessage());
+            }
+        }
+
+        if (String.isBlank(bpName)) {
+            System.debug('[DEPLOY-TRACE] injectBusinessProcess: no Business Process found for ['
+                + memberName + '] in orgState — deploy may fail');
+            return xml;
+        }
+
+        Pattern rtPat = Pattern.compile('(?s)<recordTypes>(.*?)</recordTypes>');
+        Matcher rm = rtPat.matcher(xml);
+        List<String> origBlocks = new List<String>();
+        List<String> fixedBlocks = new List<String>();
+
+        while (rm.find()) {
+            String fullBlock = rm.group(0);
+            if (fullBlock.contains('<businessProcess>')) continue;
+            String fixedBlock = fullBlock.replace(
+                '</active>',
+                '</active> <businessProcess>' + bpName + '</businessProcess>');
+            origBlocks.add(fullBlock);
+            fixedBlocks.add(fixedBlock);
+            System.debug('[DEPLOY-TRACE] injectBusinessProcess: injected ['
+                + bpName + '] into ' + memberName + ' record type');
+        }
+
+        for (Integer i = 0; i < origBlocks.size(); i++) {
+            xml = xml.replace(origBlocks[i], fixedBlocks[i]);
+        }
+        return xml;
+    }
+
+    // ── FIX: AUTO-PREFIX BARE LAYOUT NAMES IN PROFILE <layoutAssignments> ───────
+    // LLM sometimes emits <layout>Account Layout</layout> instead of the required
+    // <layout>Account-Account Layout</layout> format, causing:
+    //   "In field: layout - no Layout named Account Layout found"
+    // This sanitizer infers the ObjectName prefix from the sibling <recordType> tag.
+    private static String sanitizeProfileLayoutAssignments(String xml) {
+        if (String.isBlank(xml) || !xml.contains('<layoutAssignments>')) return xml;
+
+        // Pass 1: build a map of objName → known layout fullName
+        // from blocks that DO have a <recordType> tag (those are reliable)
+        Map<String, String> objToLayout = new Map<String, String>();
+        Pattern blockPat = Pattern.compile('(?s)<layoutAssignments>(.*?)</layoutAssignments>');
+        Matcher bm = blockPat.matcher(xml);
+        while (bm.find()) {
+            String inner1 = bm.group(1);
+            Pattern rtPat = Pattern.compile('<recordType>([^.<]+)[.]([^<]+)</recordType>');
+            Matcher rm = rtPat.matcher(inner1);
+            if (!rm.find()) continue;
+            String objName = rm.group(1).trim();
+            Pattern lPat = Pattern.compile('<layout>([^<]+)</layout>');
+            Matcher lm = lPat.matcher(inner1);
+            if (!lm.find()) continue;
+            String layoutVal = lm.group(1).trim();
+            // Store the prefixed layout or the object name at minimum
+            if (layoutVal.contains('-')) {
+                objToLayout.put(objName, layoutVal.substringBefore('-'));
+            } else {
+                objToLayout.put(objName, objName); // at least we know the object
+            }
+        }
+
+        // Pass 2: fix all unprefixed layout values
+        bm = blockPat.matcher(xml);
+        List<String> origBlocks = new List<String>();
+        List<String> fixedBlocks = new List<String>();
+
+        while (bm.find()) {
+            String fullBlock = bm.group(0);
+            String inner1    = bm.group(1);
+
+            Pattern layoutPat = Pattern.compile('<layout>([^<]+)</layout>');
+            Matcher lm = layoutPat.matcher(inner1);
+            if (!lm.find()) continue;
+            String layoutVal = lm.group(1).trim();
+            if (layoutVal.contains('-')) continue; // already prefixed
+
+            String objName = null;
+
+            // Try sibling <recordType> first
+            Pattern rtPat = Pattern.compile('<recordType>([^.<]+)[.]([^<]+)</recordType>');
+            Matcher rm = rtPat.matcher(inner1);
+            if (rm.find()) {
+                objName = rm.group(1).trim();
+            }
+            // Try inferring from layout name ("Case Layout" → "Case")
+            if (String.isBlank(objName) && layoutVal.contains(' ')) {
+                objName = layoutVal.substringBefore(' ').trim();
+            }
+            // Try inferring from other blocks in the same profile (for bare names like "Default")
+            if (String.isBlank(objName) && !objToLayout.isEmpty()) {
+                objName = objToLayout.values()[0]; // best guess from same profile
+            }
+
+            if (String.isBlank(objName)) continue;
+
+            String fixedLayout = objName + '-' + layoutVal;
+            String fixedBlock  = fullBlock.replace(
+                '<layout>' + layoutVal + '</layout>',
+                '<layout>' + fixedLayout + '</layout>'
+            );
+            origBlocks.add(fullBlock);
+            fixedBlocks.add(fixedBlock);
+            System.debug('[DEPLOY-TRACE] sanitizeProfileLayoutAssignments: '
+                + layoutVal + ' -> ' + fixedLayout);
+        }
+
+        for (Integer i = 0; i < origBlocks.size(); i++) {
+            xml = xml.replace(origBlocks[i], fixedBlocks[i]);
+        }
+        return xml;
+    }
+
+    // ── FIX: AUTO-INJECT/CORRECT <--master--> recordTypeVisibilities ──────────
+    // Salesforce requires that for every object with recordTypeVisibilities in a
+    // profile, exactly one entry has default=true. When the new RT is default=false,
+    // the Master entry must be default=true + visible=true.
+    // The LLM often omits Master entirely or sets it incorrectly.
+    private static String sanitizeProfileMasterRecordType(String xml) {
+        if (String.isBlank(xml) || !xml.contains('<recordTypeVisibilities>')) return xml;
+
+        // Step 1: Remove any bogus ObjectName.Master entries — these don't exist in Salesforce
+        Pattern masterEntryPat = Pattern.compile(
+            '(?s)\\s*<recordTypeVisibilities>\\s*<recordType>[^<]+\\.Master</recordType>.*?</recordTypeVisibilities>'
+        );
+        Matcher mm = masterEntryPat.matcher(xml);
+        while (mm.find()) {
+            System.debug('[DEPLOY-TRACE] sanitizeProfileMasterRecordType: removing bogus Master entry: ' + mm.group(0));
+            xml = xml.replace(mm.group(0), '');
+            mm = masterEntryPat.matcher(xml); // re-match after replace
+        }
+
+        // Step 2: Per object, ensure at least one recordTypeVisibility has default=true
+        // Collect objects and whether any RT has default=true
+        Map<String, Boolean> objHasDefault = new Map<String, Boolean>();
+        Map<String, String>  objFirstBlock  = new Map<String, String>();  // first RT block per object
+
+        Pattern blockPat = Pattern.compile('(?s)<recordTypeVisibilities>(.*?)</recordTypeVisibilities>');
+        Matcher bm = blockPat.matcher(xml);
+        while (bm.find()) {
+            String inner2 = bm.group(1);
+            Pattern rtPat = Pattern.compile('<recordType>([^.<]+)[.]([^<]+)</recordType>');
+            Matcher rm = rtPat.matcher(inner2);
+            if (!rm.find()) continue;
+            String objName   = rm.group(1).trim();
+            Boolean isDef    = inner2.contains('<default>true</default>');
+            if (!objHasDefault.containsKey(objName)) {
+                objHasDefault.put(objName, false);
+                objFirstBlock.put(objName, bm.group(0)); // remember full first block
+            }
+            if (isDef) objHasDefault.put(objName, true);
+        }
+
+        // Step 3: For any object with no default=true RT, promote the first RT to default=true
+        for (String objName : objHasDefault.keySet()) {
+            if (!objHasDefault.get(objName)) {
+                String firstBlock = objFirstBlock.get(objName);
+                String fixedBlock = firstBlock.replace(
+                    '<default>false</default>',
+                    '<default>true</default>'
+                );
+                xml = xml.replace(firstBlock, fixedBlock);
+                System.debug('[DEPLOY-TRACE] sanitizeProfileMasterRecordType: promoted ['
+                    + objName + '] first RT to default=true (no default existed)');
+            }
+        }
+
+        return xml;
+    }
+
+    // ── FIX: SAFETY NET — NEVER DEPLOY LAYOUT FILES FOR STANDARD OBJECTS ─────
+    // Standard object layouts (Account, Case, Contact, Lead, Opportunity …)
+    // already exist in every org and MUST NOT be deployed via the Metadata API.
+    // Deploying them causes "Layout must contain an item for required layout field"
+    // because the LLM-generated XML is always incomplete.
+    // This guard drops any Layout file whose memberName starts with a known
+    // standard-object name, before the file ever reaches the ZIP.
+    private static final Set<String> STANDARD_OBJECTS = new Set<String>{
+        'Account','Case','Contact','Lead','Opportunity','Task','Event',
+        'Campaign','Order','Contract','Asset','Solution','Product2','Pricebook2',
+        'User','UserRole','Group','Territory','Forecast','ForecastingItem'
+    };
+    private static Boolean isStandardObjectLayout(String memberName) {
+        if (String.isBlank(memberName) || !memberName.contains('-')) return false;
+        String objPart = memberName.substringBefore('-');
+        return STANDARD_OBJECTS.contains(objPart);
     }
 
     // Adds a single destructive member entry to destructiveChangesPost.xml,
@@ -3735,6 +4242,328 @@ public class LLMService {
             + '\n  <AssignmentRules xmlns="http://soap.sforce.com/2006/04/metadata">'
             + '\n  </AssignmentRules>'
             + '\n- Only use this when the ticket says to delete ALL rules or the entire assignment rule configuration'
+
+            + '\n\n== RECORD TYPE RULES =='
+            + '\nRecord Types are embedded inside the CustomObject XML as <recordTypes> blocks.'
+            + '\nFile path: objects/ObjectName.object  (standard objects e.g. Case, Account)'
+            + '\n           objects/ObjectName__c.object (custom objects e.g. MyObject__c)'
+            + '\nmetadataType: CustomObject'
+            + '\nmemberName: ObjectName or ObjectName__c'
+            + '\n'
+            + '\nCRITICAL: Standard objects use NO __c suffix:'
+            + '\n  Correct:   Case, Account, Contact, Lead, Opportunity'
+            + '\n  Incorrect: Case__c, Account__c'
+            + '\n'
+            + '\n== STANDARD OBJECT RECORD TYPES — ABSOLUTE RULES =='
+            + '\nWhen the object is a STANDARD object (Account, Case, Contact, Lead, Opportunity, etc.):'
+            + '\n'
+            + '\n1. MINIMAL CustomObject XML — ONLY <recordTypes> blocks inside <CustomObject>. NOTHING else.'
+            + '\n   The ONLY valid format for a standard object CustomObject file is:'
+            + '\n   <?xml version=\"1.0\" encoding=\"UTF-8\"?>'
+            + '\n   <CustomObject xmlns=\"http://soap.sforce.com/2006/04/metadata\">'
+            + '\n       <recordTypes>'
+            + '\n           <fullName>Record_Type_API_Name</fullName>'
+            + '\n           <active>true</active>'
+            + '\n           <description>Optional description</description>'
+            + '\n           <label>Record Type Label</label>'
+            + '\n       </recordTypes>'
+            + '\n   </CustomObject>'
+            + '\n'
+            + '\n   FORBIDDEN in standard object CustomObject XML (causes deploy failure):'
+            + '\n   - <label> at the object level     [Master label must be provided error]'
+            + '\n   - <pluralLabel>'
+            + '\n   - <nameField>                      [Cannot specify a name field for a standard object]'
+            + '\n   - <sharingModel>'
+            + '\n   - <deploymentStatus>'
+            + '\n'
+            + '\n2. NEVER generate a CustomTab file for a standard object.'
+            + '\n   Account, Case, Contact, Lead etc. already have built-in tabs.'
+            + '\n   Emitting a CustomTab for them causes [Master label must be provided] error.'
+            + '\n'
+            + '\n3. NEVER add <tabVisibilities> in any Profile XML for a standard object.'
+            + '\n   Standard objects have built-in tabs. They are NOT CustomTabs.'
+            + '\n   <tabVisibilities><tab>Account</tab> causes [no CustomTab named Account found].'
+            + '\n'
+            + '\n4. NEVER generate a Layout file for a standard object.'
+            + '\n   Standard object layouts already exist in the org. Only reference them'
+            + '\n   by name inside Profile <layoutAssignments>. Never emit a Layout file.'
+            + '\n'
+            + '\nQUICK REFERENCE for a standard-object record type ticket (e.g. Account):'
+            + '\n  File 1: objects/Account.object  — CustomObject with ONLY <recordTypes> block(s)'
+            + '\n  File 2: profiles/Admin.profile  — Profile with <layoutAssignments> + <recordTypeVisibilities>'
+            + '\n  NO CustomTab file. NO <tabVisibilities>. NO Layout file. Ever.'
+            + '\n'
+            + '\nrecordType reference format is ALWAYS: ObjectName.DeveloperName'
+            + '\n  Custom:   MyObject__c.My_Record_Type'
+            + '\n  Standard: Case.My_Record_Type'
+            + '\n'
+            + '\n-- RECORD TYPE XML STRUCTURE --'
+            + '\nEmbedded inside <CustomObject>:'
+            + '\n<recordTypes>'
+            + '\n    <fullName>Record_Type_API_Name</fullName>'
+            + '\n    <active>true</active>'
+            + '\n    <description>Optional description</description>'
+            + '\n    <label>Record Type Label</label>'
+            + '\n    <picklistValues>'
+            + '\n        <picklist>Status__c</picklist>'
+            + '\n        <values>'
+            + '\n            <fullName>Active</fullName>'
+            + '\n            <default>false</default>'
+            + '\n        </values>'
+            + '\n        <values>'
+            + '\n            <fullName>Inactive</fullName>'
+            + '\n            <default>true</default>'
+            + '\n        </values>'
+            + '\n    </picklistValues>'
+            + '\n</recordTypes>'
+            + '\n'
+            + '\nCRITICAL: Inside <values>, ONLY two elements are allowed:'
+            + '\n  1. <fullName>  — the picklist value API name'
+            + '\n  2. <default>   — true or false'
+            + '\nNEVER include <label> inside <values> — it does not exist and will break the deploy.'
+            + '\nELEMENT ORDER inside <recordTypes> MUST be:'
+            + '\n  1. fullName'
+            + '\n  2. active'
+            + '\n  3. businessProcess  ← ONLY for Case/Lead/Opportunity/Solution (see below)'
+            + '\n  4. description (optional — omit entirely if not provided)'
+            + '\n  5. label'
+            + '\n  6. picklistValues (optional — one block per picklist field)'
+            + '\n'
+            + '\n== PROCESS-DRIVEN OBJECTS — CRITICAL =='
+            + '\nCase, Lead, Opportunity, and Solution record types REQUIRE a <businessProcess>'
+            + '\nelement. Omitting it causes: "Required field is missing: businessProcess"'
+            + '\n'
+            + '\nObject → Business Process type:'
+            + '\n  Case        → Support Process  (TableEnumOrId = Case)'
+            + '\n  Lead        → Lead Process      (TableEnumOrId = Lead)'
+            + '\n  Opportunity → Sales Process     (TableEnumOrId = Opportunity)'
+            + '\n  Solution    → Solution Process  (TableEnumOrId = Solution)'
+            + '\n'
+            + '\nThe available Business Process names are in orgState.existingBusinessProcesses:'
+            + '\n  { "Case": ["Basic Support Process", ...], "Lead": ["Standard Lead Process"], ... }'
+            + '\nALWAYS use the first entry for the relevant object:'
+            + '\n  existingBusinessProcesses["Case"][0]     → for Case record types'
+            + '\n  existingBusinessProcesses["Lead"][0]     → for Lead record types'
+            + '\n  existingBusinessProcesses["Opportunity"][0] → for Opportunity record types'
+            + '\n'
+            + '\nCORRECT XML for a Case record type:'
+            + '\n<recordTypes>'
+            + '\n    <fullName>Technical_Support</fullName>'
+            + '\n    <active>true</active>'
+            + '\n    <businessProcess>Basic Support Process</businessProcess>'
+            + '\n    <description>Record type for technical support cases</description>'
+            + '\n    <label>Technical Support</label>'
+            + '\n</recordTypes>'
+            + '\n'
+            + '\nIf existingBusinessProcesses is empty or missing the object key:'
+            + '\n  → Return an error in summary: "No active Business Process found for [Object].'
+            + '\n    Please create a Support/Sales/Lead Process first in Salesforce Setup."'
+            + '\n  → Do NOT generate any files — the deploy will fail without a valid process.'
+            + '\n'
+            + '\nFor Account, Contact, and all other standard/custom objects:'
+            + '\n  → NEVER include <businessProcess> — it does not exist on those objects.'
+            + '\n'
+            + '\n-- CREATE --'
+            + '\n1. Embed <recordTypes> block inside the CustomObject XML'
+            + '\n2. For EXISTING objects:'
+            + '\n   - Use full CustomObject wrapper with label/pluralLabel/nameField/sharingModel from orgState'
+            + '\n   - Preserve ALL existing record types from existingRecordTypes in orgState'
+            + '\n   - Add the new <recordTypes> block alongside existing ones'
+            + '\n3. For NEW objects:'
+            + '\n   - Include <recordTypes> block inside the new object definition'
+            + '\n4. Always generate a Profile file for each profile mentioned in the ticket:'
+            + '\n   - <layoutAssignments> with <layout> AND <recordType>'
+            + '\n   - <recordTypeVisibilities> with <visible> and <default>'
+            + '\n5. If ticket does not specify a layout:'
+            + '\n   - Use the first layout from existingLayouts for that object in orgState'
+            + '\n6. If ticket does not specify default → set default=false'
+            + '\n7. deploymentPlan:'
+            + '\n   - New object with record type → chained (object first, layout+profile second)'
+            + '\n   - Existing object with record type → single'
+            + '\n8. NEVER generate a Layout XML file for standard objects — standard object'
+            + '\n   layouts already exist. Only reference them in Profile <layoutAssignments>.'
+            + '\n9. NEVER add tabVisibilities to Profile for standard objects.'
+            + '\n'
+            + '\n-- PICKLIST VALUES --'
+            + '\n1. Only include <picklistValues> if ticket specifies which values to assign'
+            + '\n2. If ticket says "all values" → include ALL picklist values from existingFields in orgState'
+            + '\n3. If ticket specifies a subset → include ONLY those values'
+            + '\n4. If ticket does not mention picklist values → OMIT <picklistValues> entirely'
+            + '\n5. Each <picklistValues> block covers ONE picklist field'
+            + '\n6. NEVER fabricate picklist values — only use values that exist in orgState existingFields'
+            + '\n'
+            + '\n-- PICKLIST VALUES XML STRUCTURE --'
+            + '\n<picklistValues>'
+            + '\n    <picklist>FieldApiName__c</picklist>'
+            + '\n    <values>'
+            + '\n        <fullName>PicklistValue</fullName>'
+            + '\n        <default>false</default>'
+            +'\n </values>'
+            + '\n    </values>'
+            + '\n</picklistValues>'
+            + '\n'
+            + '\n </picklistValues>'
+            + '\n'
+            + '\n CRITICAL: Inside <values>, ONLY two elements are allowed:'
+            + '\n  CRITICAL: For Case profile layoutAssignments, the master layout name is exactly what '
+            + '\n  standardObjectLayoutNames["Case"][0] returns. NEVER use "Default" as a layout name.'
+            + '\n  Always use the full name from standardObjectLayoutNames.'
+            + '\n  1. <fullName>  — the picklist value API name'
+            + '\n  2. <default>   — true or false'
+            + '\n  NEVER include <label> inside <values> — it does not exist and will break the deploy.'
+            + '\n'
+            + '\n-- UPDATE --'
+            + '\n1. Find the record type in existingRecordTypes by developerName + sobjectType'
+            + '\n2. If NOT found in orgState → return error in summary, do NOT generate files'
+            + '\n3. Regenerate COMPLETE CustomObject XML:'
+            + '\n   - Include ALL existing record types from orgState'
+            + '\n   - Only modify the specific record type the ticket mentions'
+            + '\n   - Preserve all other record types exactly as they are in orgState'
+            + '\n4. Only change what the ticket explicitly requests'
+            + '\n5. deploymentPlan: single'
+            + '\n'
+            + '\n-- DELETE --'
+            + '\n1. Confirm the record type exists in existingRecordTypes in orgState'
+            + '\n2. If NOT found → return error in summary, do NOT generate files'
+            + '\n3. NEVER delete the Master record type — it is a system default'
+            + '\n4. Use destructiveFiles shorthand (Apex builds destructiveChangesPost.xml):'
+            + '\n   {'
+            + '\n     "metadataType": "RecordType",'
+            + '\n     "member": "ObjectName.RecordTypeDeveloperName"'
+            + '\n   }'
+            + '\n5. Do NOT generate any files[] entry for delete'
+            + '\n'
+            + '\n-- PROFILE ASSIGNMENT --'
+            + '\nGenerate one Profile file per profile mentioned in ticket.'
+            + '\nFile path: profiles/ProfileApiName.profile'
+            + '\nmetadataType: Profile'
+            + '\nmemberName: ProfileApiName'
+            + '\n'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<Profile xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <layoutAssignments>'
+            + '\n        <layout>ObjectName-Layout Name</layout>'
+            + '\n        <recordType>ObjectName.RecordTypeDeveloperName</recordType>'
+            + '\n    </layoutAssignments>'
+            + '\n    <recordTypeVisibilities>'
+            + '\n        <recordType>ObjectName.RecordTypeDeveloperName</recordType>'
+            + '\n        <default>false</default>'
+            + '\n        <visible>true</visible>'
+            + '\n    </recordTypeVisibilities>'
+            + '\n</Profile>'
+            + '\n'
+            + '\nCRITICAL — LAYOUT REFERENCE FORMAT IN <layoutAssignments>:'
+            + '\n  <layout> MUST always be: ObjectName-Layout Name (joined by ONE dash).'
+            + '\n  Examples: Account-Account Layout | Case-Case Layout | MyObj__c-My Obj Layout'
+            + '\n  NEVER emit a bare name like "Account Layout" — Salesforce will reject it.'
+            + '\n'
+            + '\nHOW TO FIND THE CORRECT LAYOUT NAME FOR STANDARD OBJECTS:'
+            + '\n  Standard object layout names are in orgState.standardObjectLayoutNames.'
+            + '\n  Format: { "Account": ["Account-Account Layout", ...], "Case": [...] }'
+            + '\n  ALWAYS use the first entry: standardObjectLayoutNames["Account"][0]'
+            + '\n  Do NOT guess layout names. Do NOT use existingLayouts for standard objects.'
+            + '\n  If standardObjectLayoutNames is missing a key, use "ObjectName-ObjectName Layout"'
+            + '\n  as the fallback (e.g. "Account-Account Layout").'
+            + '\n'
+            + '\nNEVER GENERATE A LAYOUT XML FILE FOR STANDARD OBJECTS.'
+            + '\n  Account, Case, Contact, Lead, Opportunity etc. already have layouts in the org.'
+            + '\n  Only reference the layout name inside Profile <layoutAssignments>.'
+            + '\n  Generating a Layout XML for a standard object causes:'
+            + '\n    "Layout must contain an item for required layout field: <field>"'
+            + '\n'
+            + '\nPROFILE RULES:'
+            + '\n1. ONE profile file per profile — merge ALL layoutAssignments + recordTypeVisibilities'
+            + '\n   into the SAME profile file if multiple record types are assigned to it'
+            + '\n2. default=true means this is the default record type for that profile'
+            + '\n3. NEVER set default=true on more than one record type per profile per object'
+            + '\n4. visible=true to show, visible=false to hide from profile'
+            + '\n5. If ticket says "default record type for Profile X" → default=true, visible=true'
+            + '\n6. If ticket says "visible but not default" → default=false, visible=true'
+            + '\n7. If ticket says "hide from profile" → default=false, visible=false'
+            + '\n8. NEVER add tabVisibilities unless ticket explicitly asks for it'
+            + '\nTABVISIBILITIES ABSOLUTE RULES:'
+            + '\n- NEVER add <tabVisibilities> for ANY standard object'
+            + '\n  (Account, Case, Contact, Lead, Opportunity, Task, Event etc.)'
+            + '\n  Standard objects already have built-in tabs — referencing them'
+            + '\n  as CustomTab will fail with "no CustomTab named X found"'
+            + '\n- ONLY add <tabVisibilities> for custom objects (__c suffix)'
+            + '\n  AND only when the ticket explicitly asks to show/hide a tab'
+            + '\n- When in doubt → OMIT <tabVisibilities> entirely'
+            + '\n- For Record Type tickets on standard objects → NEVER generate'
+            + '\n  tabVisibilities under any circumstances'
+            + '\n9. layoutAssignments MUST include <recordType> when assigning layout per record type'
+            + '\n10. NEVER generate a Layout XML file for standard objects (Account, Case, Contact,'
+            + '\n    Lead, Opportunity etc.) — only reference the existing layout name in'
+            + '\n    <layoutAssignments>. Standard object layouts already exist in the org.'
+            + '\n10. DEFAULT RECORD TYPE RULE — CRITICAL:'
+            + '\n    Salesforce requires exactly ONE recordTypeVisibility per object to have default=true.'
+            + '\n    - If ticket says Default=true  → set <default>true</default> on that RT'
+            + '\n    - If ticket says Default=false → STILL set <default>true</default> on the new RT'
+            + '\n      because it is the only record type and must be the default'
+            + '\n    - NEVER emit <recordType>ObjectName.Master</recordType> — Master is not a real'
+            + '\n      Metadata API record type name and will cause deploy failure'
+            + '\n    - NEVER leave all recordTypeVisibilities with default=false'
+            + '\n11. NEVER add <tabVisibilities> for standard objects — they already have'
+            + '\n    standard tabs. tabVisibilities is only for custom object tabs.'
+            + '\n12. NEVER regenerate or emit a Layout file entry just because of a record type'
+            + '\n    assignment — only add <layoutAssignments> inside the Profile file.'
+            + '\n'
+            + '\n-- MULTIPLE RECORD TYPES ON SAME OBJECT --'
+            + '\nWhen creating multiple record types in same ticket:'
+            + '\n1. All <recordTypes> blocks go into ONE CustomObject file'
+            + '\n2. Only ONE record type can be default=true per profile'
+            + '\n3. Each record type can have different layout per profile'
+            + '\n4. Generate ONE profile file per profile with ALL record type assignments inside it'
+            + '\n'
+            + '\n-- RULES SUMMARY --'
+            + '\n1. ALWAYS preserve ALL existing record types when updating — never drop any'
+            + '\n2. NEVER fabricate record type names, picklist values, or layout names'
+            + '\n3. Standard objects: no __c suffix in memberName or recordType reference'
+            + '\n4. Custom objects: always include __c suffix'
+            + '\n5. recordType reference format: ObjectName.DeveloperName (no spaces)'
+            + '\n6. DeveloperName: no spaces, no __c suffix, underscores only'
+            + '\n7. Master record type cannot be deleted'
+            + '\n8. For new object + record type → always chained deployment'
+            + '\n9. For existing object + record type → always single deployment'
+            + '\n10. NEVER emit two files[] entries with same filePath — merge into one'
+
+            // ── STANDARD OBJECT CUSTOMOBJECT XML RULES ─────────────────
+            + '\n\n== STANDARD OBJECT CUSTOMOBJECT XML — STRICT RULES =='
+            + '\nWhen generating CustomObject XML for a STANDARD object (Account, Case, Contact,'
+            + '\nLead, Opportunity, Task, Event — i.e. any object WITHOUT __c or __mdt suffix):'
+            + '\n'
+            + '\nFORBIDDEN — Salesforce rejects these on standard objects:'
+            + '\n  <nameField>        — causes "Cannot specify a name field for a standard object"'
+            + '\n  <pluralLabel>      — not valid on standard objects'
+            + '\n  <deploymentStatus> — not valid on standard objects'
+            + '\n  <sharingModel>     — not valid on standard objects'
+            + '\n'
+            + '\nALLOWED in standard object CustomObject XML:'
+            + '\n  <label>            — optional'
+            + '\n  <recordTypes>      — Record Type definitions'
+            + '\n  <fields>           — only when adding custom fields'
+            + '\n  <validationRules>  — only when adding validation rules'
+            + '\n'
+            + '\nMINIMAL CORRECT example (Record Type on Account):'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <recordTypes>'
+            + '\n        <fullName>Corporate_Account</fullName>'
+            + '\n        <active>true</active>'
+            + '\n        <description>Record type for corporate accounts</description>'
+            + '\n        <label>Corporate Account</label>'
+            + '\n    </recordTypes>'
+            + '\n</CustomObject>'
+            + '\n'
+            + '\nDo NOT add <nameField>, <pluralLabel>, <deploymentStatus>, <sharingModel>.'
+            + '\n'
+            + '\nSTANDARD OBJECT TAB RULE:'
+            + '\n  NEVER generate a CustomTab file for standard objects.'
+            + '\n  NEVER add <tabVisibilities> in Profile for standard objects.'
+            + '\n  Account, Case, Contact, Lead, Opportunity etc. already have built-in tabs.'
+            + '\n  Adding a CustomTab for them causes: "no CustomTab named Account found".'
+            + '\n  For Record Type tickets on standard objects → files[] must NOT contain'
+            + '\n  any CustomTab entry, and the Profile must NOT contain any tabVisibilities.'
 
             // ── DESTRUCTIVE CHANGES ────────────────────────────
             + '\n\n== DESTRUCTIVE CHANGES FORMAT =='
