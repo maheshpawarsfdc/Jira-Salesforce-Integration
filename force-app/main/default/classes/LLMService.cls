@@ -462,6 +462,44 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch existing Business Processes ────────────────────────────────
+            // Case, Lead, Opportunity and Solution record types REQUIRE a
+            // <businessProcess> element. Without it Salesforce rejects with:
+            //   "Required field is missing: businessProcess"
+            if (ticketTextLower.contains('record type')) {
+                Set<String> processDrivenObjects = new Set<String>{ 'case', 'lead', 'opportunity', 'solution' };
+                Boolean mentionsProcessObject = false;
+                for (String pObj : processDrivenObjects) {
+                    if (ticketTextLower.contains(pObj)) { mentionsProcessObject = true; break; }
+                }
+                if (mentionsProcessObject) {
+                    try {
+                        Map<String, List<String>> bpByObject = new Map<String, List<String>>();
+                        for (BusinessProcess bp : [
+                            SELECT Id, Name, TableEnumOrId, IsActive
+                            FROM BusinessProcess
+                            WHERE IsActive = true
+                            ORDER BY TableEnumOrId, Name
+                        ]) {
+                            String objKey = bp.TableEnumOrId;
+                            if (!bpByObject.containsKey(objKey)) {
+                                bpByObject.put(objKey, new List<String>());
+                            }
+                            bpByObject.get(objKey).add(bp.Name);
+                        }
+                        if (!bpByObject.isEmpty()) {
+                            orgState.put('existingBusinessProcesses', bpByObject);
+                            System.debug('runOrgCheck: existingBusinessProcesses = '
+                                + JSON.serialize(bpByObject));
+                        } else {
+                            System.debug('runOrgCheck: no active Business Processes found in org');
+                        }
+                    } catch (Exception e) {
+                        System.debug('runOrgCheck: business process fetch failed — ' + e.getMessage());
+                    }
+                }
+            }
+
             // ── Fetch existing Record Types via SOQL ──────────────────────
             if (ticketTextLower.contains('record type')) {
                 try {
@@ -1027,6 +1065,8 @@ public class LLMService {
                     xmlContent = sanitizeStandardObjectXml(xmlContent);
                     System.debug('[DEPLOY-TRACE] sanitizeStandardObjectXml applied to ['
                         + filePath + ']');
+                    // Auto-inject <businessProcess> for Case/Lead/Opportunity/Solution
+                    xmlContent = injectBusinessProcessIfMissing(xmlContent, memberName, orgState);
                 }
 
                 // ── Strip standard-object tabVisibilities from Profile XML ──
@@ -1037,6 +1077,7 @@ public class LLMService {
                     xmlContent = sanitizeProfileStandardObjectTabs(xmlContent);
                     // Fix bare layout names: "Account Layout" -> "Account-Account Layout"
                     xmlContent = sanitizeProfileLayoutAssignments(xmlContent);
+                     xmlContent = sanitizeProfileMasterRecordType(xmlContent);
                 }
 
                 if (metadataType == 'AuthProvider') {
@@ -2029,6 +2070,67 @@ public class LLMService {
         return xml;
     }
 
+    // ── FIX: AUTO-INJECT <businessProcess> FOR PROCESS-DRIVEN OBJECTS ─────────
+    // Case, Lead, Opportunity and Solution record types REQUIRE <businessProcess>.
+    // If the LLM omits it → "Required field is missing: businessProcess"
+    // This injects the first available process from orgState after <active>.
+    private static final Map<String, String> PROCESS_DRIVEN_OBJECTS = new Map<String, String>{
+        'Case' => 'Case', 'Lead' => 'Lead', 'Opportunity' => 'Opportunity', 'Solution' => 'Solution'
+    };
+
+    private static String injectBusinessProcessIfMissing(
+        String xml, String memberName, Map<String, Object> orgState
+    ) {
+        if (String.isBlank(xml) || !xml.contains('<recordTypes>')) return xml;
+        if (!PROCESS_DRIVEN_OBJECTS.containsKey(memberName)) return xml;
+        String tableEnumOrId = PROCESS_DRIVEN_OBJECTS.get(memberName);
+
+        String bpName = null;
+        Object rawBps = orgState != null ? orgState.get('existingBusinessProcesses') : null;
+        if (rawBps != null) {
+            try {
+                Map<String, Object> bpMap = (Map<String, Object>) JSON.deserializeUntyped(
+                    JSON.serialize(rawBps)
+                );
+                Object bpListRaw = bpMap.get(tableEnumOrId);
+                if (bpListRaw instanceof List<Object>) {
+                    List<Object> bpList = (List<Object>) bpListRaw;
+                    if (!bpList.isEmpty()) bpName = String.valueOf(bpList[0]);
+                }
+            } catch (Exception e) {
+                System.debug('[DEPLOY-TRACE] injectBusinessProcess: failed to parse bps — ' + e.getMessage());
+            }
+        }
+
+        if (String.isBlank(bpName)) {
+            System.debug('[DEPLOY-TRACE] injectBusinessProcess: no Business Process found for ['
+                + memberName + '] in orgState — deploy may fail');
+            return xml;
+        }
+
+        Pattern rtPat = Pattern.compile('(?s)<recordTypes>(.*?)</recordTypes>');
+        Matcher rm = rtPat.matcher(xml);
+        List<String> origBlocks = new List<String>();
+        List<String> fixedBlocks = new List<String>();
+
+        while (rm.find()) {
+            String fullBlock = rm.group(0);
+            if (fullBlock.contains('<businessProcess>')) continue;
+            String fixedBlock = fullBlock.replace(
+                '</active>',
+                '</active> <businessProcess>' + bpName + '</businessProcess>');
+            origBlocks.add(fullBlock);
+            fixedBlocks.add(fixedBlock);
+            System.debug('[DEPLOY-TRACE] injectBusinessProcess: injected ['
+                + bpName + '] into ' + memberName + ' record type');
+        }
+
+        for (Integer i = 0; i < origBlocks.size(); i++) {
+            xml = xml.replace(origBlocks[i], fixedBlocks[i]);
+        }
+        return xml;
+    }
+
     // ── FIX: AUTO-PREFIX BARE LAYOUT NAMES IN PROFILE <layoutAssignments> ───────
     // LLM sometimes emits <layout>Account Layout</layout> instead of the required
     // <layout>Account-Account Layout</layout> format, causing:
@@ -2036,22 +2138,64 @@ public class LLMService {
     // This sanitizer infers the ObjectName prefix from the sibling <recordType> tag.
     private static String sanitizeProfileLayoutAssignments(String xml) {
         if (String.isBlank(xml) || !xml.contains('<layoutAssignments>')) return xml;
+
+        // Pass 1: build a map of objName → known layout fullName
+        // from blocks that DO have a <recordType> tag (those are reliable)
+        Map<String, String> objToLayout = new Map<String, String>();
         Pattern blockPat = Pattern.compile('(?s)<layoutAssignments>(.*?)</layoutAssignments>');
         Matcher bm = blockPat.matcher(xml);
+        while (bm.find()) {
+            String inner1 = bm.group(1);
+            Pattern rtPat = Pattern.compile('<recordType>([^.<]+)[.]([^<]+)</recordType>');
+            Matcher rm = rtPat.matcher(inner1);
+            if (!rm.find()) continue;
+            String objName = rm.group(1).trim();
+            Pattern lPat = Pattern.compile('<layout>([^<]+)</layout>');
+            Matcher lm = lPat.matcher(inner1);
+            if (!lm.find()) continue;
+            String layoutVal = lm.group(1).trim();
+            // Store the prefixed layout or the object name at minimum
+            if (layoutVal.contains('-')) {
+                objToLayout.put(objName, layoutVal.substringBefore('-'));
+            } else {
+                objToLayout.put(objName, objName); // at least we know the object
+            }
+        }
+
+        // Pass 2: fix all unprefixed layout values
+        bm = blockPat.matcher(xml);
         List<String> origBlocks = new List<String>();
         List<String> fixedBlocks = new List<String>();
+
         while (bm.find()) {
             String fullBlock = bm.group(0);
-            String inner1     = bm.group(1);
+            String inner1    = bm.group(1);
+
             Pattern layoutPat = Pattern.compile('<layout>([^<]+)</layout>');
             Matcher lm = layoutPat.matcher(inner1);
             if (!lm.find()) continue;
             String layoutVal = lm.group(1).trim();
-            if (layoutVal.contains('-')) continue; // already has prefix
+            if (layoutVal.contains('-')) continue; // already prefixed
+
+            String objName = null;
+
+            // Try sibling <recordType> first
             Pattern rtPat = Pattern.compile('<recordType>([^.<]+)[.]([^<]+)</recordType>');
             Matcher rm = rtPat.matcher(inner1);
-            if (!rm.find()) continue;
-            String objName    = rm.group(1).trim();
+            if (rm.find()) {
+                objName = rm.group(1).trim();
+            }
+            // Try inferring from layout name ("Case Layout" → "Case")
+            if (String.isBlank(objName) && layoutVal.contains(' ')) {
+                objName = layoutVal.substringBefore(' ').trim();
+            }
+            // Try inferring from other blocks in the same profile (for bare names like "Default")
+            if (String.isBlank(objName) && !objToLayout.isEmpty()) {
+                objName = objToLayout.values()[0]; // best guess from same profile
+            }
+
+            if (String.isBlank(objName)) continue;
+
             String fixedLayout = objName + '-' + layoutVal;
             String fixedBlock  = fullBlock.replace(
                 '<layout>' + layoutVal + '</layout>',
@@ -2062,9 +2206,67 @@ public class LLMService {
             System.debug('[DEPLOY-TRACE] sanitizeProfileLayoutAssignments: '
                 + layoutVal + ' -> ' + fixedLayout);
         }
+
         for (Integer i = 0; i < origBlocks.size(); i++) {
             xml = xml.replace(origBlocks[i], fixedBlocks[i]);
         }
+        return xml;
+    }
+
+    // ── FIX: AUTO-INJECT/CORRECT <--master--> recordTypeVisibilities ──────────
+    // Salesforce requires that for every object with recordTypeVisibilities in a
+    // profile, exactly one entry has default=true. When the new RT is default=false,
+    // the Master entry must be default=true + visible=true.
+    // The LLM often omits Master entirely or sets it incorrectly.
+    private static String sanitizeProfileMasterRecordType(String xml) {
+        if (String.isBlank(xml) || !xml.contains('<recordTypeVisibilities>')) return xml;
+
+        // Step 1: Remove any bogus ObjectName.Master entries — these don't exist in Salesforce
+        Pattern masterEntryPat = Pattern.compile(
+            '(?s)\\s*<recordTypeVisibilities>\\s*<recordType>[^<]+\\.Master</recordType>.*?</recordTypeVisibilities>'
+        );
+        Matcher mm = masterEntryPat.matcher(xml);
+        while (mm.find()) {
+            System.debug('[DEPLOY-TRACE] sanitizeProfileMasterRecordType: removing bogus Master entry: ' + mm.group(0));
+            xml = xml.replace(mm.group(0), '');
+            mm = masterEntryPat.matcher(xml); // re-match after replace
+        }
+
+        // Step 2: Per object, ensure at least one recordTypeVisibility has default=true
+        // Collect objects and whether any RT has default=true
+        Map<String, Boolean> objHasDefault = new Map<String, Boolean>();
+        Map<String, String>  objFirstBlock  = new Map<String, String>();  // first RT block per object
+
+        Pattern blockPat = Pattern.compile('(?s)<recordTypeVisibilities>(.*?)</recordTypeVisibilities>');
+        Matcher bm = blockPat.matcher(xml);
+        while (bm.find()) {
+            String inner2 = bm.group(1);
+            Pattern rtPat = Pattern.compile('<recordType>([^.<]+)[.]([^<]+)</recordType>');
+            Matcher rm = rtPat.matcher(inner2);
+            if (!rm.find()) continue;
+            String objName   = rm.group(1).trim();
+            Boolean isDef    = inner2.contains('<default>true</default>');
+            if (!objHasDefault.containsKey(objName)) {
+                objHasDefault.put(objName, false);
+                objFirstBlock.put(objName, bm.group(0)); // remember full first block
+            }
+            if (isDef) objHasDefault.put(objName, true);
+        }
+
+        // Step 3: For any object with no default=true RT, promote the first RT to default=true
+        for (String objName : objHasDefault.keySet()) {
+            if (!objHasDefault.get(objName)) {
+                String firstBlock = objFirstBlock.get(objName);
+                String fixedBlock = firstBlock.replace(
+                    '<default>false</default>',
+                    '<default>true</default>'
+                );
+                xml = xml.replace(firstBlock, fixedBlock);
+                System.debug('[DEPLOY-TRACE] sanitizeProfileMasterRecordType: promoted ['
+                    + objName + '] first RT to default=true (no default existed)');
+            }
+        }
+
         return xml;
     }
 
@@ -4122,9 +4324,44 @@ public class LLMService {
             + '\nELEMENT ORDER inside <recordTypes> MUST be:'
             + '\n  1. fullName'
             + '\n  2. active'
-            + '\n  3. description (optional — omit entirely if not provided)'
-            + '\n  4. label'
-            + '\n  5. picklistValues (optional — one block per picklist field)'
+            + '\n  3. businessProcess  ← ONLY for Case/Lead/Opportunity/Solution (see below)'
+            + '\n  4. description (optional — omit entirely if not provided)'
+            + '\n  5. label'
+            + '\n  6. picklistValues (optional — one block per picklist field)'
+            + '\n'
+            + '\n== PROCESS-DRIVEN OBJECTS — CRITICAL =='
+            + '\nCase, Lead, Opportunity, and Solution record types REQUIRE a <businessProcess>'
+            + '\nelement. Omitting it causes: "Required field is missing: businessProcess"'
+            + '\n'
+            + '\nObject → Business Process type:'
+            + '\n  Case        → Support Process  (TableEnumOrId = Case)'
+            + '\n  Lead        → Lead Process      (TableEnumOrId = Lead)'
+            + '\n  Opportunity → Sales Process     (TableEnumOrId = Opportunity)'
+            + '\n  Solution    → Solution Process  (TableEnumOrId = Solution)'
+            + '\n'
+            + '\nThe available Business Process names are in orgState.existingBusinessProcesses:'
+            + '\n  { "Case": ["Basic Support Process", ...], "Lead": ["Standard Lead Process"], ... }'
+            + '\nALWAYS use the first entry for the relevant object:'
+            + '\n  existingBusinessProcesses["Case"][0]     → for Case record types'
+            + '\n  existingBusinessProcesses["Lead"][0]     → for Lead record types'
+            + '\n  existingBusinessProcesses["Opportunity"][0] → for Opportunity record types'
+            + '\n'
+            + '\nCORRECT XML for a Case record type:'
+            + '\n<recordTypes>'
+            + '\n    <fullName>Technical_Support</fullName>'
+            + '\n    <active>true</active>'
+            + '\n    <businessProcess>Basic Support Process</businessProcess>'
+            + '\n    <description>Record type for technical support cases</description>'
+            + '\n    <label>Technical Support</label>'
+            + '\n</recordTypes>'
+            + '\n'
+            + '\nIf existingBusinessProcesses is empty or missing the object key:'
+            + '\n  → Return an error in summary: "No active Business Process found for [Object].'
+            + '\n    Please create a Support/Sales/Lead Process first in Salesforce Setup."'
+            + '\n  → Do NOT generate any files — the deploy will fail without a valid process.'
+            + '\n'
+            + '\nFor Account, Contact, and all other standard/custom objects:'
+            + '\n  → NEVER include <businessProcess> — it does not exist on those objects.'
             + '\n'
             + '\n-- CREATE --'
             + '\n1. Embed <recordTypes> block inside the CustomObject XML'
@@ -4168,6 +4405,9 @@ public class LLMService {
             + '\n </picklistValues>'
             + '\n'
             + '\n CRITICAL: Inside <values>, ONLY two elements are allowed:'
+            + '\n  CRITICAL: For Case profile layoutAssignments, the master layout name is exactly what '
+            + '\n  standardObjectLayoutNames["Case"][0] returns. NEVER use "Default" as a layout name.'
+            + '\n  Always use the full name from standardObjectLayoutNames.'
             + '\n  1. <fullName>  — the picklist value API name'
             + '\n  2. <default>   — true or false'
             + '\n  NEVER include <label> inside <values> — it does not exist and will break the deploy.'
@@ -4255,21 +4495,14 @@ public class LLMService {
             + '\n10. NEVER generate a Layout XML file for standard objects (Account, Case, Contact,'
             + '\n    Lead, Opportunity etc.) — only reference the existing layout name in'
             + '\n    <layoutAssignments>. Standard object layouts already exist in the org.'
-            + '\n10. MASTER RECORD TYPE RULE — CRITICAL:'
-            + '\n    When generating <recordTypeVisibilities> for ANY profile,'
-            + '\n    you MUST always include the Master record type entry alongside your new one:'
-            + '\n    <recordTypeVisibilities>'
-            + '\n        <recordType>ObjectName.Master</recordType>'
-            + '\n        <default>false</default>'
-            + '\n        <visible>false</visible>'
-            + '\n    </recordTypeVisibilities>'
-            + '\n    RULES for Master record type visibility:'
-            + '\n    - If new record type is default=true  → Master must be default=false, visible=false'
-            + '\n    - If new record type is default=false → Master must be default=true,  visible=true'
-            + '\n    - NEVER omit Master from recordTypeVisibilities — Salesforce will reject the deploy'
-            + '\n    - Master record type reference format: ObjectName.Master (no __c, no spaces)'
-            + '\n    - For standard objects: Account.Master, Case.Master, Contact.Master'
-            + '\n    - For custom objects:   MyObject__c.Master'
+            + '\n10. DEFAULT RECORD TYPE RULE — CRITICAL:'
+            + '\n    Salesforce requires exactly ONE recordTypeVisibility per object to have default=true.'
+            + '\n    - If ticket says Default=true  → set <default>true</default> on that RT'
+            + '\n    - If ticket says Default=false → STILL set <default>true</default> on the new RT'
+            + '\n      because it is the only record type and must be the default'
+            + '\n    - NEVER emit <recordType>ObjectName.Master</recordType> — Master is not a real'
+            + '\n      Metadata API record type name and will cause deploy failure'
+            + '\n    - NEVER leave all recordTypeVisibilities with default=false'
             + '\n11. NEVER add <tabVisibilities> for standard objects — they already have'
             + '\n    standard tabs. tabVisibilities is only for custom object tabs.'
             + '\n12. NEVER regenerate or emit a Layout file entry just because of a record type'
