@@ -204,6 +204,43 @@ public class LLMService {
                 sharingModels.put(apiName, hasMasterDetail ? 'ControlledByParent' : 'ReadWrite');
             }
 
+            // ── Standard objects mentioned in the ticket ───────────────────────────
+            // The custom-object loop above skips standard objects entirely (isCustom() filter).
+            // Without their field metadata the LLM guesses API names and frequently appends
+            // __c to standard fields (e.g. AnnualRevenue__c instead of AnnualRevenue).
+            Set<String> standardObjectNames = new Set<String>{
+                'Account', 'Contact', 'Lead', 'Opportunity', 'Case',
+                'Task', 'Event', 'Campaign', 'User', 'Product2',
+                'Order', 'Contract', 'Asset', 'Solution', 'Pricebook2',
+                'PricebookEntry', 'Quote', 'QuoteLineItem',
+                'OpportunityLineItem', 'CampaignMember', 'CaseComment',
+                'EmailMessage', 'FeedItem', 'ContentDocument',
+                'ContentVersion', 'Attachment', 'Note'
+            };
+
+            String ticketTextStd = (summary + ' ' + description).toLowerCase();
+            for (String stdObjName : standardObjectNames) {
+                if (!ticketTextStd.contains(stdObjName.toLowerCase())) continue;
+                try {
+                    Schema.SObjectType stdObjType = Schema.getGlobalDescribe().get(stdObjName);
+                    if (stdObjType == null) continue;
+                    Schema.DescribeSObjectResult stdDescribe = stdObjType.getDescribe();
+                    List<String> stdFieldNames = new List<String>();
+                    for (Schema.SObjectField f : stdDescribe.fields.getMap().values()) {
+                        stdFieldNames.add(f.getDescribe().getName());
+                    }
+                    // NOT added to existingObjects — avoids triggering the layout-fetch
+                    // loop below which would incorrectly generate layout XML for standard objects.
+                    existingFields.put(stdObjName, stdFieldNames);
+                    System.debug('runOrgCheck: standard object [' + stdObjName + '] — '
+                        + stdFieldNames.size() + ' field(s) added to existingFields');
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: failed to describe standard object ['
+                        + stdObjName + '] — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
             orgState.put('existingObjects', existingObjects);
             orgState.put('existingFields', existingFields);
             orgState.put('sharingModels', sharingModels);
@@ -531,6 +568,107 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch existing Apex Trigger + Handler class ───────────────
+            // Covers: trigger create, trigger update, add/remove trigger events.
+            // Uses the same direct Tooling API path as MetadataHelper —
+            // NO LLM tool-calling loop. Result goes into orgState so the
+            // XML generation stage knows whether to MERGE or CREATE FRESH.
+            //
+            // Object detection: we look for common standard objects and any
+            // custom object (__c) mentioned in the ticket text.
+            if (ticketTextLower.contains('trigger')) {
+                try {
+                    // Detect which object the ticket is targeting
+                    // Check standard objects first
+                    List<String> candidateObjects = new List<String>();
+                    Set<String> stdTriggerObjects = new Set<String>{
+                        'Account', 'Contact', 'Lead', 'Opportunity', 'Case',
+                        'Task', 'Event', 'Campaign', 'Order', 'Contract',
+                        'Asset', 'Product2', 'Quote', 'Pricebook2'
+                    };
+                    for (String stdObj : stdTriggerObjects) {
+                        if (ticketTextLower.contains(stdObj.toLowerCase())) {
+                            candidateObjects.add(stdObj);
+                        }
+                    }
+                    // Check custom objects (__c) already found in org
+                    List<Object> existingObjs = (List<Object>) orgState.get('existingObjects');
+                    if (existingObjs != null) {
+                        for (Object o : existingObjs) {
+                            String objName = String.valueOf(o);
+                            String shortName = objName.replace('__c', '').replace('_', ' ').toLowerCase();
+                            if (ticketTextLower.contains(shortName) || ticketTextLower.contains(objName.toLowerCase())) {
+                                candidateObjects.add(objName);
+                            }
+                        }
+                    }
+
+                    if (!candidateObjects.isEmpty()) {
+                        // Use first matched object (most specific match wins)
+                        String targetObject = candidateObjects[0];
+                        System.debug('runOrgCheck: checking apex trigger on object [' + targetObject + ']');
+
+                        Map<String, Object> triggerState = getApexTriggerState(targetObject);
+
+                        if (triggerState != null) {
+                            // Restructure into existingTrigger + existingHandlerClass
+                            // keys the LLM system prompt expects
+                            orgState.put('existingTrigger', new Map<String, Object>{
+                                'name' => triggerState.get('name'),
+                                'body' => triggerState.get('body')
+                            });
+
+                            if (triggerState.containsKey('handlerName')) {
+                                orgState.put('existingHandlerClass', new Map<String, Object>{
+                                    'name' => triggerState.get('handlerName'),
+                                    'body' => triggerState.get('handlerBody')
+                                });
+                            } else {
+                                orgState.put('existingHandlerClass', null);
+                            }
+
+                            System.debug('runOrgCheck: existingTrigger = [' + triggerState.get('name') + ']');
+                        } else {
+                            orgState.put('existingTrigger', null);
+                            orgState.put('existingHandlerClass', null);
+                            System.debug('runOrgCheck: no existing trigger found on [' + targetObject + ']');
+                        }
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: trigger state fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
+            // ── Fetch existing Apex Class body ────────────────────────────────
+            // Covers: create class, update class, add method to class, delete class.
+            // Extracts the class name from the ticket text by looking for known
+            // patterns like "class MyClassName" or "MyClassName class".
+            // Result goes into orgState.existingClass for the generation stage.
+            if (ticketTextLower.contains('class') && !ticketTextLower.contains('trigger')) {
+                try {
+                    // Simple class name extraction — look for PascalCase words near "class" keyword
+                    // Pattern: word boundary, uppercase letter, followed by alphanumeric
+                    String combined = summary + ' ' + description;
+                    Pattern clsPat = Pattern.compile('(?i)class\\s+([A-Z][A-Za-z0-9_]+)');
+                    Matcher clsMatch = clsPat.matcher(combined);
+                    String detectedClassName = null;
+                    if (clsMatch.find()) {
+                        detectedClassName = clsMatch.group(1);
+                    }
+
+                    if (String.isNotBlank(detectedClassName)) {
+                        System.debug('runOrgCheck: detected class name [' + detectedClassName + '] — fetching from org');
+                        Map<String, Object> classState = getApexClassState(detectedClassName);
+                        orgState.put('existingClass', classState); // null if not found
+                        System.debug('runOrgCheck: existingClass = ' + (classState != null ? classState.get('name') : 'null'));
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: class state fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
         } catch (Exception e) {
             System.debug('runOrgCheck failed: ' + e.getMessage());
             ErrorLogger.log(e);
@@ -819,8 +957,12 @@ public class LLMService {
         // NOTE: 'named credential' intentionally removed — NC state is now fetched
         // directly in runOrgCheck() via getNamedCredentialsState() (Metadata SOAP),
         // so no LLM tool-calling loop is needed for NC tickets.
-        return t.contains('apex class')
-            || t.contains('class access')
+        //
+        // NOTE: 'trigger' and Apex class keywords intentionally removed — trigger
+        // existence checks and handler/class body lookups are now fetched directly
+        // in runOrgCheck() via getApexTriggerState() and getApexClassState() (pure
+        // Apex SOQL), so no LLM tool-calling loop is needed for Apex tickets.
+        return t.contains('class access')
             || t.contains('apex classes')
             || t.contains('visualforce')
             || t.contains('page access')
@@ -1003,6 +1145,12 @@ public class LLMService {
         // ── Process regular files ──────────────────────
         List<Object> files = (List<Object>) parsed.get('files');
 
+        // ── Trigger merge enforcer ─────────────────────────────────────────────────
+        // Must run BEFORE the files loop so that when a trigger/handler already
+        // exists in the org, the LLM-generated code is merged (not replaced) before
+        // it reaches ZipBuilder.
+        enforceTriggerMerge(files, orgState);
+
         // ── Scenario B violation detector ────────────────────────────────────────────
         // If the LLM is emitting a CustomObject/CustomField on an existing object that
         // has layouts in orgState.existingLayouts, files[] MUST also contain a Layout entry
@@ -1092,23 +1240,83 @@ public class LLMService {
                     System.debug('[DEPLOY-TRACE] sanitizeAuthProviderXml applied to [' + filePath + ']');
                 }
 
-                // Validate XML before adding to ZipBuilder
-                String validationError = validateXml(metadataType, memberName, xmlContent);
-                if (String.isNotBlank(validationError)) {
-                    System.debug('processXmlGenerationResponse: XML validation FAILED for ['
-                        + filePath + ']: ' + validationError);
-                    FunctionHelper.hadError = true;
-                    return 'Error: Invalid XML generated for ' + filePath + ': ' + validationError;
+                // ── Phase 3: Apex code files skip XML validation ──────────────
+                // ApexClass and ApexTrigger contain Apex source code, not XML.
+                // The Metadata API compiles them server-side — we cannot validate
+                // Apex syntax in Apex. Companion -meta.xml files ARE XML and are
+                // validated normally via the else branch below.
+                Boolean isApexCode = (metadataType == 'ApexClass' || metadataType == 'ApexTrigger');
+                Boolean isApexMeta = (metadataType == 'ApexClassMeta' || metadataType == 'ApexTriggerMeta');
+
+                // ── Guard: Apex code file must NOT contain XML meta content ─────────────────
+                if ((metadataType == 'ApexClass' || metadataType == 'ApexTrigger')
+                        && String.isNotBlank(xmlContent)) {
+                    String trimmedContent = xmlContent.trim();
+                    if (trimmedContent.startsWith('<?xml')
+                            || trimmedContent.startsWith('<ApexClass')
+                            || trimmedContent.startsWith('<ApexTrigger')) {
+                        System.debug('[DEPLOY-TRACE] *** APEX CODE FILE CONTAINS XML *** file=['
+                            + filePath + '] — LLM put meta XML in a code file. Aborting.');
+                        return 'Error: LLM generated XML meta content inside Apex code file ['
+                            + filePath + ']. The .cls/.trigger file must contain Apex source code, '
+                            + 'not XML. Please retry.';
+                    }
+                }
+
+                // Guard: skip spurious classes/XxxTrigger.cls files
+                if (metadataType == 'ApexClass'
+                        && filePath != null
+                        && !filePath.endsWith('-meta.xml')
+                        && filePath.toLowerCase().endsWith('trigger.cls')) {
+                    System.debug('[DEPLOY-TRACE] SKIPPED [' + filePath
+                        + '] — trigger name found in classes/ directory. '
+                        + 'Triggers must live in triggers/, not classes/.');
+                    continue;
+                }
+
+                if (!isApexCode) {
+                    
+                    // ── XML validation — skipped for raw Apex source ──────────
+                    // Companion meta files (ApexClassMeta / ApexTriggerMeta) are
+                    // tiny XML files and ARE validated here.
+                    String validationError = validateXml(
+                        isApexMeta ? metadataType.replace('Meta', '') : metadataType,
+                        memberName, xmlContent
+                    );
+                    if (String.isNotBlank(validationError)) {
+                        System.debug('processXmlGenerationResponse: XML validation FAILED for ['
+                            + filePath + ']: ' + validationError);
+                        FunctionHelper.hadError = true;
+                        return 'Error: Invalid XML generated for ' + filePath + ': ' + validationError;
+                    }
+                } else {
+                    xmlContent = sanitizeApexRegex(xmlContent);
+                    System.debug('[DEPLOY-TRACE] skipping XML validation for Apex code file ['
+                        + filePath + '] — Apex source is compiled by the Metadata API, not pre-validated');
+                }
+
+                // ── Package.xml registration for Apex types ───────────────────
+                // ApexClass  → one member = the class name  (covers both .cls + -meta.xml)
+                // ApexTrigger → one member = the trigger name (covers both .trigger + -meta.xml)
+                // ApexClassMeta / ApexTriggerMeta share the same memberName as their code file —
+                // ZipBuilder.addFile() will register them under the parent type automatically.
+                // We normalise the metadataType here so ZipBuilder sees the correct API type.
+                String effectiveType = metadataType;
+                if (isApexMeta) {
+                    // Strip the "Meta" suffix so the package.xml type is correct
+                    effectiveType = metadataType.replace('Meta', '');
+                    System.debug('[DEPLOY-TRACE] ApexMeta file — normalising metadataType ['
+                        + metadataType + '] → [' + effectiveType + '] for package.xml registration');
                 }
 
                 if (zip2FilePaths.contains(filePath)) {
                     zip2Files.put(filePath, xmlContent);
-                    if (!zip2MetadataTypes.containsKey(metadataType)) {
-                        zip2MetadataTypes.put(metadataType, new Set<String>());
+                    if (!zip2MetadataTypes.containsKey(effectiveType)) {
+                        zip2MetadataTypes.put(effectiveType, new Set<String>());
                     }
-                    zip2MetadataTypes.get(metadataType).add(memberName);
+                    zip2MetadataTypes.get(effectiveType).add(memberName);
                     System.debug('processXmlGenerationResponse: held back [' + filePath + '] for ZIP 2');
-                    System.debug('[DEPLOY-TRACE] route ZIP2 <- ' + metadataType + ' / ' + filePath);
+                    System.debug('[DEPLOY-TRACE] route ZIP2 <- ' + effectiveType + ' / ' + filePath);
                     continue;
                 }
 
@@ -1120,7 +1328,7 @@ public class LLMService {
                         + filePath + '] — standard layouts must not be deployed.');
                     continue;
                 }
-                ZipBuilder.addFile(metadataType, memberName, filePath, xmlContent);
+                ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
 
                 // Auto-register RecordType members in package.xml
                 // The actual definition lives inside the CustomObject file
@@ -1134,13 +1342,12 @@ public class LLMService {
                 }
 
                 System.debug('processXmlGenerationResponse: added [' + filePath + '] to ZipBuilder');
-                System.debug('[DEPLOY-TRACE] route ZIP1 <- ' + metadataType + ' / ' + filePath);
+                System.debug('[DEPLOY-TRACE] route ZIP1 <- ' + effectiveType + ' / ' + filePath);
 
-                // ADD THIS — see exactly what XML is going into the ZIP
                 System.debug('=== FILE ADDED TO ZIP ===');
                 System.debug('Path: ' + filePath);
-                System.debug('Type: ' + metadataType);
-                System.debug('XML: ' + xmlContent);
+                System.debug('Type: ' + effectiveType);
+                System.debug('Content (first 500 chars): ' + xmlContent.left(500));
                 System.debug('========================');
             }
         }
@@ -1742,6 +1949,650 @@ public class LLMService {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // GET APEX TRIGGER STATE
+    // Checks whether a trigger already exists on a given object.
+    // Called directly from runOrgCheck() — same pattern as getNamedCredentialsState().
+    // Returns the trigger name + body, and the companion handler class name + body
+    // if found. Returns null if no trigger exists on that object.
+    //
+    // The LLM uses this to decide MERGE vs CREATE:
+    //   existingTrigger != null  → merge new events into existing trigger + handler
+    //   existingTrigger == null  → create fresh trigger + handler files
+    //
+    // Uses the Tooling API via MetadataHelper (same path as run_tooling_api_query
+    // but called directly from Apex — no LLM tool-calling loop involved).
+    // ─────────────────────────────────────────────────────────────
+    private static Map<String, Object> getApexTriggerState(String objectApiName) {
+        try {
+            System.debug('getApexTriggerState: checking for trigger on [' + objectApiName + ']');
+
+            // Query for existing trigger on this object via Tooling API
+            String triggerQuery = 'SELECT Id, Name, Body FROM ApexTrigger'
+                + ' WHERE TableEnumOrId = \'' + objectApiName + '\''
+                + ' AND NamespacePrefix = null'
+                + ' LIMIT 1';
+
+            String triggerJson = JSON.serialize(MetadataHelper.runToolingApiQuery(triggerQuery));
+
+            Map<String, Object> triggerResult = (Map<String, Object>) JSON.deserializeUntyped(triggerJson);
+            List<Object> triggerRecords = (List<Object>) triggerResult.get('records');
+
+            if (triggerRecords == null || triggerRecords.isEmpty()) {
+                System.debug('getApexTriggerState: no trigger found on [' + objectApiName + ']');
+                return null;
+            }
+
+            // Trigger found — extract name and body
+            Map<String, Object> triggerRec = (Map<String, Object>) triggerRecords[0];
+            String triggerName = (String) triggerRec.get('Name');
+            String triggerBody = (String) triggerRec.get('Body');
+
+            System.debug('getApexTriggerState: found trigger [' + triggerName + '] on [' + objectApiName + ']');
+
+            // Now look for the companion handler class.
+            // Strategy 1 — parse the trigger body (inside the braces only) to find
+            // the actual class being called, regardless of naming convention.
+            // Strategy 2 — fall back to convention-based guessing if parsing finds nothing.
+            String baseName = objectApiName.endsWith('__c')
+                ? objectApiName.removeEnd('__c')
+                : objectApiName;
+
+            Set<String> sfBuiltIns = new Set<String>{
+                'Trigger', 'System', 'Schema', 'Database', 'Test', 'UserInfo',
+                'Math', 'String', 'Date', 'DateTime', 'Decimal', 'Integer',
+                'Boolean', 'List', 'Map', 'Set', 'SObject', 'Id', 'Type',
+                'JSON', 'Limits', 'ApexPages', 'PageReference', 'URL', 'Blob',
+                'Exception', 'CalloutException', 'DmlException'
+            };
+
+            // Only search inside the trigger body — after the opening brace —
+            // to avoid matching the object name in the declaration line itself.
+            String triggerBodyInner = triggerBody;
+            Integer openBrace = triggerBody.indexOf('{');
+            if (openBrace >= 0) {
+                triggerBodyInner = triggerBody.substring(openBrace + 1);
+            }
+
+            String detectedHandlerName = null;
+            // Match PascalCase word followed by a dot (static class call pattern)
+            Pattern handlerPat = Pattern.compile('([A-Z][A-Za-z0-9_]+)\\.');
+            Matcher handlerMatcher = handlerPat.matcher(triggerBodyInner);
+            while (handlerMatcher.find()) {
+                String candidate = handlerMatcher.group(1);
+                if (!sfBuiltIns.contains(candidate)) {
+                    detectedHandlerName = candidate;
+                    System.debug('getApexTriggerState: detected handler name from trigger body: [' + detectedHandlerName + ']');
+                    break;
+                }
+            }
+
+            String handlerQuery;
+            if (String.isNotBlank(detectedHandlerName)) {
+                handlerQuery = 'SELECT Id, Name, Body FROM ApexClass'
+                    + ' WHERE Name = \'' + detectedHandlerName + '\''
+                    + ' AND NamespacePrefix = null'
+                    + ' LIMIT 1';
+            } else {
+                System.debug('getApexTriggerState: body parse found nothing — using convention-based name fallback');
+                handlerQuery = 'SELECT Id, Name, Body FROM ApexClass'
+                    + ' WHERE Name IN (\''
+                    + baseName + 'Handler\', \''
+                    + baseName + 'TriggerHandler\', \''
+                    + baseName + 'Helper\', \''
+                    + baseName + 'Controller\')'
+                    + ' AND NamespacePrefix = null'
+                    + ' LIMIT 1';
+            }
+
+            String handlerJson = JSON.serialize(MetadataHelper.runToolingApiQuery(handlerQuery));
+
+            Map<String, Object> handlerResult = (Map<String, Object>) JSON.deserializeUntyped(handlerJson);
+            List<Object> handlerRecords = (List<Object>) handlerResult.get('records');
+
+            Map<String, Object> state = new Map<String, Object>{
+                'name' => triggerName,
+                'body' => triggerBody
+            };
+
+            if (handlerRecords != null && !handlerRecords.isEmpty()) {
+                Map<String, Object> handlerRec = (Map<String, Object>) handlerRecords[0];
+                String handlerName = (String) handlerRec.get('Name');
+                String handlerBody = (String) handlerRec.get('Body');
+                state.put('handlerName', handlerName);
+                state.put('handlerBody', handlerBody);
+                System.debug('getApexTriggerState: found handler [' + handlerName + ']');
+            } else {
+                System.debug('getApexTriggerState: no handler class found for [' + objectApiName + ']');
+            }
+
+            return state;
+
+        } catch (Exception e) {
+            System.debug('getApexTriggerState failed for [' + objectApiName + ']: ' + e.getMessage());
+            ErrorLogger.log(e);
+            return null;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // GET APEX CLASS STATE
+    // Fetches the full body of a named Apex class via Tooling API.
+    // Called directly from runOrgCheck() for class create/update/delete tickets.
+    // Returns { name, body } map or null if the class does not exist.
+    // ─────────────────────────────────────────────────────────────
+    private static Map<String, Object> getApexClassState(String className) {
+        try {
+            System.debug('getApexClassState: fetching class [' + className + ']');
+
+            String classQuery = 'SELECT Id, Name, Body FROM ApexClass'
+                + ' WHERE Name = \'' + className + '\''
+                + ' AND NamespacePrefix = null'
+                + ' LIMIT 1';
+
+            String classJson = JSON.serialize(MetadataHelper.runToolingApiQuery(classQuery));
+
+            Map<String, Object> classResult = (Map<String, Object>) JSON.deserializeUntyped(classJson);
+            List<Object> classRecords = (List<Object>) classResult.get('records');
+
+            if (classRecords == null || classRecords.isEmpty()) {
+                System.debug('getApexClassState: class [' + className + '] not found in org');
+                return null;
+            }
+
+            Map<String, Object> rec = (Map<String, Object>) classRecords[0];
+            System.debug('getApexClassState: found class [' + className + ']');
+            return new Map<String, Object>{
+                'name' => rec.get('Name'),
+                'body' => rec.get('Body')
+            };
+
+        } catch (Exception e) {
+            System.debug('getApexClassState failed for [' + className + ']: ' + e.getMessage());
+            ErrorLogger.log(e);
+            return null;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // TRIGGER MERGE ENFORCER — entry point
+    // ─────────────────────────────────────────────────────────────
+    private static void enforceTriggerMerge(List<Object> files, Map<String, Object> orgState) {
+        if (orgState == null) return;
+
+        Map<String, Object> existingTrigger = (Map<String, Object>) orgState.get('existingTrigger');
+        Map<String, Object> existingHandler = (Map<String, Object>) orgState.get('existingHandlerClass');
+
+        if (existingTrigger == null) return;
+
+        String existingTriggerBody = (String) existingTrigger.get('body');
+        String existingHandlerBody = existingHandler != null ? (String) existingHandler.get('body') : null;
+
+        // ── Sanitize the ORG bodies before using them as merge sources ──
+        // This ensures that even if old deployed code had AnnualRevenue__c,
+        // the injected methods come out with the correct field names.
+        existingTriggerBody = sanitizeStandardFieldReferences(existingTriggerBody, orgState);
+        if (existingHandlerBody != null) {
+            existingHandlerBody = sanitizeStandardFieldReferences(existingHandlerBody, orgState);
+        }
+
+        if (files == null) return;
+
+        for (Object rawFile : files) {
+            Map<String, Object> file = (Map<String, Object>) rawFile;
+            String metadataType  = (String) file.get('metadataType');
+            String generatedBody = (String) file.get('xmlContent');
+            if (String.isBlank(generatedBody)) continue;
+
+            // ── Sanitize the LLM-generated code too ─────────────────
+            // Catches cases where the LLM itself writes AnnualRevenue__c
+            // even when orgState.existingFields clearly shows AnnualRevenue.
+            generatedBody = sanitizeStandardFieldReferences(generatedBody, orgState);
+            file.put('xmlContent', generatedBody);
+
+            if (metadataType == 'ApexTrigger' && String.isNotBlank(existingTriggerBody)) {
+                String merged = mergeTriggerEvents(existingTriggerBody, generatedBody);
+                if (merged != null) {
+                    file.put('xmlContent', merged);
+                    System.debug('enforceTriggerMerge: trigger events enforced');
+                }
+            }
+
+            if (metadataType == 'ApexClass' && String.isNotBlank(existingHandlerBody)) {
+                String merged = mergeClassMethods(existingHandlerBody, generatedBody);
+                if (merged != null) {
+                    file.put('xmlContent', merged);
+                    System.debug('enforceTriggerMerge: class methods enforced');
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // MERGE TRIGGER EVENTS
+    // Computes union of existing and generated event lists,
+    // writes them back in canonical Salesforce order.
+    // ─────────────────────────────────────────────────────────────
+    private static String mergeTriggerEvents(String existingBody, String generatedBody) {
+        try {
+            Pattern evPat = Pattern.compile('(?i)on\\s+\\w+\\s*\\(([^)]+)\\)');
+
+            Matcher em = evPat.matcher(existingBody);
+            Matcher gm = evPat.matcher(generatedBody);
+            if (!em.find() || !gm.find()) return null;
+
+            Set<String> allEvents = new Set<String>();
+            for (String e : em.group(1).split(',')) allEvents.add(e.trim().toLowerCase());
+            for (String e : gm.group(1).split(',')) allEvents.add(e.trim().toLowerCase());
+
+            List<String> canonical = new List<String>{
+                'before insert','before update','before delete',
+                'after insert','after update','after delete','after undelete'
+            };
+            List<String> merged = new List<String>();
+            for (String ev : canonical) {
+                if (allEvents.contains(ev)) merged.add(ev);
+            }
+
+            // No new events added — no change needed
+            Set<String> existingSet = new Set<String>();
+            for (String e : em.group(1).split(',')) existingSet.add(e.trim().toLowerCase()); // re-read since matcher advanced
+            if (merged.size() == existingSet.size()) return null;
+
+            // Rewrite the existing trigger body event list
+            String mergedStr = String.join(merged, ', ');
+            return existingBody.replaceFirst(
+                '(?i)(on\\s+\\w+\\s*\\()([^)]+)(\\))',
+                '$1' + mergedStr + '$3'
+            );
+        } catch (Exception e) {
+            System.debug('mergeTriggerEvents failed: ' + e.getMessage());
+            return null;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // MERGE CLASS METHODS — no naming convention required
+    // Uses brace-depth tracking to extract ALL top-level methods
+    // from both existing and generated class bodies, then injects
+    // any method present in existing but absent from generated.
+    // Works for: dispatch(), run(), execute(), processX(), validateY()
+    // — any name, any return type, any parameter signature.
+    // ─────────────────────────────────────────────────────────────
+    private static String mergeClassMethods(String existingBody, String generatedBody) {
+        try {
+            Map<String, String> existingMethods  = extractTopLevelMethods(existingBody);
+            Map<String, String> generatedMethods = extractTopLevelMethods(generatedBody);
+
+            System.debug('mergeClassMethods: existing methods  = ' + existingMethods.keySet());
+            System.debug('mergeClassMethods: generated methods = ' + generatedMethods.keySet());
+
+            // Step 1: find truly new private methods (in generated, not in existing)
+            List<String> newMethodBodies = new List<String>();
+            for (String name : generatedMethods.keySet()) {
+                if (name == 'dispatch') continue; // handle separately
+                if (!existingMethods.containsKey(name)) {
+                    newMethodBodies.add(generatedMethods.get(name));
+                    System.debug('mergeClassMethods: new method to inject [' + name + ']');
+                }
+            }
+
+            // Step 2: find new dispatch if-blocks to add
+            // Extract dispatch bodies
+            String existingDispatch  = existingMethods.get('dispatch');
+            String generatedDispatch = generatedMethods.get('dispatch');
+            
+            String newDispatchBlocks = '';
+            if (existingDispatch != null && generatedDispatch != null) {
+                newDispatchBlocks = extractNewDispatchBlocks(existingDispatch, generatedDispatch);
+            }
+
+            // Step 3: if nothing new, return null (no change needed)
+            if (newMethodBodies.isEmpty() && String.isBlank(newDispatchBlocks)) {
+                System.debug('mergeClassMethods: nothing new to merge');
+                return null;
+            }
+
+            // Step 4: inject new if-blocks into existing dispatch()
+            String result = existingBody;
+            
+            if (String.isNotBlank(newDispatchBlocks) && existingDispatch != null) {
+                // Find the closing brace of the existing dispatch method body
+                Integer lastBraceInDispatch = existingDispatch.lastIndexOf('}');
+                if (lastBraceInDispatch >= 0) {
+                    String updatedDispatch = existingDispatch.substring(0, lastBraceInDispatch)
+                        + '\n        // ── Added by automation ──'
+                        + newDispatchBlocks
+                        + '\n    }';
+                    result = result.replace(existingDispatch, updatedDispatch);
+                }
+            }
+
+            // Step 5: inject new private methods before the final class closing brace
+            if (!newMethodBodies.isEmpty()) {
+                Integer lastBrace = result.lastIndexOf('}');
+                if (lastBrace < 0) return null;
+                String injection = '\n\n    // ── Added by automation ──';
+                for (String m : newMethodBodies) {
+                    injection += '\n    ' + m.trim() + '\n';
+                }
+                result = result.substring(0, lastBrace) + injection + '\n}';
+            }
+
+            System.debug('mergeClassMethods: merge complete');
+            return result;
+
+        } catch (Exception e) {
+            System.debug('mergeClassMethods failed: ' + e.getMessage());
+            ErrorLogger.log(e);
+            return null;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EXTRACT NEW DISPATCH BLOCKS
+    // Compares existing and generated dispatch() bodies.
+    // Returns only the if-blocks from generated that handle
+    // TriggerOperation values NOT already present in existing.
+    // ─────────────────────────────────────────────────────────────
+    private static String extractNewDispatchBlocks(String existingDispatch, String generatedDispatch) {
+        Pattern opPat = Pattern.compile('System\\.TriggerOperation\\.(\\w+)');
+
+        Set<String> existingOps = new Set<String>();
+        Matcher em = opPat.matcher(existingDispatch);
+        while (em.find()) existingOps.add(em.group(1));
+
+        Set<String> generatedOps = new Set<String>();
+        Matcher gm = opPat.matcher(generatedDispatch);
+        while (gm.find()) generatedOps.add(gm.group(1));
+
+        System.debug('extractNewDispatchBlocks: existingOps='  + existingOps);
+        System.debug('extractNewDispatchBlocks: generatedOps=' + generatedOps);
+
+        String result = '';
+        for (String op : generatedOps) {
+            if (existingOps.contains(op)) continue; // already handled
+
+            // Extract the full if-statement line for this op from generated dispatch
+            // Pattern: if (op == System.TriggerOperation.BEFORE_DELETE) someMethod(...);
+            Pattern linePat = Pattern.compile(
+                '[ \\t]*(if\\s*\\([^)]*' + op + '[^)]*\\)\\s*\\w+\\([^)]*\\)\\s*;)'
+            );
+            Matcher lm = linePat.matcher(generatedDispatch);
+            if (lm.find()) {
+                result += '\n        ' + lm.group(1).trim();
+                System.debug('extractNewDispatchBlocks: adding if-block for op [' + op + ']: ' + lm.group(1).trim());
+            }
+        }
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EXTRACT TOP-LEVEL METHODS (brace-depth parser)
+    //
+    // Scans the class body character by character tracking brace depth.
+    // Extracts every method/block that opens at depth 1 (directly inside
+    // the class) and closes back to depth 1.
+    // Returns Map<lowercaseMethodName, fullMethodText>
+    //
+    // Handles:
+    //   - Any method name (dispatch, run, processX, validate, execute...)
+    //   - Any return type (void, String, Map<Id,List<Account>>, custom types)
+    //   - Arbitrarily deep nesting inside the method body
+    //   - String literals containing { } (skipped correctly)
+    //   - Single-line // comments (skipped)
+    //   - Multi-line /* */ comments (skipped)
+    // ─────────────────────────────────────────────────────────────
+    private static Map<String, String> extractTopLevelMethods(String classBody) {
+        Map<String, String> result = new Map<String, String>();
+        if (String.isBlank(classBody)) return result;
+
+        Integer len = classBody.length();
+
+        // Skip past the class-level opening brace
+        Integer classOpen = classBody.indexOf('{');
+        if (classOpen < 0) return result;
+
+        Integer i     = classOpen + 1;
+        Integer depth = 1;
+
+        Integer sigStart   = -1; // where the current method's signature starts
+        Integer braceDepth = -1; // depth at which this block opened
+
+        while (i < len) {
+            String ch = classBody.substring(i, i + 1);
+
+            // ── Skip single-line comments ──────────────────────────
+            if (ch == '/' && i + 1 < len && classBody.substring(i+1, i+2) == '/') {
+                i = classBody.indexOf('\n', i);
+                if (i < 0) break;
+                i++;
+                continue;
+            }
+
+            // ── Skip multi-line comments ───────────────────────────
+            if (ch == '/' && i + 1 < len && classBody.substring(i+1, i+2) == '*') {
+                Integer endComment = classBody.indexOf('*/', i + 2);
+                i = (endComment < 0) ? len : endComment + 2;
+                continue;
+            }
+
+            // ── Skip string literals ───────────────────────────────
+            if (ch == '\'') {
+                i++;
+                while (i < len) {
+                    String sc = classBody.substring(i, i+1);
+                    if (sc == '\\' && i + 1 < len) { i += 2; continue; }
+                    if (sc == '\'') { i++; break; }
+                    i++;
+                }
+                continue;
+            }
+
+            // ── Brace tracking ─────────────────────────────────────
+            if (ch == '{') {
+                if (depth == 1) {
+                    // Opening a top-level block (method or static initializer)
+                    // Walk backwards from here to find the start of the signature
+                    sigStart = findSignatureStart(classBody, i, classOpen);
+                }
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 1 && sigStart >= 0) {
+                    // Closed a top-level block — extract it
+                    String fullBlock = classBody.substring(sigStart, i + 1).trim();
+                    String methodName = extractMethodName(fullBlock);
+                    if (String.isNotBlank(methodName)) {
+                        result.put(methodName.toLowerCase(), fullBlock);
+                        System.debug('extractTopLevelMethods: found method [' + methodName + ']');
+                    }
+                    sigStart = -1;
+                }
+            }
+
+            i++;
+        }
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // FIND SIGNATURE START
+    // Walks backwards from the opening brace of a method to find
+    // where its signature begins (after the previous ; or } or
+    // the class opening brace itself).
+    // ─────────────────────────────────────────────────────────────
+    private static Integer findSignatureStart(String body, Integer openBracePos, Integer classOpenPos) {
+        Integer i = openBracePos - 1;
+        while (i > classOpenPos) {
+            String ch = body.substring(i, i+1);
+            // Signature starts right after the previous statement end or block close
+            if (ch == ';' || ch == '}') return i + 1;
+            i--;
+        }
+        return classOpenPos + 1;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // EXTRACT METHOD NAME
+    // Given the full text of a method block, finds the method name:
+    // the last word followed by '(' before the opening '{', that is
+    // not a reserved keyword.
+    //
+    // Examples handled:
+    //   public static void dispatch(...)            → "dispatch"
+    //   private static Map<Id,List<Opp>> run(...)   → "run"
+    //   global override String execute(...)         → "execute"
+    //   public static void processRevenue(...)      → "processRevenue"
+    // ─────────────────────────────────────────────────────────────
+    private static String extractMethodName(String methodText) {
+        // Take only the part before the opening brace to avoid false matches inside body
+        Integer bracePos = methodText.indexOf('{');
+        String signature = bracePos > 0 ? methodText.substring(0, bracePos) : methodText;
+
+        // Find all word( occurrences in the signature
+        Pattern wordParen = Pattern.compile('(\\w+)\\s*\\(');
+        Matcher m = wordParen.matcher(signature);
+
+        Set<String> reserved = new Set<String>{
+            'if','else','for','while','do','switch','try','catch','finally',
+            'new','return','throw','class','interface','enum','extends','implements',
+            'public','private','protected','global','static','void','abstract',
+            'virtual','override','testMethod','with','sharing','without',
+            'String','Integer','Boolean','Long','Decimal','Double','Object',
+            'Id','Date','Time','DateTime','Blob','List','Map','Set','Type',
+            'System','Schema','Database','Test','Trigger','SObject',
+            'insert','update','delete','upsert','merge','undelete'
+        };
+
+        String lastCandidate = null;
+        while (m.find()) {
+            String candidate = m.group(1);
+            if (!reserved.contains(candidate)) {
+                lastCandidate = candidate;
+            }
+        }
+        return lastCandidate;
+    }
+
+
+    // ─────────────────────────────────────────────────────────────
+    // MERGE DISPATCH CALLS
+    // Ensures the generated dispatch() method contains all the
+    // op == TriggerOperation.XXX branches from the existing one.
+    // Called inside mergeClassMethods() after method injection.
+    // ─────────────────────────────────────────────────────────────
+    private static String mergeDispatchCalls(String existingDispatch, String generatedDispatch) {
+        try {
+            Pattern opPat = Pattern.compile('System\\.TriggerOperation\\.(\\w+)');
+
+            Set<String> existingOps  = new Set<String>();
+            Set<String> generatedOps = new Set<String>();
+
+            Matcher em = opPat.matcher(existingDispatch);
+            while (em.find()) existingOps.add(em.group(1));
+
+            Matcher gm = opPat.matcher(generatedDispatch);
+            while (gm.find()) generatedOps.add(gm.group(1));
+
+            System.debug('mergeDispatchCalls: existingOps  = ' + existingOps);
+            System.debug('mergeDispatchCalls: generatedOps = ' + generatedOps);
+
+            // Find ops that are NEW in generated but not in existing
+            // (we want to ADD new op handling, not re-inject old ones)
+            List<String> missing = new List<String>();
+            for (String op : generatedOps) {
+                if (!existingOps.contains(op)) missing.add(op);
+            }
+            if (missing.isEmpty()) return null;
+
+            // Extract the if-block for each missing op from generated dispatch
+            String injectedCalls = '';
+            for (String op : missing) {
+                Pattern callPat = Pattern.compile(
+                    '(?s)(if\\s*\\([^)]*' + op + '[^)]*\\)\\s*[^;{]+[;{][^}]*(?:\\})?)'
+                );
+                Matcher cm = callPat.matcher(generatedDispatch);
+                if (cm.find()) {
+                    injectedCalls += '\n        ' + cm.group(1).trim();
+                    System.debug('mergeDispatchCalls: injecting op block for [' + op + ']');
+                }
+            }
+
+            if (String.isBlank(injectedCalls)) return null;
+
+            Integer lastBrace = existingDispatch.lastIndexOf('}');
+            if (lastBrace < 0) return null;
+
+            return existingDispatch.substring(0, lastBrace)
+                + '\n        // ── New op checks ──'
+                + injectedCalls
+                + '\n    }';
+
+        } catch (Exception e) {
+            System.debug('mergeDispatchCalls failed: ' + e.getMessage());
+            return null;
+        }
+    }
+
+
+
+    // ─────────────────────────────────────────────────────────────
+    // STANDARD FIELD SANITIZER
+    // Strips erroneous __c suffix from standard object field names
+    // in Apex code. Runs on both LLM-generated and injected-from-org
+    // code before it reaches ZipBuilder.
+    //
+    // Uses orgState.existingFields which already contains the correct
+    // API names for every standard object fetched in runOrgCheck().
+    // Example: Account → [AnnualRevenue, Rating, Name, Industry, ...]
+    //
+    // If LLM (or old org code) wrote AnnualRevenue__c, and
+    // existingFields["Account"] contains "AnnualRevenue" (no __c),
+    // then AnnualRevenue__c → AnnualRevenue.
+    // ─────────────────────────────────────────────────────────────
+    private static String sanitizeStandardFieldReferences(String apexCode, Map<String, Object> orgState) {
+        if (String.isBlank(apexCode) || orgState == null) return apexCode;
+
+        Map<String, Object> existingFields = (Map<String, Object>) orgState.get('existingFields');
+        if (existingFields == null || existingFields.isEmpty()) return apexCode;
+
+        String result = apexCode;
+
+        for (String objectName : existingFields.keySet()) {
+            // Only process standard objects — custom objects end in __c and
+            // their fields legitimately use __c, so we never touch those.
+            if (objectName.endsWith('__c') || objectName.endsWith('__mdt')) continue;
+
+            List<Object> rawFields = (List<Object>) existingFields.get(objectName);
+            if (rawFields == null) continue;
+
+            for (Object rawField : rawFields) {
+                String fieldName = String.valueOf(rawField);
+
+                // Skip if this field itself is a custom field on a standard object
+                // (e.g. My_Custom_Field__c on Account — that __c is correct)
+                if (fieldName.endsWith('__c')) continue;
+
+                // If the code contains FieldName__c but the real API name is FieldName,
+                // replace it. Word boundary (\b) prevents partial matches.
+                String wrongName  = fieldName + '__c';
+                if (result.containsIgnoreCase(wrongName)) {
+                    result = result.replaceAll(
+                        '(?i)\\b' + Pattern.quote(wrongName) + '\\b',
+                        fieldName
+                    );
+                    System.debug('sanitizeStandardFieldReferences: replaced ['
+                        + wrongName + '] → [' + fieldName + '] on object [' + objectName + ']');
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // LAYOUT XML SANITIZER
     // The LLM occasionally emits non-field placeholder sections in Layout XML
     // (Custom Links, Mobile Cards, etc.) with empty <field></field> and empty
@@ -1785,6 +2636,24 @@ public class LLMService {
                 + ' broken <layoutItems> block(s) from Layout XML');
         }
         return cleaned;
+    }
+
+    private static String sanitizeApexRegex(String apexCode) {
+        if (String.isBlank(apexCode)) return apexCode;
+
+        // Fix illegal escape sequences
+        apexCode = apexCode.replace('\\+', '[+]');
+        apexCode = apexCode.replace('\\d', '[0-9]');
+        apexCode = apexCode.replace('\\s', '[ \\t\\n\\r]');
+        apexCode = apexCode.replace('\\w', '[a-zA-Z0-9_]');
+        apexCode = apexCode.replace('\\.', '[.]');
+
+        // Fix Pattern.matches(regex, input) → Pattern.compile(regex).matcher(input).matches()
+        Pattern pmPat = Pattern.compile('Pattern[.]matches[(]([^,]+),\\s*([^)]+)[)]');
+        Matcher pmMatcher = pmPat.matcher(apexCode);
+        apexCode = pmMatcher.replaceAll('Pattern.compile($1).matcher($2).matches()');
+
+        return apexCode;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -3010,13 +3879,24 @@ public class LLMService {
             + '\n  and include the result as apexClasses in your JSON summary'
             + '\n- If the ticket grants Visualforce page access, query: SELECT Name FROM ApexPage WHERE NamespacePrefix = null ORDER BY Name'
             + '\n- If the ticket updates or deletes something, find its current state'
+            + '\n- If the ticket mentions field names in plain English (e.g. "Client Phone Number"),'
+            + '\n  always call sobject_fields_list to fetch the real API names from the org.'
+            + '\n  Never assume the API name from the label — they frequently differ (e.g. Client_Phone_No__c vs Client_Phone_Number__c).'
+            + '\n- For ANY ticket that involves Apex code generation:'
+            + '\n  ALWAYS call sobject_fields_list AND sobjects_list first.'
+            + '\n  Extract the EXACT object API name from sobjects_list — never derive it from the ticket label.'
+            + '\n  Labels and API names frequently differ: "AI Message" → AI_Message__c, not AIMessage__c.'
+            + '\n  Include both existingObjects and existingFields in your JSON summary so the XML stage uses real names.'
+            + '\n- For ANY object involved in the ticket, call sobject_fields_list and check for MasterDetail fields.'
+            + '\n  Include "hasMasterDetail: true/false" in your JSON summary for every object.'
+            + '\n  This MUST be passed to the XML stage to set the correct sharingModel.'
             + '\n\nAfter checking, return a JSON object summarising what you found. Example:'
             + '\n{'
-            + '\n  "existingObjects": ["Car__c", "Driver__c"],'
-            + '\n  "existingFields": {"Car__c": ["Name", "Price__c", "Status__c"]},'
-            + '\n  "existingPermissionSets": ["Sales_Team_Access"],'
-            + '\n  "apexClasses": ["AccountController", "CarService", "ReservationHelper"],'
-            + '\n  "notes": "Car__c exists with 5 fields. Status__c does not exist yet."'
+            + '\n  \"existingObjects\": [\"Car__c\", \"Driver__c\"],'
+            + '\n  \"existingFields\": {\"Car__c\": [\"Name\", \"Price__c\", \"Status__c\"]},'
+            + '\n  \"existingPermissionSets\": [\"Sales_Team_Access\"],'
+            + '\n  \"apexClasses\": [\"AccountController\", \"CarService\", \"ReservationHelper\"],'
+            + '\n  \"notes\": \"Car__c exists with 5 fields. Status__c does not exist yet.\"'
             + '\n}'
             + '\n\nReturn ONLY valid JSON. No explanation, no markdown, just the JSON object.'
             + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
@@ -4639,6 +5519,318 @@ public class LLMService {
             + '\nThe ONLY way Salesforce knows it is a Custom Metadata Type is because the API name ends in __mdt.'
             + '\nThe XML structure is simply <label>, <pluralLabel>, optional <description>, <visibility>, and <fields>.'
             + '\nNever add <customMetadataType>, <customSettingsType>, or any other discriminator tag to __mdt objects.'
+
+
+            // ── APEX CLASS AND TRIGGER GENERATION ─────────────────────────────
+            + '\n\n== APEX CLASS AND TRIGGER GENERATION =='
+            + '\n'
+            + '\nApex files are NOT XML. They are source code deployed as part of a ZIP.'
+            + '\nEvery Apex artifact requires EXACTLY TWO file entries in files[]:'
+            + '\n  1. The code file  — metadataType ApexClass or ApexTrigger'
+            + '\n  2. The meta file  — metadataType ApexClassMeta or ApexTriggerMeta'
+            + '\n'
+            + '\n\n-- COMPLETE APEX EXAMPLE (follow this exactly) --'
+            + '\nThe xmlContent for .cls and .trigger files MUST be actual Apex source code.'
+            + '\nNOT XML. NOT meta content. ACTUAL APEX CODE.'
+            + '\n'
+            + '\nFile 1 — Handler class code (Apex source, NOT XML):'
+            + '\n{'
+            + '\n  "metadataType": "ApexClass",'
+            + '\n  "memberName": "LeadHandler",'
+            + '\n  "filePath": "classes/LeadHandler.cls",'
+            + '\n  "xmlContent": "public class LeadHandler {\\n    public static void dispatch(\\n        System.TriggerOperation op,\\n        List<Lead> newList,\\n        List<Lead> oldList,\\n        Map<Id, Lead> newMap,\\n        Map<Id, Lead> oldMap\\n    ) {\\n        if (op == System.TriggerOperation.BEFORE_INSERT) handleBeforeInsert(newList);\\n    }\\n    private static void handleBeforeInsert(List<Lead> newList) {\\n        for (Lead l : newList) {\\n            // logic here\\n        }\\n    }\\n}"'
+            + '\n}'
+            + '\n'
+            + '\nFile 2 — Handler class meta (XML, NOT Apex code):'
+            + '\n{'
+            + '\n  "metadataType": "ApexClassMeta",'
+            + '\n  "memberName": "LeadHandler",'
+            + '\n  "filePath": "classes/LeadHandler.cls-meta.xml",'
+            + '\n  "xmlContent": "<?xml version=\\"1.0\\" encoding=\\"UTF-8\\"?>\\n<ApexClass xmlns=\\"http://soap.sforce.com/2006/04/metadata\\">\\n    <apiVersion>61.0</apiVersion>\\n    <status>Active</status>\\n</ApexClass>"'
+            + '\n}'
+            + '\n'
+            + '\nFile 3 — Trigger code (Apex source, NOT XML):'
+            + '\n{'
+            + '\n  "metadataType": "ApexTrigger",'
+            + '\n  "memberName": "LeadTrigger",'
+            + '\n  "filePath": "triggers/LeadTrigger.trigger",'
+            + '\n  "xmlContent": "trigger LeadTrigger on Lead (before insert) {\\n    LeadHandler.dispatch(Trigger.operationType, Trigger.new, Trigger.old, Trigger.newMap, Trigger.oldMap);\\n}"'
+            + '\n}'
+            + '\n'
+            + '\nFile 4 — Trigger meta (XML, NOT Apex code):'
+            + '\n{'
+            + '\n  "metadataType": "ApexTriggerMeta",'
+            + '\n  "memberName": "LeadTrigger",'
+            + '\n  "filePath": "triggers/LeadTrigger.trigger-meta.xml",'
+            + '\n  "xmlContent": "<?xml version=\\"1.0\\" encoding=\\"UTF-8\\"?>\\n<ApexTrigger xmlns=\\"http://soap.sforce.com/2006/04/metadata\\">\\n    <apiVersion>61.0</apiVersion>\\n    <status>Active</status>\\n</ApexTrigger>"'
+            + '\n}'
+            + '\n'
+            + '\nCRITICAL MAPPING — NEVER MIX THESE UP:'
+            + '\n  ApexClass     → .cls file          → xmlContent = public class Foo { ... }   (Apex source)'
+            + '\n  ApexClassMeta → .cls-meta.xml file → xmlContent = <?xml ...><ApexClass>...   (XML only)'
+            + '\n  ApexTrigger   → .trigger file      → xmlContent = trigger Foo on Bar (...) { }(Apex source)'
+            + '\n  ApexTriggerMeta → .trigger-meta.xml → xmlContent = <?xml ...><ApexTrigger>... (XML only)'
+            + '\nNEVER put <?xml into a .cls or .trigger file.'
+            + '\nNEVER put public class / trigger keywords into a -meta.xml file.'
+            + '\n'
+            + '\nMeta file XML format (same for class and trigger, just swap the root element):'
+            + '\n<?xml version="1.0" encoding="UTF-8"?>'
+            + '\n<ApexClass xmlns="http://soap.sforce.com/2006/04/metadata">'
+            + '\n    <apiVersion>61.0</apiVersion>'
+            + '\n    <status>Active</status>'
+            + '\n</ApexClass>'
+            + '\n(For trigger meta: use <ApexTrigger> root element instead of <ApexClass>.)'
+            + '\n'
+            + '\npackage.xml registration:'
+            + '\n- ONE member per class or trigger (both the code file and meta file share the same member name).'
+            + '\n- Apex registers as: metadataType=ApexClass member=ClassName  (NOT ApexClassMeta).'
+            + '\n- Apex registers as: metadataType=ApexTrigger member=TriggerName (NOT ApexTriggerMeta).'
+            + '\n- Apex does NOT use the suffix-in-file convention — the code system handles this automatically.'
+
+            // ── TRIGGER PATTERN ────────────────────────────────────────
+            + '\n\n-- TRIGGER HANDLER PATTERN --'
+            + '\nALWAYS use the thin-trigger + handler-class pattern. Never put logic in the trigger body.'
+            + '\n'
+            + '\nThin trigger (delegates 100% to handler):'
+            + '\ntrigger InvoiceTrigger on Invoice__c (before insert, before update, after insert) {'
+            + '\n    InvoiceHandler.dispatch(Trigger.operationType, Trigger.new, Trigger.old, Trigger.newMap, Trigger.oldMap);'
+            + '\n}'
+            + '\n'
+            + '\nHandler class skeleton:'
+            + '\npublic class InvoiceHandler {'
+            + '\n    public static void dispatch('
+            + '\n        System.TriggerOperation op,'
+            + '\n        List<Invoice__c> newList,'
+            + '\n        List<Invoice__c> oldList,'
+            + '\n        Map<Id, Invoice__c> newMap,'
+            + '\n        Map<Id, Invoice__c> oldMap'
+            + '\n    ) {'
+            + '\n        if (op == System.TriggerOperation.BEFORE_INSERT)  handleBeforeInsert(newList);'
+            + '\n        if (op == System.TriggerOperation.BEFORE_UPDATE)  handleBeforeUpdate(newList, oldMap);'
+            + '\n        if (op == System.TriggerOperation.AFTER_INSERT)   handleAfterInsert(newList, newMap);'
+            + '\n        // ... add more as needed'
+            + '\n    }'
+            + '\n    private static void handleBeforeInsert(List<Invoice__c> newList) {'
+            + '\n        for (Invoice__c rec : newList) {'
+            + '\n            // logic here — NEVER SOQL inside loops'
+            + '\n        }'
+            + '\n    }'
+            + '\n    // ... additional private static methods per event'
+            + '\n}'
+            + '\n'
+            + '\nNaming convention:'
+            + '\n  Trigger name  = {ObjectName}Trigger   (e.g. InvoiceTrigger, CaseTrigger)'
+            + '\n  Handler name  = {ObjectName}Handler   (e.g. InvoiceHandler, CaseHandler)'
+            + '\n  (ObjectName = object label or API name without __c, PascalCase)'
+
+            // ── ONE TRIGGER PER OBJECT ─────────────────────────────────
+            + '\n\n-- ONE TRIGGER PER OBJECT RULE --'
+            + '\nSalesforce best practice: ONE trigger per sObject. This system enforces it strictly.'
+            + '\n'
+            + '\nThe org check always fetches the existing trigger + handler before generation.'
+            + '\nThe result is in orgState under "existingTrigger" and "existingHandlerClass".'
+            + '\n'
+            + '\n⚠ STEP ZERO — READ ORG STATE BEFORE WRITING ANYTHING.'
+            + '\nCheck orgState.existingTrigger. This is the ONLY decision point.'
+            + '\nTicket wording does NOT override org state.'
+            + '\n'
+            + '\n⚠ WARNING — TICKET LANGUAGE IS MISLEADING:'
+            + '\nWords like "Create a trigger", "Implement a trigger", "Add a trigger"'
+            + '\ndescribe the BUSINESS INTENT — NOT an instruction to generate fresh code.'
+            + '\nIf orgState.existingTrigger is not null → you are ALWAYS in MERGE mode.'
+            + '\nNo exception. No override. The org state wins every time.'
+            + '\n'
+            + '\n══ MERGE MODE — orgState.existingTrigger IS NOT NULL ══'
+            + '\n'
+            + '\nThe trigger already exists. You must UPDATE it, not replace it.'
+            + '\nFollow these steps IN ORDER before writing a single line of output:'
+            + '\n'
+            + '\nSTEP 1 — ENUMERATE existing events (do this mentally before writing):'
+            + '\n  Read orgState.existingTrigger.body.'
+            + '\n  List every event already in the trigger event list, e.g.: before delete, after insert.'
+            + '\n  These events MUST all appear in your output trigger — every single one.'
+            + '\n'
+            + '\nSTEP 2 — ENUMERATE existing handler methods (do this mentally before writing):'
+            + '\n  Read orgState.existingHandlerClass.body.'
+            + '\n  List every method defined in the class, e.g.: dispatch, handleBeforeDelete, handleAfterInsert.'
+            + '\n  Every one of these methods MUST appear in your output handler — unchanged.'
+            + '\n'
+            + '\nSTEP 3 — IDENTIFY what the ticket is adding (one or both):'
+            + '\n  Case A — New trigger events: the ticket needs an event not yet in the existing event list.'
+            + '\n  Case B — New logic in an existing event: the ticket adds behaviour to an event already present.'
+            + '\n'
+            + '\nSTEP 4 — BUILD the updated trigger file:'
+            + '\n  Start from orgState.existingTrigger.body verbatim.'
+            + '\n  Case A: add the new event(s) to the event list. Add the dispatch call inside the trigger body.'
+            + '\n  Case B: no change needed to the trigger file — the events already cover it.'
+            + '\n  Your output event list = ALL events from STEP 1 + any new events from STEP 3.'
+            + '\n'
+            + '\nSTEP 5 — BUILD the updated handler class:'
+            + '\n  Start from orgState.existingHandlerClass.body verbatim.'
+            + '\n  Case A: add the new handler method. Wire it in the dispatch/run method.'
+            + '\n  Case B: find the existing method for that event. ADD new logic inside it below existing logic.'
+            + '\n  Your output methods = ALL methods from STEP 2 + any new methods from STEP 3.'
+            + '\n'
+            + '\nSTEP 6 — SELF-CHECK before finalising output:'
+            + '\n  ✓ Does the output trigger event list contain every event from STEP 1? If not, add the missing ones.'
+            + '\n  ✓ Does the output handler contain every method from STEP 2? If not, paste them back in.'
+            + '\n  ✓ Is the output handler the COMPLETE class — not just a snippet? If not, complete it.'
+            + '\n'
+            + '\nSTEP 7 — OUTPUT:'
+            + '\n  Emit the full updated trigger file + its -meta.xml.'
+            + '\n  Emit the full updated handler file + its -meta.xml.'
+            + '\n'
+            + '\n══ CREATE MODE — orgState.existingTrigger IS NULL ══'
+            + '\n'
+            + '\nNo trigger exists on this object. Generate fresh trigger + handler files from scratch.'
+            + '\nUse the trigger handler pattern above.'
+            + '\nGenerate all four files: trigger code, trigger meta, handler code, handler meta.'
+
+            // ── APEX BEST PRACTICES ────────────────────────────────────
+            + '\n\n-- APEX BEST PRACTICES (enforced — non-compliant code will fail code review) --'
+            + '\n1. NEVER write SOQL queries inside for loops.'
+            + '\n   WRONG:  for (Invoice__c inv : invList) { Account a = [SELECT Id FROM Account WHERE Id = :inv.AccountId__c]; }'
+            + '\n   CORRECT: Map<Id, Account> accMap = new Map<Id, Account>([SELECT Id FROM Account WHERE Id IN :accountIds]);'
+            + '\n2. NEVER use DML inside loops.'
+            + '\n3. Collect IDs/fields in a Set or List first, then query in bulk outside the loop.'
+            + '\n4. All trigger handler methods MUST accept the full list/map (List<SObject>, Map<Id,SObject>).'
+            + '\n5. Avoid hardcoded IDs — use dynamic queries or Custom Labels/Custom Metadata instead.'
+            + '\n6. All Apex classes must be api version 61.0.'
+            + '\n7. Use System.TriggerOperation enum for switch logic — never use Trigger.isBefore/isInsert booleans directly in the handler.'
+            + '\n8. Always use correct API names from orgState.existingFields — never guess or invent field names.'
+            + '\n9. Use Date.today() to get the current date — NEVER Date.now() (it does not exist on the Date class).'
+            + '\n   DateTime.now() exists but returns a DateTime. Date.today() returns a Date.'
+            + '\n10. To check if a String field is blank in Apex, use String.isBlank(field) — never field == null || field == \'\'.'
+            + '\n    WRONG:  if (l.Description == null || l.Description == \'\') {'
+            + '\n    CORRECT: if (String.isBlank(l.Description)) {'
+            + '\n11. NEVER use String.matches() — this method does NOT exist in Apex (it exists in Java, not Apex).'
+            + '\n    WRONG:  if (phone.matches(\'^\\\\+?[0-9]{10,15}$\')) {'
+            + '\n    CORRECT: Pattern p = Pattern.compile(\'^\\\\+?[0-9]{10,15}$\');'
+            + '\n             Matcher m = p.matcher(phone);'
+            + '\n             if (m.matches()) {'
+            + '\n'
+            + '\n12. ALWAYS prefix sObject field references with the loop variable — never use bare field names.'
+            + '\n    WRONG:  if (AI_Confidence_Score__c < 0)'
+            + '\n    CORRECT: if (record.AI_Confidence_Score__c < 0)'
+            + '\n'
+            + '\n13. NEVER redefine or re-create fields that already exist in the org.'
+            + '\n    If a field exists in orgState.existingFields, reference it in Apex only — do NOT generate any CustomField XML for it.'
+            + '\n    Generating XML for an existing Number field as Percent (or any wrong type) will cause precision/scale deploy failures.'
+            + '\n14. NEVER derive or guess field API names from ticket text.'
+            + '\n    The ticket uses human-readable labels (e.g. "Client Phone Number") — these are NOT the API names.'
+            + '\n    ALWAYS look up the exact API name from orgState.existingFields for that object.'
+            + '\n    WRONG:  record.Client_Phone_Number__c  ← guessed from ticket label'
+            + '\n    CORRECT: record.Client_Phone_No__c     ← taken from orgState.existingFields'
+            + '\n    If the field is not found in orgState.existingFields → stop and report it in summary.'
+            + '\n    NEVER fabricate a __c field name that does not exist in orgState.'
+            + '\n15. NEVER derive or guess the sObject API name from the ticket label.'
+            + '\n    "AI Message" in a ticket does NOT mean the API name is AIMessage__c.'
+            + '\n    ALWAYS use the exact object API name from orgState.existingObjects.'
+            + '\n    WRONG:  List<AIMessage__c>   ← guessed from label "AI Message"'
+            + '\n    CORRECT: List<AI_Message__c> ← taken from orgState.existingObjects'
+            + '\n    A wrong object API name causes every method parameter and variable'
+            + '\n    referencing that type to also fail with "Variable does not exist".'
+            + '\n    If the object is not found in orgState.existingObjects → stop and report in summary.'
+            + '\n- NEVER use \\+ in Apex regex. Use [+] instead — it matches the same thing with zero escaping.'
+            + '\n  WRONG:  Pattern.compile(\'^\\\\+?[0-9]{10,15}$\')'
+            + '\n  CORRECT: Pattern.compile(\'^[+]?[0-9]{10,15}$\')'
+            + '\n  Avoid ALL backslash sequences in regex where a character class alternative exists:'
+            + '\n  \\d → [0-9],  \\+ → [+],  \\. → [.]'
+
+            + '\n\n-- APEX VALIDATION RULES (CRITICAL) --'
+            + '\n1. NEVER silently replace invalid field values with defaults.'
+            + '\n   Validation means rejecting bad data with addError(), NOT overwriting it.'
+            + '\n   WRONG:  record.Content__c = \'Default content\';'
+            + '\n   CORRECT: record.addError(\'Content cannot be empty.\');'
+            + '\n'
+            + '\n2. NEVER leave stub methods that return hardcoded values.'
+            + '\n   WRONG:  private static Boolean isValidPhone(String phone) { return true; }'
+            + '\n   CORRECT: implement the full logic — Pattern.compile(), Matcher, matches()'
+            + '\n   A method with placeholder logic is worse than no method at all.'
+            + '\n'
+            + '\n3. ALWAYS add a null check before comparing a Number field.'
+            + '\n   WRONG:  if (record.AI_Confidence_Score__c < 0)'
+            + '\n   CORRECT: if (record.AI_Confidence_Score__c != null && record.AI_Confidence_Score__c < 0)'
+            + '\n'
+            + '\n4. NEVER use hardcoded magic values: no 50, no \'1234567890\', no \'Default content\'.'
+            + '\n   Use named constants at the top of the class instead:'
+            + '\n   private static final Integer MIN_SCORE = 0;'
+            + '\n   private static final Integer MAX_SCORE = 100;'
+            + '\n'
+            + '\n5. handleBeforeUpdate MUST re-run all the same validations as handleBeforeInsert.'
+            + '\n   NEVER leave handleBeforeUpdate with only a comment and no logic.'
+            + '\n   If validation applies on insert it applies on update too — always.'
+            + '\n- NEVER generate CustomField XML for any field that already exists in orgState.existingFields.'
+            + '\n  Before generating ANY <fields> block, check orgState.existingFields for that object.'
+            + '\n  If the field API name is already listed → SKIP it entirely, do not include it in the XML.'
+            + '\n  Only generate <fields> XML for fields that are NOT present in orgState.existingFields.'
+            + '\n  This applies to ALL objects and ALL fields — not just specific ones.'
+            + '\n- BEFORE writing any CustomObject XML, scan orgState.existingFields for the object.'
+            + '\n  If ANY field has type containing "MasterDetail" → sharingModel MUST be ControlledByParent.'
+            + '\n  AI_Message__c has Conversation__c which is MasterDetail → ALWAYS ControlledByParent.'
+            + '\n  WRONG:  <sharingModel>ReadWrite</sharingModel>'
+            + '\n  CORRECT: <sharingModel>ControlledByParent</sharingModel>'
+            + '\n- NEVER generate a method body containing only a comment and return true.'
+            + '\n  If isValidPhone or any validation helper is declared, it MUST contain'
+            + '\n  the full Pattern.compile() + Matcher implementation — no placeholders.'
+            + '\n  A stub that returns true makes the entire validation requirement worthless.'
+            + '\n'
+            + '\n6. NEVER leave TODO comments or placeholder comments in generated code:'
+            + '\n   // or throw an exception      ← FORBIDDEN'
+            + '\n   // Add update logic here      ← FORBIDDEN'
+            + '\n   // Implement logic here       ← FORBIDDEN'
+            + '\n   Generated code must be complete and production-ready.'
+            + '\n- NEVER use Pattern.matches(regex, input) — does not exist in Apex.'
+            + '\n  WRONG:  if (!Pattern.matches(\'^[+]?[0-9]{10,15}$\', record.Client_Phone_No__c))'
+            + '\n  CORRECT: if (String.isNotBlank(record.Client_Phone_No__c)) {'
+            + '\n               Pattern p = Pattern.compile(\'^[+]?[0-9]{10,15}$\');'
+            + '\n               Matcher m = p.matcher(record.Client_Phone_No__c);'
+            + '\n               if (!m.matches()) { record.addError(\'...\'); }'
+            + '\n           }'
+
+            // ── APEX CREATE / UPDATE / DELETE ──────────────────────────
+            + '\n\n-- CREATE A NEW CLASS --'
+            + '\nGenerate four files[] entries:'
+            + '\n  ApexClass     classes/MyClass.cls              (the source code)'
+            + '\n  ApexClassMeta classes/MyClass.cls-meta.xml     (the meta file)'
+            + '\nPlus for the handler class (if it is a trigger scenario):'
+            + '\n  ApexClass     classes/MyHandler.cls'
+            + '\n  ApexClassMeta classes/MyHandler.cls-meta.xml'
+            + '\n'
+            + '\n-- UPDATE AN EXISTING CLASS --'
+            + '\n1. Read the full existing body from orgState.existingClass.body or orgState.existingHandlerClass.body'
+            + '\n2. Add the new method(s) or change requested by the ticket'
+            + '\n3. Output the COMPLETE class — ALL existing methods preserved, new method appended'
+            + '\n4. Emit ApexClass + ApexClassMeta file entries (both files must be present)'
+            + '\n5. NEVER emit only the new snippet — always emit the full class body'
+            + '\n'
+            + '\n-- DELETE A CLASS OR TRIGGER --'
+            + '\nUse destructiveFiles shorthand (Apex builds destructiveChangesPost.xml):'
+            + '\n  { "metadataType": "ApexClass",   "member": "MyClassName"   }'
+            + '\n  { "metadataType": "ApexTrigger",  "member": "MyTriggerName" }'
+            + '\nDo NOT generate any files[] entries for a delete.'
+            + '\nFor a trigger delete: also consider whether to delete the companion handler class.'
+            + '\n'
+            + '\n-- DEPLOYMENT PLAN FOR APEX --'
+            + '\nApex-only deploys always use scenario = \"single\".'
+            + '\nApex files do not depend on each other in a way that requires chaining.'
+            + '\nIf the ticket also creates a new custom object, follow the normal chained plan'
+            + '\n(object in ZIP1, layout in ZIP2) — but Apex files always go into ZIP1.'
+
+            +'\n\n-- CRITICAL — APEX FILE CONTENT RULE --'
+            + '\n- .cls files MUST contain Apex source code ONLY — never XML'
+            + '\n- .trigger files MUST contain Apex source code ONLY — never XML'
+            + '\n- -meta.xml files MUST contain XML ONLY — never Apex code'
+            + '\n- A trigger MUST NOT have a companion .cls file in classes/'
+
+            + '\n\n-- CORRECT 4-FILE PATTERN FOR TRIGGER + HANDLER --'
+            + '\n  classes/LeadHandler.cls              ← Apex CLASS source (public class LeadHandler {...})'
+            + '\n  classes/LeadHandler.cls-meta.xml     ← XML meta only'
+            + '\n  triggers/LeadTrigger.trigger         ← Apex TRIGGER source (trigger LeadTrigger on Lead...)'
+            + '\n  triggers/LeadTrigger.trigger-meta.xml ← XML meta only'
+
+            + '\n\n-- NEVER PUT <?xml INTO A .cls OR .trigger FILE --'
+            + '\n-- NEVER CREATE classes/XxxTrigger.cls FOR A TRIGGER NAMED XxxTrigger --'
 
             // ── DEPLOYMENT PLAN ────────────────────────────────────────
             + '\n\n== DEPLOYMENT PLAN =='
