@@ -131,10 +131,16 @@ public with sharing class ErrorLogger {
     }
 
     private static void persist(Error_Log__c rec) {
+        // During Jira execution we defer logger DML so callouts can run first.
+        if (FunctionHelper.deferErrorLogDml) {
+            FunctionHelper.recordsToInsert.add(rec);
+            return;
+        }
+
         Database.SaveResult sr = Database.insert(rec, false);
         if (!sr.isSuccess()) {
             System.debug(LoggingLevel.ERROR,
-                'ErrorLogger: insert failed — ' + sr.getErrors());
+                'ErrorLogger: insert failed - ' + sr.getErrors());
         }
     }
 

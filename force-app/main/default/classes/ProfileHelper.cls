@@ -73,11 +73,8 @@ public class ProfileHelper {
     // Used both for reading existing profiles and for cloning.
     // ─────────────────────────────────────────────────────────────
     private static String buildBaseProfileXml(MetadataService.Profile profile, String newFullName, String newLabel) {
-        String fullName = String.isNotBlank(newFullName) ? newFullName : profile.fullName;
-
         String xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
-            + '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n'
-            + '    <fullName>' + escapeXml(fullName) + '</fullName>\n';
+            + '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n';
 
         // Preserve custom flag
         if (profile.custom != null) {
@@ -87,6 +84,17 @@ public class ProfileHelper {
         // Preserve user license — critical for profile to be valid
         if (String.isNotBlank(profile.userLicense)) {
             xml += '    <userLicense>' + escapeXml(profile.userLicense) + '</userLicense>\n';
+        }
+
+        // Preserve user permissions early to keep Profile element ordering valid.
+        if (profile.userPermissions != null) {
+            for (MetadataService.ProfileUserPermission up : profile.userPermissions) {
+                Boolean upEnabled = up.enabled != null ? up.enabled : false;
+                xml += '    <userPermissions>\n'
+                    + '        <enabled>' + upEnabled  + '</enabled>\n'
+                    + '        <name>'    + up.name    + '</name>\n'
+                    + '    </userPermissions>\n';
+            }
         }
 
         // Preserve object permissions
@@ -122,17 +130,6 @@ public class ProfileHelper {
                     + '        <field>'     + fp.field    + '</field>\n'
                     + '        <readable>'  + fpReadable  + '</readable>\n'
                     + '    </fieldPermissions>\n';
-            }
-        }
-
-        // Preserve user permissions (system-level: ApiEnabled, RunReports, etc.)
-        if (profile.userPermissions != null) {
-            for (MetadataService.ProfileUserPermission up : profile.userPermissions) {
-                Boolean upEnabled = up.enabled != null ? up.enabled : false;
-                xml += '    <userPermissions>\n'
-                    + '        <enabled>' + upEnabled  + '</enabled>\n'
-                    + '        <name>'    + up.name    + '</name>\n'
-                    + '    </userPermissions>\n';
             }
         }
 

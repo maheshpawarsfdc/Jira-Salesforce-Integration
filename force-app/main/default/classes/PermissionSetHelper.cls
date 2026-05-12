@@ -205,63 +205,86 @@ public class PermissionSetHelper {
         if (String.isBlank(xml)) return xml;
         if (!xml.contains('<objectPermissions>')) return xml;
 
-        // Strategy: extract ALL <objectPermissions> blocks out of the string,
-        // merge any duplicates by OR-ing boolean flags, then reinsert the unique
-        // set just before </PermissionSet>.  Avoids any position-arithmetic on a
-        // shifting string — far simpler and more robust than in-place replacement.
+        // Strategy: keep the first block for each object in place, merge later
+        // duplicate blocks into it (OR boolean flags), and remove only duplicates.
+        // This preserves XML element ordering required by PermissionSet metadata.
+        List<Integer> starts = new List<Integer>();
+        List<Integer> ends = new List<Integer>();
+        List<String> blocks = new List<String>();
+        List<String> objectNames = new List<String>();
 
-        List<String> extracted = new List<String>();
-        String stripped = xml;
-
-        while (stripped.contains('<objectPermissions>')) {
-            Integer bs = stripped.indexOf('<objectPermissions>');
-            Integer be = stripped.indexOf('</objectPermissions>', bs);
-            if (bs < 0 || be < 0) break;
+        Integer cursor = 0;
+        while (true) {
+            Integer bs = xml.indexOf('<objectPermissions>', cursor);
+            if (bs < 0) break;
+            Integer be = xml.indexOf('</objectPermissions>', bs);
+            if (be < 0) break;
             be += '</objectPermissions>'.length();
-            extracted.add(stripped.substring(bs, be));
-            stripped = stripped.substring(0, bs) + stripped.substring(be);
-        }
 
-        if (extracted.isEmpty()) return xml;
-
-        Map<String, String> mergedBlocks = new Map<String, String>();
-        List<String> objectOrder = new List<String>();
-
-        for (String block : extracted) {
+            String block = xml.substring(bs, be);
             Integer os = block.indexOf('<object>');
             Integer oe = block.indexOf('</object>');
             String objName = (os >= 0 && oe > os)
-                ? block.substring(os + '<object>'.length(), oe).trim() : block;
+                ? block.substring(os + '<object>'.length(), oe).trim()
+                : block;
 
-            if (!mergedBlocks.containsKey(objName)) {
-                mergedBlocks.put(objName, block);
-                objectOrder.add(objName);
-            } else {
-                String merged = mergedBlocks.get(objName);
-                for (String perm : new List<String>{
-                    'allowRead','allowCreate','allowEdit','allowDelete',
-                    'viewAllRecords','modifyAllRecords' }) {
-                    if (block.contains('<' + perm + '>true</' + perm + '>')
-                        && merged.contains('<' + perm + '>false</' + perm + '>')) {
-                        merged = merged.replace(
-                            '<' + perm + '>false</' + perm + '>',
-                            '<' + perm + '>true</' + perm + '>');
-                    }
-                }
-                mergedBlocks.put(objName, merged);
+            starts.add(bs);
+            ends.add(be);
+            blocks.add(block);
+            objectNames.add(objName);
+            cursor = be;
+        }
+
+        if (blocks.isEmpty()) return xml;
+
+        Map<String, Integer> firstIndexByObject = new Map<String, Integer>();
+        Set<Integer> duplicateIdx = new Set<Integer>();
+
+        for (Integer i = 0; i < blocks.size(); i++) {
+            String obj = objectNames[i];
+            if (!firstIndexByObject.containsKey(obj)) {
+                firstIndexByObject.put(obj, i);
+                continue;
             }
+
+            Integer firstIdx = firstIndexByObject.get(obj);
+            String merged = blocks[firstIdx];
+            String dup = blocks[i];
+
+            for (String perm : new List<String>{
+                'allowRead','allowCreate','allowEdit','allowDelete',
+                'viewAllRecords','modifyAllRecords'
+            }) {
+                if (dup.contains('<' + perm + '>true</' + perm + '>')
+                    && merged.contains('<' + perm + '>false</' + perm + '>')) {
+                    merged = merged.replace(
+                        '<' + perm + '>false</' + perm + '>',
+                        '<' + perm + '>true</' + perm + '>'
+                    );
+                }
+            }
+            blocks[firstIdx] = merged;
+            duplicateIdx.add(i);
         }
 
-        if (mergedBlocks.size() == extracted.size()) return xml;
+        if (duplicateIdx.isEmpty()) return xml;
 
-        String blocksXml = '';
-        for (String objName : objectOrder) {
-            blocksXml += mergedBlocks.get(objName);
+        String result = '';
+        Integer pos = 0;
+        for (Integer i = 0; i < blocks.size(); i++) {
+            result += xml.substring(pos, starts[i]);
+            if (duplicateIdx.contains(i)) {
+                // Remove duplicate block.
+            } else {
+                result += blocks[i];
+            }
+            pos = ends[i];
         }
+        result += xml.substring(pos);
 
-        String result = stripped.replace('</PermissionSet>', blocksXml + '</PermissionSet>');
         System.debug('PermissionSetHelper.deduplicateObjectPermissions(): '
-            + extracted.size() + ' blocks → ' + mergedBlocks.size() + ' unique object(s)');
+            + blocks.size() + ' blocks -> ' + (blocks.size() - duplicateIdx.size())
+            + ' unique object(s)');
         return result;
     }
 
@@ -308,7 +331,9 @@ public class PermissionSetHelper {
             updatedXml = injectParentReadAccess(updatedXml, objectName, new Set<String>());
         }
 
-        return updatedXml;
+        // Parent injection can add extra objectPermission blocks in edge cases.
+        // Run a final in-place dedup pass to keep metadata deploy-safe.
+        return deduplicateObjectPermissions(updatedXml);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -478,7 +503,7 @@ public class PermissionSetHelper {
                     parentBlock += '        <object>' + parentName + '</object>';
                     parentBlock += '        <viewAllRecords>false</viewAllRecords>';
                     parentBlock += '    </objectPermissions>';
-                    xml = xml.replace('</PermissionSet>', parentBlock + '</PermissionSet>');
+                    xml = insertObjectPermissionsBlock(xml, parentBlock);
                 } else {
                     xml = ensureObjectReadPermission(xml, parentName);
                 }
@@ -523,7 +548,27 @@ public class PermissionSetHelper {
         parentBlock += '        <object>' + objectName + '</object>';
         parentBlock += '        <viewAllRecords>false</viewAllRecords>';
         parentBlock += '    </objectPermissions>';
-        return xml.replace('</PermissionSet>', parentBlock + '</PermissionSet>');
+        return insertObjectPermissionsBlock(xml, parentBlock);
+    }
+
+    // Insert new objectPermissions in a schema-safe location:
+    // 1) after the last existing objectPermissions block when present
+    // 2) otherwise right after <label> when present
+    // 3) otherwise before </PermissionSet> as fallback
+    private static String insertObjectPermissionsBlock(String xml, String block) {
+        Integer posLastObjPermClose = xml.lastIndexOf('</objectPermissions>');
+        if (posLastObjPermClose >= 0) {
+            Integer insertAt = posLastObjPermClose + '</objectPermissions>'.length();
+            return xml.substring(0, insertAt) + block + xml.substring(insertAt);
+        }
+
+        Integer posLabelClose = xml.indexOf('</label>');
+        if (posLabelClose >= 0) {
+            Integer insertAt = posLabelClose + '</label>'.length();
+            return xml.substring(0, insertAt) + block + xml.substring(insertAt);
+        }
+
+        return xml.replace('</PermissionSet>', block + '</PermissionSet>');
     }
 
     private static String escapeXml(String val) {

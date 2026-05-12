@@ -36,8 +36,15 @@ public class LLMService {
     // ─────────────────────────────────────────────────────────────
     public static String processJiraTicket(String issueKey, String summary, String description) {
 
+        // Hard reset per ticket to prevent stale metadata from any previous run
+        // (especially after failed/aborted flows) from leaking into this request.
+        pendingZip2DataJson = null;
+        ZipBuilder.clear();
+        FunctionHelper.clearQueues();
+
         // Ambient ticket context so any ErrorLogger.log() in deep helpers tags this key.
         ErrorLogger.currentJiraKey = issueKey;
+        FunctionHelper.deferErrorLogDml = true;
 
         System.debug('JIRA AI ASSISTANT — NEW REQUEST');
         System.debug('► Issue Key  : ' + issueKey);
@@ -65,6 +72,7 @@ public class LLMService {
     // Flush DML first — enqueue follows immediately, no callout after
     if (ZipBuilder.hasFiles()) {
         flushDmlQueues();
+        FunctionHelper.deferErrorLogDml = false;
         System.debug('LLMService: ZipBuilder has files, enqueueing deploy...');
         System.enqueueJob(new ZipDeployQueueable(issueKey, pendingZip2DataJson));
         pendingZip2DataJson = null;
@@ -102,7 +110,7 @@ public class LLMService {
 
     // DML flush comes AFTER the callout — safe now
     flushDmlQueues();
-
+    FunctionHelper.deferErrorLogDml = false;
     FunctionHelper.hadError = false;
 
         // ── FINAL SUMMARY ─────────────────────────────────────────
@@ -1186,6 +1194,26 @@ public class LLMService {
                     xmlContent = sanitizeLayoutXml(xmlContent);
                 }
 
+                // Strip non-en_US <labels> blocks from CustomLabels XML and auto-redirect
+                // them to translations/{language}.translation so a translation-only ticket
+                // never causes "Duplicate name" errors from the Metadata API.
+                if (metadataType == 'CustomLabel' || metadataType == 'CustomLabels') {
+                    xmlContent = sanitizeCustomLabelsXml(xmlContent);
+                }
+
+                // Normalize language codes for Translations files (fr_FR -> fr, de_DE -> de).
+                // Salesforce rejects locale variants like fr_FR with
+                // "bad value for restricted picklist field".
+                if (metadataType == 'Translations' && String.isNotBlank(memberName)) {
+                    String normalizedLang = normalizeTranslationLanguageCode(memberName);
+                    if (normalizedLang != memberName) {
+                        System.debug('[DEPLOY-TRACE] Translations: normalizing lang ['
+                            + memberName + '] -> [' + normalizedLang + ']');
+                        filePath   = 'translations/' + normalizedLang + '.translation';
+                        memberName = normalizedLang;
+                    }
+                }
+
                 // ── Skip CustomTab for standard objects ───────────────────
                 // Standard objects (Account, Case etc.) have built-in tabs.
                 // Generating a CustomTab for them causes:
@@ -1216,6 +1244,8 @@ public class LLMService {
                 // Standard objects (Account, Case etc.) have no CustomTab —
                 // referencing them causes: "no CustomTab named X found".
                 if (metadataType == 'Profile') {
+                    // cloneFrom is not a valid child in deployable Profile XML.
+                    xmlContent = sanitizeProfileXml(xmlContent);
                     xmlContent = sanitizeProfileStandardObjectTabs(xmlContent);
                     // Fix bare layout names: "Account Layout" -> "Account-Account Layout"
                     xmlContent = sanitizeProfileLayoutAssignments(xmlContent);
@@ -2851,6 +2881,114 @@ public class LLMService {
         return cleaned;
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // NORMALIZE TRANSLATION LANGUAGE CODE
+    // Salesforce Translations metadata accepts base language codes
+    // (fr, de, ja, es) not locale variants (fr_FR, de_DE).
+    // A small set of compound codes IS valid (pt_BR, zh_CN etc.).
+    // Strip the country suffix from all others.
+    // ─────────────────────────────────────────────────────────────
+    private static String normalizeTranslationLanguageCode(String lang) {
+        if (String.isBlank(lang)) return lang;
+        if (!lang.contains('_')) return lang;
+        Set<String> validCompound = new Set<String>{
+            'pt_BR', 'zh_CN', 'zh_TW', 'en_US', 'en_GB',
+            'nl_BE', 'fr_CA', 'nb_NO', 'en_AU', 'en_IN'
+        };
+        if (validCompound.contains(lang)) return lang;
+        return lang.substringBefore('_');
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SANITIZE CUSTOM LABELS XML
+    // Strips any <labels> block whose <language> is not en_US from
+    // the CustomLabels file. Non-English entries are auto-redirected
+    // to the correct translations/{language}.translation file via
+    // ZipBuilder so the translation is still deployed — just in the
+    // right place.  Duplicate en_US entries are simply discarded.
+    // ─────────────────────────────────────────────────────────────
+    private static String sanitizeCustomLabelsXml(String xml) {
+        if (String.isBlank(xml)) return xml;
+        if (!xml.contains('<labels>')) return xml;
+
+        Set<String> seenFullNames = new Set<String>();
+        String sanitized = xml;
+        Integer redirected = 0;
+        Integer dropped    = 0;
+        Integer searchFrom = 0;
+        Integer safety     = 200;
+
+        while (safety-- > 0) {
+            Integer blockStart = sanitized.indexOf('<labels>', searchFrom);
+            if (blockStart == -1) break;
+            Integer blockEnd = sanitized.indexOf('</labels>', blockStart);
+            if (blockEnd == -1) break;
+            blockEnd += '</labels>'.length();
+
+            String block = sanitized.substring(blockStart, blockEnd);
+
+            Integer fnStart  = block.indexOf('<fullName>') + '<fullName>'.length();
+            Integer fnEnd    = block.indexOf('</fullName>');
+            String fullName  = (fnStart >= '<fullName>'.length() && fnEnd >= 0)
+                               ? block.substring(fnStart, fnEnd).trim() : '';
+
+            Integer lStart   = block.indexOf('<language>') + '<language>'.length();
+            Integer lEnd     = block.indexOf('</language>');
+            String language  = (lStart >= '<language>'.length() && lEnd >= 0)
+                               ? block.substring(lStart, lEnd).trim() : 'en_US';
+
+            Integer vStart   = block.indexOf('<value>') + '<value>'.length();
+            Integer vEnd     = block.indexOf('</value>');
+            String value     = (vStart >= '<value>'.length() && vEnd >= 0)
+                               ? block.substring(vStart, vEnd).trim() : '';
+
+            Boolean isEnglish   = (language == 'en_US' || language == 'en');
+            Boolean isDuplicate = seenFullNames.contains(fullName);
+
+            if (!isEnglish && String.isNotBlank(fullName) && String.isNotBlank(value)) {
+                String normalizedLang = normalizeTranslationLanguageCode(language);
+                String tFilePath = 'translations/' + normalizedLang + '.translation';
+                String existing  = ZipBuilder.files.get(tFilePath);
+                String tXml;
+                if (String.isNotBlank(existing)) {
+                    tXml = existing.replace('</Translations>',
+                        '    <customLabels>\n        <label>' + value
+                        + '</label>\n        <name>' + fullName
+                        + '</name>\n    </customLabels>\n</Translations>');
+                } else {
+                    tXml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+                        + '<Translations xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+                        + '    <customLabels>\n'
+                        + '        <label>' + value + '</label>\n'
+                        + '        <name>' + fullName + '</name>\n'
+                        + '    </customLabels>\n'
+                        + '</Translations>';
+                }
+                ZipBuilder.addFile('Translations', normalizedLang, tFilePath, tXml);
+                System.debug('[SANITIZE] sanitizeCustomLabelsXml: redirected label ['
+                    + fullName + '] lang=[' + language + '] -> ' + tFilePath);
+                redirected++;
+                sanitized = sanitized.substring(0, blockStart) + sanitized.substring(blockEnd);
+                // searchFrom stays at blockStart — block was removed, next block now starts there
+            } else if (isDuplicate) {
+                System.debug('[SANITIZE] sanitizeCustomLabelsXml: dropped duplicate label ['
+                    + fullName + '] lang=[' + language + ']');
+                dropped++;
+                sanitized = sanitized.substring(0, blockStart) + sanitized.substring(blockEnd);
+                // searchFrom stays at blockStart
+            } else {
+                if (String.isNotBlank(fullName)) seenFullNames.add(fullName);
+                searchFrom = blockEnd; // advance past this valid block
+            }
+        }
+
+        if (redirected > 0 || dropped > 0) {
+            System.debug('[SANITIZE] sanitizeCustomLabelsXml: redirected=' + redirected
+                + ' dropped=' + dropped + ' seenNames=' + seenFullNames);
+        }
+        return sanitized;
+    }
+
     private static String sanitizeApexRegex(String apexCode) {
         if (String.isBlank(apexCode)) return apexCode;
 
@@ -2950,9 +3088,26 @@ public class LLMService {
                 new List<String>{ '<fullName>', '<active>', '<errorConditionFormula>', '<errorMessage>' });
         }
 
-        if (metadataType == 'CustomLabel') {
-            return validateRequiredElements(xmlContent,
+        if (metadataType == 'CustomLabel' || metadataType == 'CustomLabels') {
+            String baseError = validateRequiredElements(xmlContent,
                 new List<String>{ '<fullName>', '<value>' });
+            if (String.isNotBlank(baseError)) return baseError;
+            Set<String> seenNames = new Set<String>();
+            Integer searchFrom = 0;
+            while (true) {
+                Integer fnStart = xmlContent.indexOf('<fullName>', searchFrom);
+                if (fnStart == -1) break;
+                Integer fnEnd = xmlContent.indexOf('</fullName>', fnStart);
+                if (fnEnd == -1) break;
+                String labelName = xmlContent.substring(fnStart + '<fullName>'.length(), fnEnd).trim();
+                if (seenNames.contains(labelName)) {
+                    return 'Duplicate <fullName> "' + labelName + '" found in CustomLabels XML — each label must appear only once. '
+                        + 'For translations use translations/{language}.translation instead.';
+                }
+                seenNames.add(labelName);
+                searchFrom = fnEnd + '</fullName>'.length();
+            }
+            return null;
         }
 
         if (metadataType == 'NamedCredential') {
@@ -3150,6 +3305,16 @@ public class LLMService {
                 + toRemove.size() + ' standard-object tabVisibilities block(s)');
         }
         return xml;
+    }
+
+    // Remove unsupported Profile elements that LLM may emit.
+    // Example: <cloneFrom> is not valid in Profile metadata source format.
+    private static String sanitizeProfileXml(String xml) {
+        if (String.isBlank(xml)) return xml;
+        if (!xml.contains('<cloneFrom>')) return xml;
+        String cleaned = xml.replaceAll('(?s)\\s*<cloneFrom>.*?</cloneFrom>', '');
+        System.debug('[DEPLOY-TRACE] sanitizeProfileXml: removed unsupported <cloneFrom> element');
+        return cleaned;
     }
 
     // ── FIX: AUTO-INJECT <businessProcess> FOR PROCESS-DRIVEN OBJECTS ─────────
@@ -4177,6 +4342,9 @@ public class LLMService {
             + '\n- For DELETING a label, use destructiveFiles with type CustomLabel and member = label API name'
             + '\n- For UPDATING a label, generate the full <labels> block with all values'
             + '\n  (use existing values from org state for fields not being changed)'
+            + '\n- For TRANSLATING a label (adding a translation in another language), do NOT emit a CustomLabel file at all'
+            + '\n  Translations go ONLY in translations/{language}.translation — never in labels/CustomLabels.labels'
+            + '\n- NEVER include the same <fullName> more than once inside a single CustomLabels file — Salesforce will reject with "Duplicate name" error'
 
             // ── NAMED CREDENTIAL XML ───────────────────────────────────
             + '\n\n== NAMED CREDENTIAL XML FORMAT =='
@@ -4304,7 +4472,9 @@ public class LLMService {
             + '\n-- TYPE 1: Custom Label Translation --'
             + '\nFile path: translations/{language}.translation'
             + '\nmetadataType: Translations'
-            + '\nmemberName: {language} (e.g. fr, de, ja)'
+            + '\nmemberName: {language} — MUST be the base language code ONLY (e.g. fr, de, ja, es, it, nl)'
+            + '\nCRITICAL: NEVER use locale variants like fr_FR, de_DE, es_ES — Salesforce rejects them with "bad value for restricted picklist field"'
+            + '\nValid examples: fr (not fr_FR), de (not de_DE), es (not es_ES), pt_BR (this compound code IS valid)'
             + '\n<?xml version="1.0" encoding="UTF-8"?>'
             + '\n<Translations xmlns="http://soap.sforce.com/2006/04/metadata">'
             + '\n    <customLabels>'

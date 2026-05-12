@@ -96,6 +96,9 @@ global class JiraInboundController {
                 }
             }
         } finally {
+            // Persist any deferred ErrorLogger / queued DML after all callouts are done.
+            FunctionHelper.flushNonMetadataDmlQueues();
+            FunctionHelper.deferErrorLogDml = false;
             // Clear attachments for next request
             StaticResourceHelper.currentAttachments.clear();
             ErrorLogger.currentJiraKey = null;
