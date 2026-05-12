@@ -12,11 +12,6 @@
  * Files come from Jira ticket attachments.
  * currentAttachments is populated by JiraInboundController
  * before LLMService runs.
- *
- * ── TOOL MAPPING ──────────────────────────────────────────────
- *   static_resource_list   → listStaticResources()
- *   static_resource_deploy → deployStaticResource()   (create + update)
- *   static_resource_delete → deleteStaticResource()
  */
 public class StaticResourceHelper {
 
@@ -30,29 +25,6 @@ public class StaticResourceHelper {
     // ─────────────────────────────────────────────────────────────
     public static Map<String, Map<String, String>> currentAttachments
         = new Map<String, Map<String, String>>();
-
-    // ─────────────────────────────────────────────────────────────
-    // LIST
-    // Returns all attachments available on the current Jira ticket.
-    // The LLM calls this first to see what files are available
-    // before deciding which one to deploy.
-    // ─────────────────────────────────────────────────────────────
-    public static List<Map<String, Object>> listStaticResources(Map<String, Object> args) {
-        System.debug('StaticResourceHelper.listStaticResources() called');
-
-        List<Map<String, Object>> result = new List<Map<String, Object>>();
-
-        for (String fileName : currentAttachments.keySet()) {
-            Map<String, String> att = currentAttachments.get(fileName);
-            result.add(new Map<String, Object>{
-                'fileName' => fileName,
-                'mimeType' => att.get('mimeType')
-            });
-        }
-
-        System.debug('StaticResourceHelper.listStaticResources(): ' + result.size() + ' attachment(s) available');
-        return result;
-    }
 
     // ─────────────────────────────────────────────────────────────
     // DEPLOY (create or update)

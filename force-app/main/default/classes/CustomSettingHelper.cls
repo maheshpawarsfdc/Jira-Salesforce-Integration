@@ -40,52 +40,6 @@ public class CustomSettingHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // LIST
-    // Uses Schema.getGlobalDescribe() to find all custom settings
-    // Tooling API CustomObject doesn't support IsCustomSetting field
-    // ─────────────────────────────────────────────────────────────
-    public static List<Map<String, Object>> listCustomSettings(Map<String, Object> args) {
-        System.debug('CustomSettingHelper.listCustomSettings() called');
-
-        Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
-        List<Map<String, Object>> result = new List<Map<String, Object>>();
-
-        for (String objName : globalDescribe.keySet()) {
-            Schema.DescribeSObjectResult describe = globalDescribe.get(objName).getDescribe();
-            
-            // Check if it's a custom setting
-            if (describe.isCustomSetting()) {
-                String apiName = describe.getName();
-                String label = describe.getLabel();
-                
-                // Determine type by reading from Metadata API
-                String settingType = 'Hierarchy'; // Default
-                try {
-                    MetadataService.IReadResult readResult = port.readMetadata('CustomObject', new List<String>{ apiName });
-                    if (readResult != null && readResult.getRecords() != null && !readResult.getRecords().isEmpty()) {
-                        MetadataService.CustomObject obj = (MetadataService.CustomObject) readResult.getRecords()[0];
-                        if (obj != null && String.isNotBlank(obj.customSettingsType)) {
-                            settingType = obj.customSettingsType;
-                        }
-                    }
-                } catch (Exception e) {
-                    System.debug('Could not read setting type for ' + apiName + ': ' + e.getMessage());
-                }
-                
-                result.add(new Map<String, Object>{
-                    'apiName'     => apiName,
-                    'label'       => label,
-                    'description' => null, // Not easily available
-                    'type'        => settingType
-                });
-            }
-        }
-
-        System.debug('CustomSettingHelper.listCustomSettings(): found ' + result.size());
-        return result;
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // CREATE SETTING
     // ─────────────────────────────────────────────────────────────
     public static void createCustomSetting(Map<String, Object> args) {
@@ -147,83 +101,6 @@ public class CustomSettingHelper {
 
         ZipBuilder.addFile('CustomObject', apiName, filePath, xml);
         System.debug('CustomSettingHelper.addFieldToCustomSetting(): [' + apiName + '.' + fieldName + '] queued');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // UPDATE FIELD
-    // Reads all existing fields, replaces the target field
-    // ─────────────────────────────────────────────────────────────
-    public static void updateCustomSettingField(Map<String, Object> args) {
-        String apiName   = getRequired(args, 'apiName');
-        String fieldName = getRequired(args, 'fieldName');
-
-        if (!apiName.endsWith('__c'))   apiName   += '__c';
-        if (!fieldName.endsWith('__c')) fieldName += '__c';
-
-        System.debug('CustomSettingHelper.updateCustomSettingField(): ' + apiName + '.' + fieldName);
-
-        Map<String, Object> settingMeta    = readSettingMetadata(apiName);
-        Map<String, Object> existingField  = readSingleField(apiName, fieldName);
-        List<String>        allFieldBlocks = readExistingFieldBlocks(apiName);
-
-        String newLabel = getOptional(args, 'fieldLabel', (String) existingField.get('label'));
-        String newType  = getOptional(args, 'fieldType',  (String) existingField.get('type'));
-
-        Map<String, Object> mergedArgs = new Map<String, Object>(args);
-        if (!mergedArgs.containsKey('fieldLabel')) mergedArgs.put('fieldLabel', newLabel);
-        if (!mergedArgs.containsKey('fieldType'))  mergedArgs.put('fieldType',  newType);
-
-        String updatedBlock = buildFieldBlock(fieldName, newLabel, newType, mergedArgs);
-
-        List<String> updatedBlocks = new List<String>();
-        for (String block : allFieldBlocks) {
-            if (block.contains('<fullName>' + fieldName + '</fullName>')) {
-                updatedBlocks.add(updatedBlock);
-            } else {
-                updatedBlocks.add(block);
-            }
-        }
-
-        String xml = buildSettingXml(
-            apiName,
-            (String) settingMeta.get('label'),
-            (String) settingMeta.get('type'),
-            (String) settingMeta.get('description'),
-            updatedBlocks
-        );
-
-        String filePath = 'objects/' + apiName + '.object';
-        ZipBuilder.addFile('CustomObject', apiName, filePath, xml);
-        System.debug('CustomSettingHelper.updateCustomSettingField(): [' + apiName + '.' + fieldName + '] queued');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // DELETE FIELD
-    // ─────────────────────────────────────────────────────────────
-    public static void deleteCustomSettingField(Map<String, Object> args) {
-        String apiName   = getRequired(args, 'apiName');
-        String fieldName = getRequired(args, 'fieldName');
-
-        if (!apiName.endsWith('__c'))   apiName   += '__c';
-        if (!fieldName.endsWith('__c')) fieldName += '__c';
-
-        System.debug('CustomSettingHelper.deleteCustomSettingField(): ' + apiName + '.' + fieldName);
-
-        String member = apiName + '.' + fieldName;
-        addDestructiveXml('CustomField', member);
-        System.debug('CustomSettingHelper.deleteCustomSettingField(): queued destructive deploy');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // DELETE SETTING
-    // ─────────────────────────────────────────────────────────────
-    public static void deleteCustomSetting(Map<String, Object> args) {
-        String apiName = getRequired(args, 'apiName');
-        if (!apiName.endsWith('__c')) apiName += '__c';
-
-        System.debug('CustomSettingHelper.deleteCustomSetting(): ' + apiName);
-        addDestructiveXml('CustomObject', apiName);
-        System.debug('CustomSettingHelper.deleteCustomSetting(): queued destructive deploy');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -295,37 +172,6 @@ public class CustomSettingHelper {
         }
 
         return blocks;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Read a single field's metadata
-    // ─────────────────────────────────────────────────────────────
-    private static Map<String, Object> readSingleField(String apiName, String fieldName) {
-        // Use the static initialized port
-        MetadataService.IReadResult readResult = port.readMetadata('CustomObject', new List<String>{ apiName });
-
-        if (readResult == null) {
-            throw new CustomSettingException('Custom Setting not found: ' + apiName);
-        }
-
-        MetadataService.Metadata[] records = readResult.getRecords();
-        if (records == null || records.isEmpty() || records[0] == null) {
-            throw new CustomSettingException('Custom Setting not found: ' + apiName);
-        }
-
-        MetadataService.CustomObject obj = (MetadataService.CustomObject) records[0];
-        if (obj.fields != null) {
-            for (MetadataService.CustomField f : obj.fields) {
-                if (f != null && f.fullName == fieldName) {
-                    return new Map<String, Object>{
-                        'label' => f.label  != null ? f.label  : fieldName,
-                        'type'  => f.type_x != null ? f.type_x : 'Text'
-                    };
-                }
-            }
-        }
-
-        throw new CustomSettingException('Field not found: ' + apiName + '.' + fieldName);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -445,35 +291,6 @@ public class CustomSettingHelper {
 
         return xml;
     }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Destructive XML
-    // ─────────────────────────────────────────────────────────────
-    private static void addDestructiveXml(String metaType, String member) {
-        String existing = ZipBuilder.files.get('destructiveChangesPost.xml');
-        String xml;
-
-        String typeTag = '<name>' + metaType + '</name>';
-
-        if (existing != null && existing.contains(typeTag)) {
-            xml = existing.replace(typeTag, '<members>' + member + '</members>' + typeTag);
-        } else if (existing != null) {
-            xml = existing.replace('</Package>',
-                '<types><members>' + member + '</members><name>' + metaType + '</name></types></Package>');
-        } else {
-            xml = '<?xml version="1.0" encoding="UTF-8"?>'
-                + '<Package xmlns="' + NAMESPACE + '">'
-                + '<types>'
-                + '<members>' + member + '</members>'
-                + '<name>' + metaType + '</name>'
-                + '</types>'
-                + '<version>61.0</version>'
-                + '</Package>';
-        }
-
-        ZipBuilder.addFile('__destructive__', member, 'destructiveChangesPost.xml', xml);
-    }
-
 
     // ─────────────────────────────────────────────────────────────
     // PRIVATE — Helpers

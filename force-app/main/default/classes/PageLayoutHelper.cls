@@ -59,7 +59,11 @@ public class PageLayoutHelper {
             tableEnumOrIdFilter = objectApiName;
         }
 
-        String query = 'SELECT Id, FullName, TableEnumOrId FROM Layout '
+        // NOTE: FullName is a synthetic Tooling API field that triggers a
+        // "no more than one row for retrieval" restriction when multiple layouts
+        // exist. Use Name (the plain layout label) instead and reconstruct
+        // fullName as objectApiName + '-' + name, which is always correct.
+        String query = 'SELECT Id, Name FROM Layout '
             + 'WHERE TableEnumOrId = \'' + String.escapeSingleQuotes(tableEnumOrIdFilter) + '\'';
 
         Map<String, Object> response = toolingQuery(query);
@@ -69,9 +73,8 @@ public class PageLayoutHelper {
         if (records != null) {
             for (Object rec : records) {
                 Map<String, Object> r = (Map<String, Object>) rec;
-                String fullName   = (String) r.get('FullName');
-                String layoutName = fullName != null && fullName.contains('-')
-                    ? fullName.substringAfter('-') : fullName;
+                String layoutName = (String) r.get('Name');
+                String fullName   = objectApiName + '-' + layoutName;
                 result.add(new Map<String, Object>{
                     'id'         => r.get('Id'),
                     'fullName'   => fullName,
@@ -84,34 +87,6 @@ public class PageLayoutHelper {
         System.debug('PageLayoutHelper.listPageLayouts(): found ' + result.size()
             + ' for object [' + objectApiName + ']');
         return result;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // CREATE LAYOUT FROM SCRATCH
-    // sections: JSON array of {label, fields[]}
-    // e.g. [{"label":"Basic Info","fields":["Name","Price__c"]}]
-    // If blank → two default sections created
-    // Required fields always prepended to first section
-    // ─────────────────────────────────────────────────────────────
-    public static void createPageLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
-        String sectionsJson  = getOptional(args, 'sections', '');
-
-        String fullName = objectApiName + '-' + layoutName;
-        System.debug('PageLayoutHelper.createPageLayout(): ' + fullName);
-
-        Set<String> requiredFields = getRequiredFields(objectApiName);
-
-        Metadata.Layout layout = new Metadata.Layout();
-        layout.fullName        = fullName;
-        layout.layoutSections  = buildLayoutSections(sectionsJson, requiredFields);
-
-        String xml      = serializeLayoutToXml(layout);
-        String filePath = 'layouts/' + fullName + '.layout';
-        ZipBuilder.addFile('Layout', fullName, filePath, xml);
-
-        System.debug('PageLayoutHelper: layout [' + fullName + '] staged for deploy');
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -146,77 +121,6 @@ public class PageLayoutHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // REMOVE FIELDS FROM EXISTING LAYOUT
-    // ─────────────────────────────────────────────────────────────
-    public static void removeFieldsFromLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
-        String fieldsJson    = getRequired(args, 'fields');
-
-        String fullName      = objectApiName + '-' + layoutName;
-        Set<String> toRemove = new Set<String>(parseStringArray(fieldsJson));
-        Set<String> required = getRequiredFields(objectApiName);
-        String filePath      = 'layouts/' + fullName + '.layout';
-
-        System.debug('PageLayoutHelper.removeFieldsFromLayout(): ' + fullName);
-
-        String stagedXml = ZipBuilder.files.get(filePath);
-        String xml;
-
-        if (String.isNotBlank(stagedXml)) {
-            xml = removeFieldsFromXml(stagedXml, toRemove);
-        } else {
-            Metadata.Layout layout = retrieveLayout(fullName);
-            layout = removeFieldsFromLayoutObject(layout, toRemove);
-            xml = serializeLayoutToXml(layout);
-        }
-
-        ZipBuilder.addFile('Layout', fullName, filePath, xml);
-        System.debug('PageLayoutHelper: fields removed from [' + fullName + '] staged for deploy');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // DELETE LAYOUT
-    // ─────────────────────────────────────────────────────────────
-    public static void deletePageLayout(Map<String, Object> args) {
-        String objectApiName = getRequired(args, 'objectApiName');
-        String layoutName    = getRequired(args, 'layoutName');
-        String fullName      = objectApiName + '-' + layoutName;
-
-        System.debug('PageLayoutHelper.deletePageLayout(): ' + fullName);
-        addDestructiveXml('Layout', fullName);
-        System.debug('PageLayoutHelper: layout [' + fullName + '] queued for destructive deploy');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // ASSIGN LAYOUT TO PROFILES
-    // ─────────────────────────────────────────────────────────────
-    public static void assignPageLayout(Map<String, Object> args) {
-        String objectApiName  = getRequired(args, 'objectApiName');
-        String layoutName     = getRequired(args, 'layoutName');
-        String profilesParam  = getOptional(args, 'profiles', '');
-        String recordType     = getOptional(args, 'recordType', '');
-
-        String fullLayoutName = objectApiName + '-' + layoutName;
-        System.debug('PageLayoutHelper.assignPageLayout(): ' + fullLayoutName);
-
-        List<String> profileNames = resolveProfileNames(profilesParam);
-
-        for (String profileName : profileNames) {
-            String safeProfile = profileName.trim();
-            String filePath    = 'profiles/' + safeProfile + '.profile';
-            String staged      = ZipBuilder.files.get(filePath);
-
-            String profileXml = String.isNotBlank(staged)
-                ? injectLayoutAssignmentIntoProfile(staged, fullLayoutName, recordType)
-                : buildProfileLayoutAssignmentXml(fullLayoutName, recordType);
-
-            ZipBuilder.addFile('Profile', safeProfile, filePath, profileXml);
-            System.debug('PageLayoutHelper: layout assigned to profile [' + safeProfile + ']');
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // PRIVATE — Retrieve layout via Metadata.Operations.retrieve()
     // ─────────────────────────────────────────────────────────────
     private static Metadata.Layout retrieveLayout(String fullName) {
@@ -239,28 +143,6 @@ public class PageLayoutHelper {
             throw new PageLayoutException('Failed to retrieve layout '
                 + fullName + ': ' + e.getMessage());
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Build List<Metadata.LayoutSection> from sectionsJson
-    // ─────────────────────────────────────────────────────────────
-    private static List<Metadata.LayoutSection> buildLayoutSections(
-        String sectionsJson, Set<String> requiredFields) {
-
-        List<Map<String, Object>> defs = parseSectionDefs(sectionsJson, requiredFields);
-        List<Metadata.LayoutSection> sections = new List<Metadata.LayoutSection>();
-
-        for (Map<String, Object> def : defs) {
-            String sectionLabel    = (String) def.get('label');
-            List<Object> rawFields = (List<Object>) def.get('fields');
-            List<String> fields    = new List<String>();
-            if (rawFields != null) {
-                for (Object f : rawFields) fields.add(String.valueOf(f).trim());
-            }
-            sections.add(buildLayoutSection(sectionLabel, fields, requiredFields));
-        }
-
-        return sections;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -371,29 +253,6 @@ public class PageLayoutHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Remove fields from typed Metadata.Layout object
-    // ─────────────────────────────────────────────────────────────
-    private static Metadata.Layout removeFieldsFromLayoutObject(
-        Metadata.Layout layout, Set<String> fieldsToRemove) {
-
-        if (layout.layoutSections == null) return layout;
-
-        for (Metadata.LayoutSection section : layout.layoutSections) {
-            if (section.layoutColumns == null) continue;
-            for (Metadata.LayoutColumn col : section.layoutColumns) {
-                if (col.layoutItems == null) continue;
-                List<Metadata.LayoutItem> kept = new List<Metadata.LayoutItem>();
-                for (Metadata.LayoutItem item : col.layoutItems) {
-                    if (!fieldsToRemove.contains(item.field)) kept.add(item);
-                }
-                col.layoutItems = kept;
-            }
-        }
-
-        return layout;
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // PRIVATE — Serialize Metadata.Layout to XML string for ZIP deploy
     // ─────────────────────────────────────────────────────────────
     private static String serializeLayoutToXml(Metadata.Layout layout) {
@@ -495,127 +354,6 @@ public class PageLayoutHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Remove fields from staged XML string
-    // ─────────────────────────────────────────────────────────────
-    private static String removeFieldsFromXml(String xml, Set<String> fieldsToRemove) {
-        for (String fieldName : fieldsToRemove) {
-            String fieldTag = '<field>' + escapeXml(fieldName) + '</field>';
-            while (xml.contains(fieldTag)) {
-                Integer itemStart = xml.lastIndexOf('<layoutItems>', xml.indexOf(fieldTag));
-                Integer itemEnd   = xml.indexOf('</layoutItems>', itemStart)
-                    + '</layoutItems>'.length();
-                if (itemStart == -1 || itemEnd <= '<layoutItems>'.length()) break;
-                xml = xml.substring(0, itemStart) + xml.substring(itemEnd);
-            }
-        }
-        return xml;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Parse sections JSON into List<Map>
-    // ─────────────────────────────────────────────────────────────
-    private static List<Map<String, Object>> parseSectionDefs(
-        String sectionsJson, Set<String> requiredFields) {
-
-        List<Map<String, Object>> sections = new List<Map<String, Object>>();
-
-        if (String.isBlank(sectionsJson) || sectionsJson == '[]') {
-            List<Object> reqList = new List<Object>();
-            for (String r : requiredFields) reqList.add(r);
-            sections.add(new Map<String, Object>{
-                'label'  => 'Information',
-                'fields' => reqList
-            });
-            sections.add(new Map<String, Object>{
-                'label'  => 'Additional Information',
-                'fields' => new List<Object>()
-            });
-            return sections;
-        }
-
-        try {
-            List<Object> parsed = (List<Object>) JSON.deserializeUntyped(sectionsJson);
-            Boolean isFirst = true;
-
-            for (Object sec : parsed) {
-                Map<String, Object> s   = (Map<String, Object>) sec;
-                String label            = (String) s.get('label');
-                List<Object> rawFields  = (List<Object>) s.get('fields');
-                List<Object> fields     = new List<Object>();
-
-                if (isFirst) {
-                    for (String req : requiredFields) {
-                        if (!fields.contains((Object) req)) fields.add(req);
-                    }
-                    isFirst = false;
-                }
-
-                if (rawFields != null) {
-                    for (Object f : rawFields) {
-                        String fn = String.valueOf(f).trim();
-                        if (!fields.contains((Object) fn)) fields.add(fn);
-                    }
-                }
-
-                sections.add(new Map<String, Object>{ 'label' => label, 'fields' => fields });
-            }
-        } catch (Exception e) {
-            System.debug('PageLayoutHelper.parseSectionDefs() failed: ' + e.getMessage());
-            ErrorLogger.log(e);
-            List<Object> reqList = new List<Object>();
-            for (String r : requiredFields) reqList.add(r);
-            sections.add(new Map<String, Object>{
-                'label'  => 'Information',
-                'fields' => reqList
-            });
-        }
-
-        return sections;
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Resolve profile names
-    // ─────────────────────────────────────────────────────────────
-    private static List<String> resolveProfileNames(String profilesParam) {
-        if (String.isBlank(profilesParam) || profilesParam == '[]') {
-            return new List<String>{ 'System Administrator' };
-        }
-        String lower = profilesParam.toLowerCase().trim()
-            .replaceAll('"', '').replaceAll('\'', '');
-        if (lower == 'all') return getAllProfileNames();
-        return parseStringArray(profilesParam);
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Build Profile XML for layout assignment
-    // ─────────────────────────────────────────────────────────────
-    private static String buildProfileLayoutAssignmentXml(
-        String fullLayoutName, String recordType) {
-
-        return '<?xml version="1.0" encoding="UTF-8"?>'
-            + '<Profile xmlns="' + NAMESPACE + '">'
-            + buildLayoutAssignmentBlock(fullLayoutName, recordType)
-            + '</Profile>';
-    }
-
-    private static String injectLayoutAssignmentIntoProfile(
-        String profileXml, String fullLayoutName, String recordType) {
-
-        return profileXml.replace('</Profile>',
-            buildLayoutAssignmentBlock(fullLayoutName, recordType) + '</Profile>');
-    }
-
-    private static String buildLayoutAssignmentBlock(
-        String fullLayoutName, String recordType) {
-
-        return '<layoutAssignments>'
-            + '<layout>' + escapeXml(fullLayoutName) + '</layout>'
-            + (String.isNotBlank(recordType)
-                ? '<recordType>' + escapeXml(recordType) + '</recordType>' : '')
-            + '</layoutAssignments>';
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // PRIVATE — Get required fields via Tooling API
     // ─────────────────────────────────────────────────────────────
     private static Set<String> getRequiredFields(String objectApiName) {
@@ -646,41 +384,6 @@ public class PageLayoutHelper {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Get all profile names
-    // ─────────────────────────────────────────────────────────────
-    private static List<String> getAllProfileNames() {
-        List<String> names = new List<String>();
-        try {
-            String endpoint = 'https://' + DomainCreator.getOrgMyDomainHostname()
-                + '/services/data/v61.0/query?q='
-                + EncodingUtil.urlEncode('SELECT Name FROM Profile ORDER BY Name', 'UTF-8');
-
-            HttpRequest req = new HttpRequest();
-            req.setEndpoint(endpoint);
-            req.setMethod('GET');
-            req.setHeader('Authorization', 'Bearer ' + UserInfo.getSessionId());
-            req.setTimeout(30000);
-
-            HttpResponse res = new Http().send(req);
-            if (res.getStatusCode() == 200) {
-                Map<String, Object> resp =
-                    (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
-                List<Object> records = (List<Object>) resp.get('records');
-                if (records != null) {
-                    for (Object rec : records) {
-                        names.add((String) ((Map<String, Object>) rec).get('Name'));
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.debug('PageLayoutHelper.getAllProfileNames() failed: ' + e.getMessage());
-            ErrorLogger.log(e);
-            names.add('System Administrator');
-        }
-        return names;
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // PRIVATE — Tooling API query helper
     // ─────────────────────────────────────────────────────────────
     private static Map<String, Object> toolingQuery(String query) {
@@ -703,33 +406,6 @@ public class PageLayoutHelper {
         }
 
         return (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // PRIVATE — Destructive XML helper
-    // ─────────────────────────────────────────────────────────────
-    private static void addDestructiveXml(String metaType, String member) {
-        String nameTag  = '<' + 'name>' + metaType + '</' + 'name>';
-        String existing = ZipBuilder.files.get('destructiveChangesPost.xml');
-        String xml;
-
-        if (existing != null && existing.contains(nameTag)) {
-            xml = existing.replace(nameTag, '<members>' + member + '</members>' + nameTag);
-        } else if (existing != null) {
-            xml = existing.replace('</Package>',
-                '<types><members>' + member + '</members>' + nameTag + '</types></Package>');
-        } else {
-            xml = '<?xml version="1.0" encoding="UTF-8"?>'
-                + '<Package xmlns="' + NAMESPACE + '">'
-                + '<types>'
-                + '<members>' + member + '</members>'
-                + nameTag
-                + '</types>'
-                + '<version>61.0</version>'
-                + '</Package>';
-        }
-
-        ZipBuilder.addFile('__destructive__', member, 'destructiveChangesPost.xml', xml);
     }
 
     // ─────────────────────────────────────────────────────────────

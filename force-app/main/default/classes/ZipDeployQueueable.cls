@@ -78,9 +78,11 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
             System.debug('ZipDeployQueueable: stack trace — ' + e.getStackTraceString());
             ErrorLogger.log(e, issueKey);
             try {
-                JiraCallbackService.postComment(
+                JiraCallbackService.storeDeploymentStatus(
                     issueKey,
-                    'Deploy failed to start: ' + e.getMessage()
+                    'error',
+                    'Deploy failed to start: ' + e.getMessage(),
+                    null
                 );
             } catch (Exception je) {
                 System.debug('ZipDeployQueueable: failed to post Jira comment — ' + je.getMessage());

@@ -45,22 +45,12 @@ public class LLMService {
         System.debug('► Description: ' + description);
 
         // ── STAGE 1: Read org state ────────────────────────────
-        // runOrgCheck  — pure Apex, no LLM call, always runs.
-        //                Covers: existing fields/objects, sharing models,
-        //                        layout structure, CSV pre-read.
-        // runReadStage — LLM tool-calling loop, only when the ticket
-        //                needs dynamic lookups Apex can't predict:
-        //                e.g. apex class names, existing PS/profile details,
-        //                permission set membership, custom label values, etc.
+        // runOrgCheck — pure Apex, no LLM call, always runs.
+        //               Covers: existing fields/objects, sharing models,
+        //               layout structure, CSV pre-read, custom labels,
+        //               Apex class names, VF page names.
         System.debug('── STAGE 1: Reading org state...');
         Map<String, Object> orgState = runOrgCheck(summary, description);
-
-        if (needsReadStage(summary, description)) {
-            System.debug('── STAGE 1b: Ticket needs dynamic org lookups — running LLM read stage...');
-            Map<String, Object> readState = runReadStage(issueKey, summary, description);
-            orgState.putAll(readState);
-            System.debug('── STAGE 1b complete. Merged org state.');
-        }
 
         System.debug('── Org check complete. orgState: ' + JSON.serialize(orgState));
 
@@ -273,7 +263,6 @@ public class LLMService {
                         }
                     } catch (Exception e) {
                         System.debug('runOrgCheck: layout fetch failed for [' + objName + ']: ' + e.getMessage());
-                        ErrorLogger.log(e);
                     }
                 }
 
@@ -300,7 +289,6 @@ public class LLMService {
                                 + readResult.get('totalRows') + ' rows, columns=' + readResult.get('columns'));
                         } catch (Exception e) {
                             System.debug('runOrgCheck: CSV read failed [' + fileName + '] — ' + e.getMessage());
-                            ErrorLogger.log(e);
                         }
                     }
                 }
@@ -669,6 +657,84 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch existing Custom Labels ─────────────────────────────────
+            // Covers: custom label create, update, delete, translate.
+            // Uses Tooling API directly — no LLM tool loop needed.
+            if (ticketTextLower.contains('custom label') || ticketTextLower.contains('update label')
+                    || ticketTextLower.contains('label')) {
+                try {
+                    Map<String, Object> labelResult = MetadataHelper.runToolingApiQuery(
+                        'SELECT Id, Name, Value, Language, MasterLabel, Category FROM ExternalString WHERE NamespacePrefix = null ORDER BY Name'
+                    );
+                    List<Object> labelRecords = (List<Object>) labelResult.get('records');
+                    if (labelRecords != null && !labelRecords.isEmpty()) {
+                        List<Map<String, Object>> labelList = new List<Map<String, Object>>();
+                        for (Object raw : labelRecords) {
+                            Map<String, Object> rec = (Map<String, Object>) raw;
+                            labelList.add(new Map<String, Object>{
+                                'name'        => rec.get('Name'),
+                                'masterLabel' => rec.get('MasterLabel'),
+                                'value'       => rec.get('Value'),
+                                'language'    => rec.get('Language'),
+                                'category'    => rec.get('Category')
+                            });
+                        }
+                        orgState.put('existingCustomLabels', labelList);
+                        System.debug('runOrgCheck: fetched ' + labelList.size() + ' custom label(s)');
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: custom labels fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
+            // ── Fetch Apex Class names ────────────────────────────────────────
+            // Covers: permission set / profile class access grants.
+            if (ticketTextLower.contains('class access') || ticketTextLower.contains('apex class')
+                    || ticketTextLower.contains('apex classes')) {
+                try {
+                    Map<String, Object> classResult = MetadataHelper.runToolingApiQuery(
+                        'SELECT Name FROM ApexClass WHERE NamespacePrefix = null ORDER BY Name'
+                    );
+                    List<Object> classRecords = (List<Object>) classResult.get('records');
+                    if (classRecords != null && !classRecords.isEmpty()) {
+                        List<String> classList = new List<String>();
+                        for (Object raw : classRecords) {
+                            Map<String, Object> rec = (Map<String, Object>) raw;
+                            classList.add((String) rec.get('Name'));
+                        }
+                        orgState.put('apexClasses', classList);
+                        System.debug('runOrgCheck: fetched ' + classList.size() + ' Apex class(es)');
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: Apex classes fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
+            // ── Fetch Visualforce Page names ──────────────────────────────────
+            // Covers: permission set / profile VF page access grants.
+            if (ticketTextLower.contains('visualforce') || ticketTextLower.contains('page access')) {
+                try {
+                    Map<String, Object> pageResult = MetadataHelper.runToolingApiQuery(
+                        'SELECT Name FROM ApexPage WHERE NamespacePrefix = null ORDER BY Name'
+                    );
+                    List<Object> pageRecords = (List<Object>) pageResult.get('records');
+                    if (pageRecords != null && !pageRecords.isEmpty()) {
+                        List<String> pageList = new List<String>();
+                        for (Object raw : pageRecords) {
+                            Map<String, Object> rec = (Map<String, Object>) raw;
+                            pageList.add((String) rec.get('Name'));
+                        }
+                        orgState.put('visualforcePages', pageList);
+                        System.debug('runOrgCheck: fetched ' + pageList.size() + ' Visualforce page(s)');
+                    }
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: Visualforce pages fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
         } catch (Exception e) {
             System.debug('runOrgCheck failed: ' + e.getMessage());
             ErrorLogger.log(e);
@@ -759,7 +825,6 @@ public class LLMService {
 
         } catch (Exception e) {
             System.debug('getLayoutStructure failed for [' + fullName + ']: ' + e.getMessage());
-            ErrorLogger.log(e);
             return null;
         }
     }
@@ -935,77 +1000,6 @@ public class LLMService {
         }
     }
 
-
-    // ─────────────────────────────────────────────────────────────
-    // NEEDS READ STAGE?
-    // Determines whether the ticket requires a full LLM read stage
-    // (tool-calling loop) on top of the lean Apex-only runOrgCheck.
-    //
-    // Triggers when the ticket involves lookups that Apex cannot
-    // cheaply predict from the ticket text alone:
-    //   - Apex class/page access grants (need full class list)
-    //   - Profile/PS updates (need existing permission details)
-    //   - Custom label reads/updates (need existing label values)
-    //   - Tooling API queries for metadata not in Schema describe
-    //
-    // Keep this list tight — every true result costs one extra
-    // LLM tool-calling loop before XML generation.
-    // ─────────────────────────────────────────────────────────────
-    private static Boolean needsReadStage(String summary, String description) {
-        String t = (summary + ' ' + description).toLowerCase();
-
-        // NOTE: 'named credential' intentionally removed — NC state is now fetched
-        // directly in runOrgCheck() via getNamedCredentialsState() (Metadata SOAP),
-        // so no LLM tool-calling loop is needed for NC tickets.
-        //
-        // NOTE: 'trigger' and Apex class keywords intentionally removed — trigger
-        // existence checks and handler/class body lookups are now fetched directly
-        // in runOrgCheck() via getApexTriggerState() and getApexClassState() (pure
-        // Apex SOQL), so no LLM tool-calling loop is needed for Apex tickets.
-        return t.contains('class access')
-            || t.contains('apex classes')
-            || t.contains('visualforce')
-            || t.contains('page access')
-            || t.contains('custom label')
-            || t.contains('update label');
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // STAGE 1 — READ ORG STATE (LLM tool-calling loop)
-    // LLM uses read-only tools to understand current org state
-    // Returns a map of what it found
-    // ─────────────────────────────────────────────────────────────
-    private static Map<String, Object> runReadStage(String issueKey, String summary, String description) {
-
-        List<Map<String, Object>> messages = new List<Map<String, Object>>{
-            new Map<String, Object>{
-                'role'    => 'system',
-                'content' => buildReadStageSystemPrompt()
-            },
-            new Map<String, Object>{
-                'role'    => 'user',
-                'content' => buildUserPrompt(issueKey, summary, description)
-            }
-        };
-
-        // Run tool calling loop with READ-ONLY tools
-        String orgStateJson = runToolCallingLoop(messages, getReadOnlyTools());
-
-        System.debug('── STAGE 1 raw response: ' + orgStateJson);
-
-        // Parse the JSON response from LLM
-        try {
-            // Strip markdown code fences if present
-            String cleaned = cleanJsonResponse(orgStateJson);
-            Map<String, Object> orgState = (Map<String, Object>) JSON.deserializeUntyped(cleaned);
-            System.debug('── STAGE 1 parsed orgState successfully');
-            return orgState;
-        } catch (Exception e) {
-            System.debug('── STAGE 1 JSON parse failed: ' + e.getMessage() + ' — using empty state');
-            ErrorLogger.log(e);
-            return new Map<String, Object>{ 'rawResponse' => orgStateJson };
-        }
-    }
 
     // ─────────────────────────────────────────────────────────────
     // STAGE 2 — XML GENERATION
@@ -1356,6 +1350,7 @@ public class LLMService {
         // the LLM forgot to emit one. Adds synthesized Layout entries directly
         // to zip2Files so the staging block below picks them up.
         backstopMissingLayoutsForNewObjects(files, orgState, zip2Files, zip2MetadataTypes);
+        backstopMissingFieldsInExistingLayouts(files, orgState, zip2Files, zip2MetadataTypes);
 
         // ── Process destructive changes ────────────────────────
         List<Object> destructiveFiles = (List<Object>) parsed.get('destructiveFiles');
@@ -1438,6 +1433,213 @@ public class LLMService {
     // when adding a new CustomField to an object that already has layouts
     // (Scenario B in the system prompt). This method detects when the LLM
     // skipped that requirement and logs a loud trace marker so we can see
+    // ─────────────────────────────────────────────────────────────
+    // SCENARIO B BACKSTOP
+    // When the LLM adds fields to an EXISTING object but forgets to include
+    // the matching Layout update, the new fields land in the "fields palette"
+    // and never appear on any layout section.
+    // This backstop detects that omission and rebuilds the layout XML
+    // directly from the orgState sections + appends the new fields.
+    // No extra callout is needed — orgState already holds the layout structure
+    // from the pre-callout gatherOrgState phase.
+    // The rebuilt layout is staged in zip2Files so it deploys AFTER the fields.
+    // ─────────────────────────────────────────────────────────────
+    private static void backstopMissingFieldsInExistingLayouts(
+        List<Object> files,
+        Map<String, Object> orgState,
+        Map<String, String> zip2Files,
+        Map<String, Set<String>> zip2MetadataTypes
+    ) {
+        if (orgState == null) return;
+        Object rawExistingLayouts = orgState.get('existingLayouts');
+        if (!(rawExistingLayouts instanceof Map<String, Object>)) return;
+        Map<String, Object> existingLayouts = (Map<String, Object>) rawExistingLayouts;
+        if (existingLayouts.isEmpty()) return;
+
+        Set<String> existingObjects = new Set<String>();
+        Object rawExistingObjects = orgState.get('existingObjects');
+        if (rawExistingObjects instanceof List<Object>) {
+            for (Object o : (List<Object>) rawExistingObjects) {
+                if (o != null) existingObjects.add(String.valueOf(o));
+            }
+        }
+
+        Map<String, List<String>> newFieldsByObject = new Map<String, List<String>>();
+        Set<String> objectsWithLayoutEmitted = new Set<String>();
+
+        if (files != null) {
+            for (Object rawFile : files) {
+                Map<String, Object> f = (Map<String, Object>) rawFile;
+                String mt = (String) f.get('metadataType');
+                String mn = (String) f.get('memberName');
+                if (String.isBlank(mt) || String.isBlank(mn)) continue;
+
+                if (mt == 'CustomObject' && existingObjects.contains(mn)) {
+                    List<Map<String, String>> infos =
+                        extractFieldInfosFromObjectXml((String) f.get('xmlContent'));
+                    if (!infos.isEmpty()) {
+                        if (!newFieldsByObject.containsKey(mn)) {
+                            newFieldsByObject.put(mn, new List<String>());
+                        }
+                        for (Map<String, String> fi : infos) {
+                            newFieldsByObject.get(mn).add(fi.get('name'));
+                        }
+                    }
+                } else if (mt == 'CustomField' && mn.contains('.')) {
+                    String parentObj  = mn.substringBefore('.');
+                    String fieldName  = mn.substringAfter('.');
+                    if (existingObjects.contains(parentObj)) {
+                        if (!newFieldsByObject.containsKey(parentObj)) {
+                            newFieldsByObject.put(parentObj, new List<String>());
+                        }
+                        newFieldsByObject.get(parentObj).add(fieldName);
+                    }
+                } else if (mt == 'Layout' && mn.contains('-')) {
+                    objectsWithLayoutEmitted.add(mn.substringBefore('-'));
+                }
+            }
+        }
+
+        for (String objName : newFieldsByObject.keySet()) {
+            if (!existingLayouts.containsKey(objName)) continue;
+            if (objectsWithLayoutEmitted.contains(objName)) {
+                System.debug('[DEPLOY-TRACE] backstopB: Layout already emitted for ['
+                    + objName + '] — no injection needed');
+                continue;
+            }
+
+            List<String> newFields = newFieldsByObject.get(objName);
+            if (newFields == null || newFields.isEmpty()) continue;
+
+            Object rawLayouts = existingLayouts.get(objName);
+            if (!(rawLayouts instanceof List<Object>)) continue;
+            List<Object> layouts = (List<Object>) rawLayouts;
+            if (layouts.isEmpty()) continue;
+
+            Map<String, Object> firstLayout = (Map<String, Object>) layouts[0];
+            String layoutFullName = (String) firstLayout.get('fullName');
+            if (String.isBlank(layoutFullName)) continue;
+
+            String layoutPath = 'layouts/' + layoutFullName + '.layout';
+            if (zip2Files.containsKey(layoutPath)) {
+                System.debug('[DEPLOY-TRACE] backstopB: Layout already in zip2Files for ['
+                    + objName + '] — skipping');
+                continue;
+            }
+
+            String layoutXml = rebuildLayoutXmlWithNewFields(firstLayout, newFields);
+            if (String.isBlank(layoutXml)) continue;
+
+            zip2Files.put(layoutPath, layoutXml);
+            if (!zip2MetadataTypes.containsKey('Layout')) {
+                zip2MetadataTypes.put('Layout', new Set<String>());
+            }
+            zip2MetadataTypes.get('Layout').add(layoutFullName);
+
+            System.debug('[DEPLOY-TRACE] *** SCENARIO B BACKSTOP FIRED *** object=' + objName
+                + ' | LLM omitted Layout — appending ' + newFields.size()
+                + ' field(s) to [' + layoutFullName + '] via zip2Files');
+        }
+    }
+
+    private static String rebuildLayoutXmlWithNewFields(
+        Map<String, Object> layoutStructure, List<String> newFields) {
+
+        String fullName = (String) layoutStructure.get('fullName');
+        Object rawSections = layoutStructure.get('sections');
+        if (!(rawSections instanceof List<Object>)) return null;
+        List<Object> sections = (List<Object>) rawSections;
+
+        String xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+            + '<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n';
+
+        Boolean injected = false;
+        for (Object rawSec : sections) {
+            Map<String, Object> sec = (Map<String, Object>) rawSec;
+            String label = (String) sec.get('label');
+
+            List<String> leftFields     = toStringList(sec.get('leftFields'));
+            List<String> leftBehaviors  = toStringList(sec.get('leftBehaviors'));
+            List<String> rightFields    = toStringList(sec.get('rightFields'));
+            List<String> rightBehaviors = toStringList(sec.get('rightBehaviors'));
+
+            if (!injected && label == 'Information') {
+                for (String f : newFields) {
+                    Integer total = leftFields.size() + rightFields.size();
+                    if (Math.mod(total, 2) == 0) {
+                        leftFields.add(f);
+                        leftBehaviors.add('Edit');
+                    } else {
+                        rightFields.add(f);
+                        rightBehaviors.add('Edit');
+                    }
+                }
+                injected = true;
+            }
+
+            xml += '    <layoutSections>\n'
+                + '        <customLabel>true</customLabel>\n'
+                + '        <detailHeading>true</detailHeading>\n'
+                + '        <editHeading>true</editHeading>\n'
+                + '        <label>' + label + '</label>\n'
+                + '        <layoutColumns>\n';
+
+            for (Integer i = 0; i < leftFields.size(); i++) {
+                String beh = (i < leftBehaviors.size()) ? leftBehaviors[i] : 'Edit';
+                xml += '            <layoutItems>\n'
+                    + '                <behavior>' + beh + '</behavior>\n'
+                    + '                <field>' + leftFields[i] + '</field>\n'
+                    + '            </layoutItems>\n';
+            }
+
+            xml += '        </layoutColumns>\n'
+                + '        <layoutColumns>\n';
+
+            for (Integer i = 0; i < rightFields.size(); i++) {
+                String beh = (i < rightBehaviors.size()) ? rightBehaviors[i] : 'Edit';
+                xml += '            <layoutItems>\n'
+                    + '                <behavior>' + beh + '</behavior>\n'
+                    + '                <field>' + rightFields[i] + '</field>\n'
+                    + '            </layoutItems>\n';
+            }
+
+            xml += '        </layoutColumns>\n'
+                + '        <style>TwoColumnsTopToBottom</style>\n'
+                + '    </layoutSections>\n';
+        }
+
+        if (!injected && !newFields.isEmpty()) {
+            xml += '    <layoutSections>\n'
+                + '        <customLabel>true</customLabel>\n'
+                + '        <detailHeading>true</detailHeading>\n'
+                + '        <editHeading>true</editHeading>\n'
+                + '        <label>Information</label>\n'
+                + '        <layoutColumns>\n';
+            for (String f : newFields) {
+                xml += '            <layoutItems>\n'
+                    + '                <behavior>Edit</behavior>\n'
+                    + '                <field>' + f + '</field>\n'
+                    + '            </layoutItems>\n';
+            }
+            xml += '        </layoutColumns>\n'
+                + '        <layoutColumns/>\n'
+                + '        <style>TwoColumnsTopToBottom</style>\n'
+                + '    </layoutSections>\n';
+        }
+
+        xml += '</Layout>';
+        return xml;
+    }
+
+    private static List<String> toStringList(Object raw) {
+        List<String> result = new List<String>();
+        if (!(raw instanceof List<Object>)) return result;
+        for (Object o : (List<Object>) raw) {
+            if (o != null) result.add(String.valueOf(o));
+        }
+        return result;
+    }
+
     // it in the deploy log instead of silently shipping a layout-less field.
     // Detection only — no behavior change yet.
     // ─────────────────────────────────────────────────────────────
@@ -1550,11 +1752,11 @@ public class LLMService {
                 continue;
             }
 
-            List<String> fieldNames = extractFieldFullNamesFromObjectXml(newObjectXml.get(objApi));
+            List<Map<String, String>> fieldInfos = extractFieldInfosFromObjectXml(newObjectXml.get(objApi));
             String objLabel    = objApi.endsWith('__c') ? objApi.removeEnd('__c').replace('_', ' ') : objApi;
             String layoutMember = objApi + '-' + objLabel + ' Layout';
             String layoutPath   = 'layouts/' + layoutMember + '.layout';
-            String layoutXml    = buildDefaultLayoutXml(fieldNames);
+            String layoutXml    = buildDefaultLayoutXml(fieldInfos);
 
             zip2Files.put(layoutPath, layoutXml);
             if (!zip2MetadataTypes.containsKey('Layout')) {
@@ -1563,28 +1765,36 @@ public class LLMService {
             zip2MetadataTypes.get('Layout').add(layoutMember);
 
             System.debug('[DEPLOY-TRACE] *** SCENARIO A BACKSTOP FIRED *** object=' + objApi
-                + ' | LLM omitted Layout — synthesized default with ' + fieldNames.size()
+                + ' | LLM omitted Layout — synthesized default with ' + fieldInfos.size()
                 + ' field(s) | path=' + layoutPath + ' | layoutMember=' + layoutMember);
         }
     }
 
-    private static List<String> extractFieldFullNamesFromObjectXml(String customObjectXml) {
-        List<String> result = new List<String>();
+    private static List<Map<String, String>> extractFieldInfosFromObjectXml(String customObjectXml) {
+        List<Map<String, String>> result = new List<Map<String, String>>();
         if (String.isBlank(customObjectXml)) return result;
         Pattern fieldsBlock = Pattern.compile('(?s)<fields>(.*?)</fields>');
         Matcher fbm = fieldsBlock.matcher(customObjectXml);
-        Pattern fnPat = Pattern.compile('<fullName>([^<]+)</fullName>');
+        Pattern fnPat   = Pattern.compile('<fullName>([^<]+)</fullName>');
+        Pattern typePat = Pattern.compile('<type>([^<]+)</type>');
         while (fbm.find()) {
-            Matcher fnm = fnPat.matcher(fbm.group(1));
-            if (fnm.find()) result.add(fnm.group(1));
+            String block = fbm.group(1);
+            Matcher fnm = fnPat.matcher(block);
+            if (fnm.find()) {
+                Matcher tym = typePat.matcher(block);
+                String fieldType = tym.find() ? tym.group(1) : 'Text';
+                result.add(new Map<String, String>{ 'name' => fnm.group(1), 'type' => fieldType });
+            }
         }
         return result;
     }
 
-    private static String buildDefaultLayoutXml(List<String> fieldNames) {
+    private static String buildDefaultLayoutXml(List<Map<String, String>> fieldInfos) {
         String s = '<?xml version="1.0" encoding="UTF-8"?>\n';
         s += '<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n';
         s += '    <layoutSections>\n';
+        s += '        <customLabel>true</customLabel>\n';
+        s += '        <detailHeading>true</detailHeading>\n';
         s += '        <editHeading>true</editHeading>\n';
         s += '        <label>Information</label>\n';
         s += '        <layoutColumns>\n';
@@ -1592,11 +1802,14 @@ public class LLMService {
         s += '                <behavior>Required</behavior>\n';
         s += '                <field>Name</field>\n';
         s += '            </layoutItems>\n';
-        if (fieldNames != null) {
-            for (String f : fieldNames) {
+        if (fieldInfos != null) {
+            for (Map<String, String> fi : fieldInfos) {
+                String f = fi.get('name');
+                String t = fi.get('type');
                 if (String.isBlank(f)) continue;
+                String behavior = (t == 'MasterDetail') ? 'Required' : 'Edit';
                 s += '            <layoutItems>\n';
-                s += '                <behavior>Edit</behavior>\n';
+                s += '                <behavior>' + behavior + '</behavior>\n';
                 s += '                <field>' + f + '</field>\n';
                 s += '            </layoutItems>\n';
             }
@@ -3206,169 +3419,6 @@ public class LLMService {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // TOOL CALLING LOOP — used in Stage 1 (read stage) only
-    // ─────────────────────────────────────────────────────────────
-    private static String runToolCallingLoop(
-        List<Map<String, Object>> messages,
-        List<Map<String, Object>> tools
-    ) {
-        Integer iterations = 0;
-
-        while (iterations < MAX_ITERATIONS) {
-            iterations++;
-            System.debug('READ STAGE LOOP ITERATION ' + iterations);
-
-            Map<String, Object> response;
-            try {
-                response = callGroq(messages, tools, 'auto');
-            } catch (Exception e) {
-                System.debug('runToolCallingLoop: read stage call failed, falling back: ' + e.getMessage());
-                // Do NOT call ErrorLogger.log(e) here — it does DML which breaks
-                // the subsequent Stage 2 Groq callout with "uncommitted work pending"
-                return '{}';
-            }
-            List<Object> choices         = (List<Object>) response.get('choices');
-            Map<String, Object> choice   = (Map<String, Object>) choices[0];
-            Map<String, Object> message  = (Map<String, Object>) choice.get('message');
-            String finishReason          = (String) choice.get('finish_reason');
-
-            System.debug('Read stage finish_reason = [' + finishReason + ']');
-
-            if (finishReason == 'tool_calls') {
-                List<Object> toolCalls = (List<Object>) message.get('tool_calls');
-
-                messages.add(new Map<String, Object>{
-                    'role'       => 'assistant',
-                    'content'    => '',
-                    'tool_calls' => toolCalls
-                });
-
-                for (Object rawCall : toolCalls) {
-                    Map<String, Object> toolCall = (Map<String, Object>) rawCall;
-                    String toolCallId            = (String) toolCall.get('id');
-                    Map<String, Object> func     = (Map<String, Object>) toolCall.get('function');
-                    String functionName          = (String) func.get('name');
-                    String argumentsJson         = (String) func.get('arguments');
-
-                    System.debug('Read stage tool call: [' + functionName + '] args: ' + argumentsJson);
-
-                    String toolResult = executeReadFunction(functionName, argumentsJson);
-
-                    System.debug('Read stage tool result: ' + toolResult);
-
-                    messages.add(new Map<String, Object>{
-                        'role'         => 'tool',
-                        'tool_call_id' => toolCallId,
-                        'content'      => toolResult
-                    });
-                }
-
-            } else if (finishReason == 'stop') {
-
-                // LLM finished tool calls and produced a text response — use it directly.
-                // Do NOT make a second call with tool_choice=none — Groq 400s when the
-                // tools array is present alongside tool_choice=none on long conversations
-                // because it attempts function generation internally and fails mid-JSON.
-                String content = (String) message.get('content');
-                System.debug('Read stage complete. Summary: ' + content);
-                return String.isNotBlank(content) ? content : '{}';
-
-            } else {
-                return '{}'; // Empty org state on unexpected finish
-            }
-        }
-
-        return '{}';
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // EXECUTE READ-ONLY FUNCTION
-    // Only allows read operations — no writes during Stage 1
-    // ─────────────────────────────────────────────────────────────
-    private static String executeReadFunction(String functionName, String argumentsJson) {
-        Map<String, Object> arguments = new Map<String, Object>();
-        if (String.isNotBlank(argumentsJson)) {
-            arguments = (Map<String, Object>) JSON.deserializeUntyped(argumentsJson);
-        }
-
-        // Whitelist of read-only functions allowed in Stage 1
-        Set<String> allowedFunctions = new Set<String>{
-            'sobjects_list',
-            'sobject_describe',
-            'sobject_fields_list',
-            'sobject_field_describe',
-            'permission_set_list',
-            'profile_list',
-            'validation_rule_list',
-            'custom_label_list',
-            'custom_setting_list',
-            'named_credential_list',
-            'custom_metadata_type_list',
-            'custom_metadata_record_list',
-            'page_layout_list',
-            'static_resource_list',
-            'translation_list_languages',
-            'run_tooling_api_query'
-        };
-
-        if (!allowedFunctions.contains(functionName)) {
-            System.debug('executeReadFunction: BLOCKED write function [' + functionName + '] in read stage');
-            return JSON.serialize(new Map<String, Object>{
-                'success' => false,
-                'error'   => 'Function ' + functionName + ' is not allowed in read stage'
-            });
-        }
-
-        try {
-            return FunctionRouter.execute(functionName, arguments);
-        } catch (Exception e) {
-            System.debug('executeReadFunction: failed: ' + e.getMessage());
-            ErrorLogger.log(e);
-            return JSON.serialize(new Map<String, Object>{
-                'success' => false,
-                'error'   => e.getMessage()
-            });
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // READ-ONLY TOOLS — sent to LLM in Stage 1
-    // ─────────────────────────────────────────────────────────────
-    private static List<Map<String, Object>> getReadOnlyTools() {
-        List<Map<String, Object>> allTools = ToolDefinitions.getAllTools();
-        List<Map<String, Object>> readOnly = new List<Map<String, Object>>();
-
-        Set<String> readOnlyNames = new Set<String>{
-            'sobjects_list',
-            'sobject_describe',
-            'sobject_fields_list',
-            'sobject_field_describe',
-            'permission_set_list',
-            'profile_list',
-            'validation_rule_list',
-            'custom_label_list',
-            'custom_setting_list',
-            'named_credential_list',
-            'custom_metadata_type_list',
-            'custom_metadata_record_list',
-            'page_layout_list',
-            'static_resource_list',
-            'translation_list_languages',
-            'run_tooling_api_query'
-        };
-
-        for (Map<String, Object> tool : allTools) {
-            Map<String, Object> func = (Map<String, Object>) tool.get('function');
-            String name              = (String) func.get('name');
-            if (readOnlyNames.contains(name)) {
-                readOnly.add(tool);
-            }
-        }
-
-        return readOnly;
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // CALL GROQ API
     // ─────────────────────────────────────────────────────────────
     private static Map<String, Object> callGroq(
@@ -3864,44 +3914,6 @@ public class LLMService {
     // ─────────────────────────────────────────────────────────────
     // SYSTEM PROMPTS
     // ─────────────────────────────────────────────────────────────
-
-    private static String buildReadStageSystemPrompt() {
-        return 'You are a Salesforce org reader. Your job is to check the current state of the org '
-            + 'before any changes are made.'
-            + '\n\nUsing the available tools, check what already exists in the org that is relevant '
-            + 'to the Jira ticket provided.'
-            + '\n\nFor example:'
-            + '\n- If the ticket creates a field, call sobject_fields_list to check if it already exists'
-            + '\n- If the ticket creates an object, call sobjects_list to check if it already exists'
-            + '\n- If the ticket creates a permission set, call permission_set_list to check'
-            + '\n- If the ticket grants apex class access to a profile, call run_tooling_api_query with:'
-            + '\n  SELECT Name FROM ApexClass WHERE NamespacePrefix = null ORDER BY Name'
-            + '\n  and include the result as apexClasses in your JSON summary'
-            + '\n- If the ticket grants Visualforce page access, query: SELECT Name FROM ApexPage WHERE NamespacePrefix = null ORDER BY Name'
-            + '\n- If the ticket updates or deletes something, find its current state'
-            + '\n- If the ticket mentions field names in plain English (e.g. "Client Phone Number"),'
-            + '\n  always call sobject_fields_list to fetch the real API names from the org.'
-            + '\n  Never assume the API name from the label — they frequently differ (e.g. Client_Phone_No__c vs Client_Phone_Number__c).'
-            + '\n- For ANY ticket that involves Apex code generation:'
-            + '\n  ALWAYS call sobject_fields_list AND sobjects_list first.'
-            + '\n  Extract the EXACT object API name from sobjects_list — never derive it from the ticket label.'
-            + '\n  Labels and API names frequently differ: "AI Message" → AI_Message__c, not AIMessage__c.'
-            + '\n  Include both existingObjects and existingFields in your JSON summary so the XML stage uses real names.'
-            + '\n- For ANY object involved in the ticket, call sobject_fields_list and check for MasterDetail fields.'
-            + '\n  Include "hasMasterDetail: true/false" in your JSON summary for every object.'
-            + '\n  This MUST be passed to the XML stage to set the correct sharingModel.'
-            + '\n\nAfter checking, return a JSON object summarising what you found. Example:'
-            + '\n{'
-            + '\n  \"existingObjects\": [\"Car__c\", \"Driver__c\"],'
-            + '\n  \"existingFields\": {\"Car__c\": [\"Name\", \"Price__c\", \"Status__c\"]},'
-            + '\n  \"existingPermissionSets\": [\"Sales_Team_Access\"],'
-            + '\n  \"apexClasses\": [\"AccountController\", \"CarService\", \"ReservationHelper\"],'
-            + '\n  \"notes\": \"Car__c exists with 5 fields. Status__c does not exist yet.\"'
-            + '\n}'
-            + '\n\nReturn ONLY valid JSON. No explanation, no markdown, just the JSON object.'
-            + '\n\nSalesforce Org: ' + UserInfo.getOrganizationName()
-            + '\nCurrent User: ' + UserInfo.getUserName();
-    }
 
     private static String buildXmlGenerationSystemPrompt() {
         return 'You are a Salesforce Metadata XML generator. '
@@ -5880,22 +5892,6 @@ public class LLMService {
     // ─────────────────────────────────────────────────────────────
     // USER PROMPTS
     // ─────────────────────────────────────────────────────────────
-
-    private static String buildUserPrompt(String issueKey, String summary, String description) {
-        String prompt = 'Jira Issue: ' + issueKey
-            + '\nSummary: ' + summary
-            + '\nDescription: ' + (String.isBlank(description) ? '(no description)' : description);
-
-        if (!StaticResourceHelper.currentAttachments.isEmpty()) {
-            prompt += '\n\nATTACHMENTS ON THIS TICKET:';
-            for (String fileName : StaticResourceHelper.currentAttachments.keySet()) {
-                String mime = StaticResourceHelper.currentAttachments.get(fileName).get('mimeType');
-                prompt += '\n- ' + fileName + ' (' + mime + ')';
-            }
-        }
-
-        return prompt;
-    }
 
     private static String buildXmlGenerationUserPrompt(
         String issueKey,
