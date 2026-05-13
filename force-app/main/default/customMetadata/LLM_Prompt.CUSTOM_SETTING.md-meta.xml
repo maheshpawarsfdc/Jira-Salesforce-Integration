@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Custom Setting</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">CUSTOM_SETTING</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== CUSTOM SETTING XML FORMAT ==
+File path: objects/SettingName__c.object
+metadataType: CustomObject
+memberName: SettingName__c
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <customSettingsType>Hierarchy</customSettingsType>
+    <description>Optional description</description>
+    <enableFeeds>false</enableFeeds>
+    <label>Setting Label</label>
+    <fields>
+        <fullName>FieldName__c</fullName>
+        <label>Field Label</label>
+        <type>Text</type>
+        <length>255</length>
+        <required>false</required>
+    </fields>
+</CustomObject>
+RULES:
+- customSettingsType is Hierarchy (default) or List
+- description is optional — omit entirely if not provided
+- enableFeeds is always false
+- DO NOT include <customSettingsVisibility> — not valid in API v61.0
+- DO NOT include <sharingModel>, <nameField>, <pluralLabel>, <deploymentStatus>
+  — these are NOT valid in Custom Setting XML
+- Supported field types: Checkbox, Currency, Date, DateTime, Email, Number, Percent, Phone, Text, TextArea, Url
+- DO NOT use LongTextArea, Picklist, Lookup or MasterDetail in Custom Settings
+- Checkbox fields: use <defaultValue>false</defaultValue> instead of <required>
+- Text fields: always include <length>255</length>
+- Number/Currency/Percent fields: include <precision>18</precision> and <scale>0</scale>
+- Multiple fields = ONE object file with multiple <fields> blocks
+- Element order inside <fields>: fullName, then type-specific elements, then label, then required/defaultValue, then type
+- For ADDING fields to existing setting: include ALL existing fields from org state plus the new one
+- For DELETING a field: use destructiveFiles with type CustomField, member = SettingName__c.FieldName__c
+- For DELETING the entire setting: use destructiveFiles with type CustomObject, member = SettingName__c]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">120.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Custom Setting XML format and field type rules</value>
+    </values>
+</CustomMetadata>

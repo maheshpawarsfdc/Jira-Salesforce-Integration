@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Apex Best Practices</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">APEX_BEST_PRACTICES</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+-- APEX BEST PRACTICES (enforced — non-compliant code will fail code review) --
+1. NEVER write SOQL queries inside for loops.
+   WRONG:  for (Invoice__c inv : invList) { Account a = [SELECT Id FROM Account WHERE Id = :inv.AccountId__c]; }
+   CORRECT: Map<Id, Account> accMap = new Map<Id, Account>([SELECT Id FROM Account WHERE Id IN :accountIds]);
+2. NEVER use DML inside loops.
+3. Collect IDs/fields in a Set or List first, then query in bulk outside the loop.
+4. All trigger handler methods MUST accept the full list/map (List<SObject>, Map<Id,SObject>).
+5. Avoid hardcoded IDs — use dynamic queries or Custom Labels/Custom Metadata instead.
+6. All Apex classes must be api version 61.0.
+7. Use System.TriggerOperation enum for switch logic — never use Trigger.isBefore/isInsert booleans directly in the handler.
+8. Always use correct API names from orgState.existingFields — never guess or invent field names.
+9. Use Date.today() to get the current date — NEVER Date.now() (it does not exist on the Date class).
+10. To check if a String field is blank in Apex, use String.isBlank(field).
+    WRONG:  if (l.Description == null || l.Description == '')
+    CORRECT: if (String.isBlank(l.Description))
+11. NEVER use String.matches() — this method does NOT exist in Apex.
+    CORRECT: Pattern p = Pattern.compile('^[+]?[0-9]{10,15}$');
+             Matcher m = p.matcher(phone);
+             if (m.matches()) {
+12. ALWAYS prefix sObject field references with the loop variable — never use bare field names.
+    WRONG:  if (AI_Confidence_Score__c < 0)
+    CORRECT: if (record.AI_Confidence_Score__c < 0)
+13. NEVER redefine or re-create fields that already exist in the org.
+14. NEVER derive or guess field API names from ticket text — ALWAYS look up from orgState.existingFields.
+15. NEVER derive or guess the sObject API name from the ticket label — ALWAYS use orgState.existingObjects.
+- NEVER use \+ in Apex regex. Use [+] instead.
+  CORRECT: Pattern.compile('^[+]?[0-9]{10,15}$')
+  Avoid ALL backslash sequences in regex where a character class alternative exists:
+  \d → [0-9],  \+ → [+],  \. → [.]
+
+-- APEX VALIDATION RULES (CRITICAL) --
+1. NEVER silently replace invalid field values with defaults.
+   Validation means rejecting bad data with addError(), NOT overwriting it.
+   WRONG:  record.Content__c = 'Default content';
+   CORRECT: record.addError('Content cannot be empty.');
+2. NEVER leave stub methods that return hardcoded values.
+   WRONG:  private static Boolean isValidPhone(String phone) { return true; }
+   CORRECT: implement the full Pattern.compile() + Matcher implementation
+3. ALWAYS add a null check before comparing a Number field.
+   WRONG:  if (record.AI_Confidence_Score__c < 0)
+   CORRECT: if (record.AI_Confidence_Score__c != null && record.AI_Confidence_Score__c < 0)
+4. NEVER use hardcoded magic values. Use named constants:
+   private static final Integer MIN_SCORE = 0;
+5. handleBeforeUpdate MUST re-run all the same validations as handleBeforeInsert.
+6. NEVER leave TODO comments or placeholder comments in generated code.
+   Generated code must be complete and production-ready.
+- NEVER use Pattern.matches(regex, input) — does not exist in Apex.
+  CORRECT: Pattern p = Pattern.compile('^[+]?[0-9]{10,15}$');
+           Matcher m = p.matcher(record.Client_Phone_No__c);
+           if (!m.matches()) { record.addError('...'); }
+- NEVER generate CustomField XML for any field that already exists in orgState.existingFields.
+- BEFORE writing any CustomObject XML, scan orgState.existingFields for the object.
+  If ANY field has type containing "MasterDetail" → sharingModel MUST be ControlledByParent.]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">190.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Apex governor limits, bulkification, regex, validation, null checks best practices</value>
+    </values>
+</CustomMetadata>

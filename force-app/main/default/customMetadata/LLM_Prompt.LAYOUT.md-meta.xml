@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Layout</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LAYOUT</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== PAGE LAYOUT XML FORMAT ==
+File path: layouts/{ObjectName}-{LayoutName}.layout
+metadataType: Layout
+memberName: {ObjectName}-{LayoutName}  (e.g. Car__c-Car Layout)
+
+<?xml version="1.0" encoding="UTF-8"?>
+<Layout xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>ObjectName__c-Layout Name</fullName>
+    <layoutSections>
+        <customLabel>true</customLabel>
+        <detailHeading>true</detailHeading>
+        <editHeading>true</editHeading>
+        <label>Section Label</label>
+        <layoutColumns>
+            <!-- LEFT COLUMN items (even-indexed fields: 0, 2, 4...) -->
+            <layoutItems>
+                <behavior>Required</behavior>
+                <field>Name</field>
+            </layoutItems>
+            <layoutItems>
+                <behavior>Edit</behavior>
+                <field>Status__c</field>
+            </layoutItems>
+        </layoutColumns>
+        <layoutColumns>
+            <!-- RIGHT COLUMN items (odd-indexed fields: 1, 3, 5...) -->
+            <layoutItems>
+                <behavior>Edit</behavior>
+                <field>Price__c</field>
+            </layoutItems>
+        </layoutColumns>
+        <style>TwoColumnsTopToBottom</style>
+    </layoutSections>
+</Layout>
+
+== LAYOUT RULES ==
+1. fullName MUST exactly match memberName: {ObjectName}-{LayoutName}
+2. Always exactly TWO <layoutColumns> blocks per section: first = left, second = right
+3. Field distribution: Left column gets even-indexed fields (0,2,4...), Right gets odd-indexed (1,3,5...)
+4. behavior values — CRITICAL:
+   a) If field is ALREADY PRESENT in existing layout in org state: USE EXACT BEHAVIOR FROM ORG STATE
+   b) If field is NEW: "Readonly" for system/AutoNumber fields; "Required" for required fields and Text Name; "Edit" for all others
+5. style is always TwoColumnsTopToBottom
+6. customLabel, detailHeading, editHeading are always true
+7. EVERY <layoutItems> MUST have a non-empty <field> and non-empty <behavior>
+8. FORBIDDEN: Do NOT include "Custom Links", "Mobile Cards" or empty <field></field> sections
+
+== PROFILE LAYOUT ASSIGNMENT ==
+When creating a new object OR when ticket asks to assign a layout:
+<?xml version="1.0" encoding="UTF-8"?>
+<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
+    <layoutAssignments>
+        <layout>ObjectName__c-Layout Name</layout>
+    </layoutAssignments>
+    <tabVisibilities>
+        <tab>ObjectName__c</tab>
+        <visibility>DefaultOn</visibility>
+    </tabVisibilities>
+</Profile>
+RULES:
+- NEVER emit two file entries with the same filePath — merge layoutAssignments into existing Profile entry
+- One Profile file can contain multiple <layoutAssignments> and multiple <tabVisibilities>
+
+== LAYOUT SCENARIOS ==
+*** MANDATORY PRE-FLIGHT ***
+For every CustomField on an existing object:
+  IF the object is in orgState.existingObjects AND orgState.existingLayouts has layouts for that object
+  THEN you MUST also emit a Layout file entry for EACH layout of that object.
+  This fires even when ticket does not mention "layout".
+
+-- SCENARIO A: New object — create layout from scratch --
+Use when: ticket creates a brand-new custom object.
+You MUST emit a complete Layout XML alongside the CustomObject XML.
+Naming: default layout name = "{ObjectLabel} Layout" (e.g. Car__c → Car__c-Car Layout)
+Sections: Section 1 "Information": Name + required + main fields; Section 2 "Additional Information": remaining fields.
+DEPLOYMENT PLAN: scenario = "chained": zip1Files = object+tab+profile, zip2Files = layout file.
+
+-- SCENARIO B: Add fields to existing layout --
+Use when: new custom fields on an EXISTING object that has layouts in existingLayouts.
+Action: Regenerate COMPLETE Layout XML including ALL existing sections and fields PLUS the new fields.
+Reconstruct from org state: existingLayouts[ObjectName][n].sections with leftFields/leftBehaviors/rightFields/rightBehaviors.
+CRITICAL: Never drop existing fields AND never change existing behaviors.
+
+-- SCENARIO C: Remove fields from existing layout --
+Action: Regenerate COMPLETE Layout XML omitting only the specified fields.
+
+-- SCENARIO D/E: Add/rename/reorder sections --
+Action: Reconstruct full Layout XML applying the requested change.
+
+-- SCENARIO F: Delete a layout --
+Use destructiveFiles: type=Layout, member={ObjectName}-{LayoutName}
+
+NEVER GENERATE A LAYOUT XML FILE FOR STANDARD OBJECTS (Account, Case, Contact, Lead, Opportunity).
+Standard object layouts already exist — only reference them in Profile <layoutAssignments>.]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">140.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Page Layout XML format, rules, and all scenarios (A-F)</value>
+    </values>
+</CustomMetadata>

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Public Group</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">PUBLIC_GROUP</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== PUBLIC GROUP RULES ==
+File path: groups/GroupApiName.group
+metadataType: Group
+memberName: GroupApiName
+
+<?xml version="1.0" encoding="UTF-8"?>
+<Group xmlns="http://soap.sforce.com/2006/04/metadata">
+    <name>Group Display Name</name>
+    <doesIncludeBosses>false</doesIncludeBosses>
+    <members>
+        <members>username@example.com</members>
+        <type>User</type>
+    </members>
+    <members>
+        <members>CEO</members>
+        <type>Role</type>
+    </members>
+</Group>
+
+MANDATORY ELEMENT ORDER:
+  1. name               (required — display label, spaces allowed)
+  2. doesIncludeBosses  (optional — defaults to false)
+  3. members            (optional — one block per member, repeating)
+
+VALID ELEMENTS — ONLY these three exist on Group metadata:
+  <name>, <doesIncludeBosses>, <members>
+  NOTHING ELSE. Do not add any other elements.
+
+STRICTLY FORBIDDEN — these do NOT exist on Group:
+  <doesSendEmailToMembers>  ← Queue-only, NOT valid on Group
+  <type>Regular</type>      ← NOT a valid Group element
+  <sharedTo>                ← does not exist in Group metadata
+
+MEMBER TYPES — <type> value inside each <members> block:
+  User                → <members> = username (email address)
+  Role                → <members> = exact role name (e.g. CEO)
+  RoleAndSubordinates → <members> = role name, includes all subordinates
+  Group               → <members> = DeveloperName of another public group
+  AllInternalUsers    → <members> = AllInternalUsers
+
+RULES:
+- GroupApiName (DeveloperName) has no spaces — use underscores
+- For UPDATES: regenerate complete XML preserving existing members, only change what ticket asks
+- For DELETE: use destructiveFiles with metadataType Group and member = GroupApiName
+- Never use Group metadata for Queues — Queues have their own metadata type]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">157.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Public Group XML format and member type rules</value>
+    </values>
+</CustomMetadata>

@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Field Types</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">FIELD_TYPES</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== FIELD TYPE FORMATS ==
+
+-- Text --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Text</type>
+    <length>255</length>
+    <required>false</required>
+</fields>
+
+-- Number / Currency / Percent --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Number</type>
+    <precision>18</precision>
+    <scale>2</scale>
+    <required>false</required>
+</fields>
+
+-- Checkbox --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Checkbox</type>
+    <defaultValue>false</defaultValue>
+</fields>
+
+-- Date / DateTime / Phone / Email / Url --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Date</type>
+    <required>false</required>
+</fields>
+
+-- TextArea --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>TextArea</type>
+    <length>255</length>
+</fields>
+
+-- LongTextArea --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>LongTextArea</type>
+    <length>32768</length>
+    <visibleLines>5</visibleLines>
+</fields>
+CRITICAL: <visibleLines> is MANDATORY for LongTextArea — Salesforce will reject the deploy without it.
+Always include <visibleLines> on every LongTextArea field, no exceptions.
+
+-- Picklist --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Picklist</type>
+    <valueSet>
+        <restricted>false</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+            <value>
+                <fullName>Value1</fullName>
+                <default>false</default>
+                <label>Value1</label>
+            </value>
+            <value>
+                <fullName>Value2</fullName>
+                <default>false</default>
+                <label>Value2</label>
+            </value>
+        </valueSetDefinition>
+    </valueSet>
+</fields>
+
+-- MultiselectPicklist --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>MultiselectPicklist</type>
+    <visibleLines>4</visibleLines>
+    <valueSet>
+        <restricted>false</restricted>
+        <valueSetDefinition>
+            <sorted>false</sorted>
+            <value>
+                <fullName>Value1</fullName>
+                <default>false</default>
+                <label>Value1</label>
+            </value>
+        </valueSetDefinition>
+    </valueSet>
+</fields>
+
+-- Lookup --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Lookup</type>
+    <referenceTo>ParentObject__c</referenceTo>
+    <relationshipName>ChildObject_FieldName</relationshipName>
+</fields>
+
+-- MasterDetail --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>MasterDetail</type>
+    <referenceTo>ParentObject__c</referenceTo>
+    <relationshipName>ChildObject_FieldName</relationshipName>
+    <reparentableMasterDetail>false</reparentableMasterDetail>
+    <writeRequiresMasterRead>false</writeRequiresMasterRead>
+</fields>
+
+-- RELATIONSHIP NAME RULES --
+<relationshipName> is REQUIRED on every Lookup / MasterDetail field.
+You MUST include the <relationshipName> tag. A reasonable default is {ChildObjectWithout__c}_{FieldNameWithout__c}.
+Apex will AUTOMATICALLY rewrite the <relationshipName> value to a unique hash-suffixed name
+(e.g. Reservation_AI_Message_7A3F2C) before the XML is deployed. This prevents collisions
+with orphan child relationships left in the org from prior failed deploys.
+Do NOT worry about uniqueness — just emit the simple {Child}_{Field} form and Apex handles the rest.
+
+CRITICAL RULE: When a MasterDetail field exists, the object sharingModel MUST be ControlledByParent]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">60.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">All field type XML formats: Text, Number, Picklist, Lookup, MasterDetail etc.</value>
+    </values>
+</CustomMetadata>

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Trigger Pattern</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">TRIGGER_PATTERN</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+-- TRIGGER HANDLER PATTERN --
+ALWAYS use the thin-trigger + handler-class pattern. Never put logic in the trigger body.
+
+Thin trigger (delegates 100% to handler):
+trigger InvoiceTrigger on Invoice__c (before insert, before update, after insert) {
+    InvoiceHandler.dispatch(Trigger.operationType, Trigger.new, Trigger.old, Trigger.newMap, Trigger.oldMap);
+}
+
+Handler class skeleton:
+public class InvoiceHandler {
+    public static void dispatch(
+        System.TriggerOperation op,
+        List<Invoice__c> newList,
+        List<Invoice__c> oldList,
+        Map<Id, Invoice__c> newMap,
+        Map<Id, Invoice__c> oldMap
+    ) {
+        if (op == System.TriggerOperation.BEFORE_INSERT)  handleBeforeInsert(newList);
+        if (op == System.TriggerOperation.BEFORE_UPDATE)  handleBeforeUpdate(newList, oldMap);
+        if (op == System.TriggerOperation.AFTER_INSERT)   handleAfterInsert(newList, newMap);
+    }
+    private static void handleBeforeInsert(List<Invoice__c> newList) {
+        for (Invoice__c rec : newList) {
+            // logic here — NEVER SOQL inside loops
+        }
+    }
+}
+
+Naming convention:
+  Trigger name  = {ObjectName}Trigger   (e.g. InvoiceTrigger, CaseTrigger)
+  Handler name  = {ObjectName}Handler   (e.g. InvoiceHandler, CaseHandler)
+
+-- ONE TRIGGER PER OBJECT RULE --
+Salesforce best practice: ONE trigger per sObject. This system enforces it strictly.
+The org check always fetches the existing trigger + handler before generation.
+The result is in orgState under "existingTrigger" and "existingHandlerClass".
+
+STEP ZERO — READ ORG STATE BEFORE WRITING ANYTHING.
+Check orgState.existingTrigger. This is the ONLY decision point.
+Ticket wording does NOT override org state.
+
+WARNING — TICKET LANGUAGE IS MISLEADING:
+Words like "Create a trigger", "Implement a trigger", "Add a trigger"
+describe the BUSINESS INTENT — NOT an instruction to generate fresh code.
+If orgState.existingTrigger is not null → you are ALWAYS in MERGE mode.
+
+== MERGE MODE — orgState.existingTrigger IS NOT NULL ==
+STEP 1 — List every event already in the existing trigger. ALL must appear in your output.
+STEP 2 — List every method in the existing handler class. ALL must appear in your output.
+STEP 3 — Identify what the ticket is adding (new events or new logic in existing event).
+STEP 4 — BUILD updated trigger: start from existingTrigger.body verbatim; add new events if any.
+STEP 5 — BUILD updated handler: start from existingHandlerClass.body verbatim; add new methods or logic.
+STEP 6 — SELF-CHECK:
+  Does output trigger contain every event from STEP 1? If not, add missing ones.
+  Does output handler contain every method from STEP 2? If not, paste them back in.
+  Is output handler the COMPLETE class — not just a snippet?
+STEP 7 — Emit the full updated trigger file + meta + handler file + meta.
+
+== CREATE MODE — orgState.existingTrigger IS NULL ==
+No trigger exists. Generate fresh trigger + handler files from scratch.
+Generate all four files: trigger code, trigger meta, handler code, handler meta.]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">180.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">APEX</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Trigger handler pattern, one-trigger-per-object rule, merge vs create mode</value>
+    </values>
+</CustomMetadata>

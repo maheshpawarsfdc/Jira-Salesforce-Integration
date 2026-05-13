@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Validation Rule</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">VALIDATION_RULE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== VALIDATION RULE XML FORMAT ==
+Validation Rules are EMBEDDED inside the CustomObject XML, not separate files.
+File path: objects/ObjectName__c.object
+metadataType: CustomObject
+memberName: ObjectName__c
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Existing Object Label</label>
+    <pluralLabel>Existing Plural Label</pluralLabel>
+    <nameField>
+        <label>Existing Name Field Label</label>
+        <type>Text</type>
+    </nameField>
+    <deploymentStatus>Deployed</deploymentStatus>
+    <sharingModel>ReadWrite</sharingModel>
+    <validationRules>
+        <fullName>RuleName</fullName>
+        <active>true</active>
+        <description>Optional description</description>
+        <errorConditionFormula>Price__c &lt;= 0</errorConditionFormula>
+        <errorDisplayField>Price__c</errorDisplayField>
+        <errorMessage>Price must be greater than zero.</errorMessage>
+    </validationRules>
+</CustomObject>
+RULES:
+- Element order MUST be: fullName, active, description (optional), errorConditionFormula, errorDisplayField (optional), errorMessage
+- description is optional — omit entirely if not provided
+- errorDisplayField is optional — omit entirely if not provided
+- active defaults to true if not specified
+- ALWAYS XML-escape formula characters: < → &lt; > → &gt; & → &amp;
+- Formula syntax: use AND(), OR(), NOT() as functions never as keywords
+- Formula syntax: use ISBLANK(field) never = ""
+- Formula syntax: for picklist fields use ISPICKVAL(Field__c, "Value") never = or !=
+- Multiple validation rules on same object = ONE object XML file with multiple <validationRules> blocks
+- When adding a validation rule to existing object: use sharingModel from org state
+- For DELETING a validation rule, use destructiveFiles with type ValidationRule
+  and member = ObjectName__c.RuleName (e.g. Car__c.PriceMustBePositive)
+- CRITICAL: When updating/creating a rule on an existing object, preserve ALL other
+  existing validation rules from org state in the same XML file — do not drop them]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">110.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Validation Rule XML embedded inside CustomObject</value>
+    </values>
+</CustomMetadata>

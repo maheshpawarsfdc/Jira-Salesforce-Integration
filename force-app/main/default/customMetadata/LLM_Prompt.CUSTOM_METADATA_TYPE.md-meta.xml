@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Custom Metadata Type</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">CUSTOM_METADATA_TYPE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== CUSTOM METADATA TYPE XML FORMAT ==
+
+-- TYPE DEFINITION --
+File path: objects/ApiName__mdt.object
+metadataType: CustomObject
+memberName: ApiName__mdt
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Type Label</label>
+    <pluralLabel>Type Labels</pluralLabel>
+    <description>Optional description</description>
+    <visibility>Public</visibility>
+    <fields>
+        <fullName>FieldName__c</fullName>
+        <label>Field Label</label>
+        <type>Text</type>
+        <length>255</length>
+        <required>false</required>
+    </fields>
+</CustomObject>
+RULES FOR TYPE DEFINITION:
+- API name always ends with __mdt (e.g. My_Config__mdt)
+- visibility is Public (default), Protected, or PackageProtected
+- description is optional — omit entirely if not provided
+- Fields are embedded inside the same CustomObject XML
+- Supported field types: Checkbox, Date, DateTime, Email, Number, Percent, Phone, Picklist, Text, TextArea, LongTextArea, Url
+- Checkbox fields: use <defaultValue>false</defaultValue> instead of <required>
+- Text/TextArea fields: include <length>255</length>
+- LongTextArea fields: include <length>32768</length> and <visibleLines>3</visibleLines>
+- Number/Percent fields: include <precision>18</precision> and <scale>0</scale>
+- Multiple fields = ONE object file with multiple <fields> blocks
+- For DELETING a type: use destructiveFiles with type CustomObject, member = ApiName__mdt
+
+-- RECORD --
+File path: customMetadata/ApiName__mdt.RecordName.md
+metadataType: CustomMetadata
+memberName: ApiName__mdt.RecordName
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Record Label</label>
+    <protected>false</protected>
+    <values>
+        <field>FieldName__c</field>
+        <value xsi:type="xsd:string">field value</value>
+    </values>
+</CustomMetadata>
+RULES FOR RECORDS:
+- RecordName must be alphanumeric and underscores only, no spaces
+- Each field value needs correct xsi:type:
+  Text/TextArea/LongTextArea/Email/Phone/Url/Picklist → xsi:type="xsd:string"
+  Number/Percent/Currency                             → xsi:type="xsd:double"
+  Checkbox                                            → xsi:type="xsd:boolean"
+  Date                                                → xsi:type="xsd:date"
+  DateTime                                            → xsi:type="xsd:dateTime"
+- protected defaults to false
+- Each record is its own separate file
+- For DELETING a record: use destructiveFiles with type CustomMetadata, member = ApiName__mdt.RecordName]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">130.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Custom Metadata Type definition and record XML formats</value>
+    </values>
+</CustomMetadata>

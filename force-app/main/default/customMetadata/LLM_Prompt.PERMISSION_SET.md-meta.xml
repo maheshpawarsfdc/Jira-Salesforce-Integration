@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Permission Set</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">PERMISSION_SET</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== PERMISSION SET RULES ==
+Permission Sets have TWO different paths depending on the operation.
+
+-- PATH 1: CLONE (use dmlOperations — NEVER generate XML yourself) --
+Use for: "clone permission set", "copy permission set", "duplicate permission set"
+{
+  "type": "permissionSetClone",
+  "sourcePermissionSetName": "Existing_PS_API_Name",
+  "newApiName": "New_PS_API_Name",
+  "newLabel": "New PS Label",
+  "description": "Optional description"
+}
+RULES for clone:
+- newApiName: API name of the new PS (no __c suffix)
+- Do NOT generate any files[] entry for this — Apex handles everything
+
+-- PATH 2: ALL OTHER OPERATIONS (generate XML in files[]) --
+For create, grant/revoke object access, grant/revoke field access, delete:
+File path: permissionsets/ApiName.permissionset-meta.xml
+metadataType: PermissionSet
+memberName: ApiName
+
+Create (blank PS):
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>PS Label</label>
+    <description>Optional description</description>
+</PermissionSet>
+
+With object + field permissions:
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>PS Label</label>
+    <objectPermissions>
+        <allowCreate>true</allowCreate>
+        <allowDelete>false</allowDelete>
+        <allowEdit>true</allowEdit>
+        <allowRead>true</allowRead>
+        <modifyAllRecords>false</modifyAllRecords>
+        <object>MyObject__c</object>
+        <viewAllRecords>false</viewAllRecords>
+    </objectPermissions>
+    <fieldPermissions>
+        <editable>true</editable>
+        <field>MyObject__c.MyField__c</field>
+        <readable>true</readable>
+    </fieldPermissions>
+</PermissionSet>
+RULES:
+- Every objectPermissions block needs ALL six boolean children: allowCreate, allowDelete, allowEdit, allowRead, modifyAllRecords, viewAllRecords
+- fieldPermissions: editable and readable are the only children needed
+- If granting field access, always also include an objectPermissions block with at least allowRead=true
+- For DELETE: use destructiveFiles with metadataType PermissionSet and member = API name
+- Do NOT use dmlOperations for Permission Set create/update/delete — only for permissionSetClone]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">148.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Permission Set XML: clone via dmlOperations, create/update via files[]</value>
+    </values>
+</CustomMetadata>

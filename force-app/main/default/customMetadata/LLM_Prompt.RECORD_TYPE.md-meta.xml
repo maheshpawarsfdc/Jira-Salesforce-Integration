@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Record Type</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">RECORD_TYPE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== RECORD TYPE RULES ==
+Record Types are embedded inside the CustomObject XML as <recordTypes> blocks.
+metadataType: CustomObject
+memberName: ObjectName or ObjectName__c
+
+CRITICAL: Standard objects use NO __c suffix: Case, Account, Contact, Lead, Opportunity
+
+ELEMENT ORDER inside <recordTypes> MUST be:
+  1. fullName
+  2. active
+  3. businessProcess  (ONLY for Case/Lead/Opportunity/Solution — see below)
+  4. description (optional)
+  5. label
+  6. picklistValues (optional)
+
+-- RECORD TYPE XML --
+<recordTypes>
+    <fullName>Record_Type_API_Name</fullName>
+    <active>true</active>
+    <description>Optional description</description>
+    <label>Record Type Label</label>
+    <picklistValues>
+        <picklist>Status__c</picklist>
+        <values>
+            <fullName>Active</fullName>
+            <default>false</default>
+        </values>
+        <values>
+            <fullName>Inactive</fullName>
+            <default>true</default>
+        </values>
+    </picklistValues>
+</recordTypes>
+
+CRITICAL: Inside <values>, ONLY two elements allowed: <fullName> and <default>
+NEVER include <label> inside <values>.
+
+== PROCESS-DRIVEN OBJECTS — CRITICAL ==
+Case, Lead, Opportunity, and Solution record types REQUIRE a <businessProcess> element.
+Omitting it causes: "Required field is missing: businessProcess"
+Object → Business Process: Case→Support Process, Lead→Lead Process, Opportunity→Sales Process
+ALWAYS use the first entry from orgState.existingBusinessProcesses for the relevant object.
+
+CORRECT XML for a Case record type:
+<recordTypes>
+    <fullName>Technical_Support</fullName>
+    <active>true</active>
+    <businessProcess>Basic Support Process</businessProcess>
+    <label>Technical Support</label>
+</recordTypes>
+
+== STANDARD OBJECT RECORD TYPES — ABSOLUTE RULES ==
+When the object is a STANDARD object:
+1. MINIMAL CustomObject XML — ONLY <recordTypes> blocks inside <CustomObject>. NOTHING else.
+   FORBIDDEN: <label>, <pluralLabel>, <nameField>, <sharingModel>, <deploymentStatus>
+2. NEVER generate a CustomTab file for a standard object.
+3. NEVER add <tabVisibilities> in any Profile XML for a standard object.
+4. NEVER generate a Layout file for a standard object.
+
+QUICK REFERENCE for standard-object record type (e.g. Account):
+  File 1: objects/Account.object  — CustomObject with ONLY <recordTypes> block(s)
+  File 2: profiles/Admin.profile  — Profile with <layoutAssignments> + <recordTypeVisibilities>
+  NO CustomTab. NO <tabVisibilities>. NO Layout file. Ever.
+
+-- PROFILE ASSIGNMENT FOR RECORD TYPES --
+<?xml version="1.0" encoding="UTF-8"?>
+<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
+    <layoutAssignments>
+        <layout>ObjectName-Layout Name</layout>
+        <recordType>ObjectName.RecordTypeDeveloperName</recordType>
+    </layoutAssignments>
+    <recordTypeVisibilities>
+        <recordType>ObjectName.RecordTypeDeveloperName</recordType>
+        <default>false</default>
+        <visible>true</visible>
+    </recordTypeVisibilities>
+</Profile>
+
+LAYOUT REFERENCE FORMAT: ObjectName-Layout Name (one dash). Example: Account-Account Layout
+HOW TO FIND STANDARD OBJECT LAYOUT NAME: use orgState.standardObjectLayoutNames["Account"][0]
+
+DEFAULT RECORD TYPE RULE — CRITICAL:
+Salesforce requires exactly ONE recordTypeVisibility per object to have default=true.
+- If ticket says Default=true → set <default>true</default>
+- If ticket says Default=false but it is the only record type → STILL set <default>true</default>
+- NEVER emit <recordType>ObjectName.Master</recordType> — Master is not a valid Metadata API name
+- NEVER leave all recordTypeVisibilities with default=false
+
+-- PICKLIST VALUES --
+1. Only include <picklistValues> if ticket specifies which values to assign
+2. If ticket says "all values" → include ALL picklist values from existingFields in orgState
+3. If ticket does not mention picklist values → OMIT <picklistValues> entirely
+4. NEVER fabricate picklist values — only use values that exist in orgState
+
+-- RULES SUMMARY --
+1. ALWAYS preserve ALL existing record types when updating — never drop any
+2. For new object + record type → chained deployment
+3. For existing object + record type → single deployment
+4. NEVER emit two files[] entries with same filePath — merge into one]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">160.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">CUSTOM_OBJECT</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Record Type XML, Profile assignment, picklist values, process-driven objects</value>
+    </values>
+</CustomMetadata>

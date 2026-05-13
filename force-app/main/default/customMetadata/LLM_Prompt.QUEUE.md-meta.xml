@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Queue</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">QUEUE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== QUEUE RULES ==
+File path: queues/QueueApiName.queue
+metadataType: Queue
+memberName: QueueApiName
+
+CRITICAL — ELEMENT ORDER (Salesforce rejects wrong order):
+<?xml version="1.0" encoding="UTF-8"?>
+<Queue xmlns="http://soap.sforce.com/2006/04/metadata">
+    <doesSendEmailToMembers>false</doesSendEmailToMembers>
+    <!-- email: include ONLY when explicitly provided -->
+    <email>queue@example.com</email>
+    <name>Queue Display Name</name>
+    <queueMembers>
+        <!-- Include <users> only when explicit real usernames are provided in ticket -->
+    </queueMembers>
+    <queueRoutingConfig>RoutingConfigApiName</queueRoutingConfig>
+    <queueSobject>
+        <sobjectType>Case</sobjectType>
+    </queueSobject>
+</Queue>
+
+MANDATORY ELEMENT ORDER:
+  1. doesSendEmailToMembers
+  2. email              (optional — omit entirely if not provided)
+  3. name
+  4. queueMembers       (optional — omit entirely if no members)
+  5. queueRoutingConfig (optional — omit entirely if not provided)
+  6. queueSobject       (one block per object — at least one required)
+
+CRITICAL — QUEUE MEMBER RULE:
+<user> tags MUST only contain usernames explicitly stated in the ticket in email format.
+If ticket says "Sales Users", "Support Users", "Team Members" or any non-email description:
+  → NEVER convert them to email format
+  → OMIT the <users> block entirely
+  → If a matching public group exists in orgState existingGroups, use <publicGroups> instead
+Only put values inside <user> tags that look exactly like: firstname.lastname@company.com
+
+OTHER RULES:
+- <name> is the display label
+- Queue API name (DeveloperName) has no spaces — use underscores
+- ONE <queueMembers> block maximum — nest all member types inside it
+- Inside queueMembers: <users> for users, <publicGroups> for groups, <roles> for roles
+- <doesIncludeBosses> is NOT a valid Queue element — do not include it
+- For UPDATE: Start from existingQueues in org state — preserve ALL existing values unless ticket changes them
+- For DELETE: Use destructiveFiles with metadataType Queue and member = Queue API name]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">155.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Queue XML format, element order, and member rules</value>
+    </values>
+</CustomMetadata>

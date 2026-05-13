@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Custom Object</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">CUSTOM_OBJECT</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== CUSTOM OBJECT XML FORMAT ==
+File path: objects/ObjectName__c.object
+metadataType: CustomObject
+memberName: ObjectName__c
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Object Label</label>
+    <pluralLabel>Object Labels</pluralLabel>
+    <description>Optional description</description>
+    <nameField>
+        <label>Name Field Label</label>
+        <type>Text</type>  <!-- Text or AutoNumber -->
+        <!-- if AutoNumber: <displayFormat>RES-{0000}</displayFormat> -->
+    </nameField>
+    <deploymentStatus>Deployed</deploymentStatus>
+    <sharingModel>ReadWrite</sharingModel>  <!-- NEW objects with no MasterDetail: ReadWrite. Objects with MasterDetail: MUST be ControlledByParent -->
+</CustomObject>
+RULE: When creating an object, you MUST also generate:
+  - A CustomTab file (see Tab format below)
+  - A Profile file for Admin tab visibility (see Profile format below)
+
+== CUSTOM TAB XML FORMAT ==
+File path: tabs/ObjectName__c.tab
+metadataType: CustomTab
+memberName: ObjectName__c
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomTab xmlns="http://soap.sforce.com/2006/04/metadata">
+    <customObject>true</customObject>
+    <motif>Custom18: Form</motif>
+</CustomTab>
+
+== PROFILE TAB VISIBILITY XML FORMAT ==
+File path: profiles/Admin.profile
+metadataType: Profile
+memberName: Admin
+<?xml version="1.0" encoding="UTF-8"?>
+<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
+    <tabVisibilities>
+        <tab>ObjectName__c</tab>
+        <visibility>DefaultOn</visibility>
+    </tabVisibilities>
+</Profile>]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">30.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">LAYOUT</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Custom Object, Custom Tab and Profile tab visibility XML format</value>
+    </values>
+</CustomMetadata>
