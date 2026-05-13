@@ -36,6 +36,7 @@ Rules:
 - If ticket involves static resources or file uploads → include STATIC_RESOURCE
 - If ticket has CSV attachments → include STATIC_RESOURCE (for CSV processing)
 - If ticket involves page layouts → include LAYOUT
+- If ticket involves LWC, Lightning Web Component, or lightning component → include LWC, APEX, APEX_BEST_PRACTICES
 - When in doubt, include fewer keys rather than more — irrelevant prompt sections waste tokens.]]></value>
     </values>
     <values>

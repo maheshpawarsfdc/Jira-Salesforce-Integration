@@ -672,6 +672,64 @@ public class LLMService {
                 }
             }
 
+            // ── Fetch existing LWC component ─────────────────────────────────
+            // Covers: create LWC, update LWC, add property/method to existing LWC.
+            // Keywords: "lwc", "lightning web component", "lightning component"
+            // Note: "component" alone is too broad and is intentionally excluded.
+            if (ticketTextLower.contains('lwc')
+                    || ticketTextLower.contains('lightning web component')
+                    || ticketTextLower.contains('lightning component')) {
+                try {
+                    String detectedComponentName = extractLwcComponentName(summary + ' ' + description);
+
+                    if (String.isNotBlank(detectedComponentName)) {
+                        System.debug('runOrgCheck: detected LWC name [' + detectedComponentName + '] — fetching from org');
+                        Map<String, Object> componentState = getLwcComponentState(detectedComponentName);
+                        orgState.put('existingLwcComponent', componentState); // null = create mode
+                        System.debug('runOrgCheck: existingLwcComponent = '
+                            + (componentState != null ? componentState.get('developerName') : 'null (create mode)'));
+                    } else {
+                        System.debug('runOrgCheck: no LWC component name found in ticket — create mode assumed');
+                        orgState.put('existingLwcComponent', null);
+                    }
+
+                    // ── Also detect Apex controller referenced by this LWC ──────────
+                    // LWC tickets say "use AccountController" or "calls InvoiceService"
+                    // without the word "class" — the existing class-detection block
+                    // (which fires only on "class") would miss these.
+                    String combined = summary + ' ' + description;
+                    Pattern controllerPat = Pattern.compile(
+                        '([A-Z][A-Za-z0-9_]+(?:Controller|Service|Handler|Helper))'
+                    );
+                    Matcher controllerMatch = controllerPat.matcher(combined);
+                    String detectedControllerName = null;
+                    while (controllerMatch.find()) {
+                        String candidate = controllerMatch.group(1);
+                        // Exclude known Salesforce built-in names
+                        Set<String> sfBuiltInControllers = new Set<String>{
+                            'LightningController', 'StandardController', 'ApexPages'
+                        };
+                        if (!sfBuiltInControllers.contains(candidate)) {
+                            detectedControllerName = candidate;
+                            break;
+                        }
+                    }
+
+                    if (String.isNotBlank(detectedControllerName)) {
+                        System.debug('runOrgCheck: detected LWC Apex controller [' + detectedControllerName + '] — fetching from org');
+                        Map<String, Object> controllerState = getApexClassState(detectedControllerName);
+                        // null = controller does not exist yet; LLM will generate it fresh
+                        orgState.put('existingLwcApexController', controllerState);
+                        System.debug('runOrgCheck: existingLwcApexController = '
+                            + (controllerState != null ? controllerState.get('name') : 'null (will be created)'));
+                    }
+
+                } catch (Exception e) {
+                    System.debug('runOrgCheck: LWC state fetch failed — ' + e.getMessage());
+                    ErrorLogger.log(e);
+                }
+            }
+
             // ── Fetch existing Custom Labels ─────────────────────────────────
             // Covers: custom label create, update, delete, translate.
             // Uses Tooling API directly — no LLM tool loop needed.
@@ -1343,6 +1401,16 @@ public class LLMService {
                 Boolean isApexCode = (metadataType == 'ApexClass' || metadataType == 'ApexTrigger');
                 Boolean isApexMeta = (metadataType == 'ApexClassMeta' || metadataType == 'ApexTriggerMeta');
 
+                // ── LWC file type detection ───────────────────────────────────
+                // LwcHtml and LwcJs are source files — skip XML validation.
+                // LwcMeta is an XML file — validate normally.
+                Boolean isLwcHtml = (metadataType == 'LwcHtml');
+                Boolean isLwcJs   = (metadataType == 'LwcJs');
+                Boolean isLwcMeta = (metadataType == 'LwcMeta');
+                // LwcTest = Jest test file — saved locally, NOT deployed to Salesforce
+                Boolean isLwcTest = (metadataType == 'LwcTest');
+                Boolean isLwcFile = isLwcHtml || isLwcJs || isLwcMeta; // LwcTest excluded — not a metadata type
+
                 // ── Guard: Apex code file must NOT contain XML meta content ─────────────────
                 if ((metadataType == 'ApexClass' || metadataType == 'ApexTrigger')
                         && String.isNotBlank(xmlContent)) {
@@ -1358,6 +1426,55 @@ public class LLMService {
                     }
                 }
 
+                // ── Guard: LWC HTML/JS files must NOT contain XML meta content ────────────
+                // Catches cases where LLM puts <?xml or <LightningComponentBundle into a .html or .js file.
+                if ((isLwcHtml || isLwcJs) && String.isNotBlank(xmlContent)) {
+                    String trimmedLwc = xmlContent.trim();
+                    if (trimmedLwc.startsWith('<?xml') || trimmedLwc.startsWith('<LightningComponent')) {
+                        System.debug('[DEPLOY-TRACE] *** LWC SOURCE FILE CONTAINS XML *** file=['
+                            + filePath + '] — LLM put meta XML in a source file. Aborting.');
+                        return 'Error: LLM generated XML meta content inside LWC source file ['
+                            + filePath + ']. The .html and .js files must contain component source, '
+                            + 'not XML. Please retry.';
+                    }
+                }
+
+                // ── LWC HTML sanitization: strip wire-style .data/.error bindings ──────────
+                // LLMs frequently generate {property.data} / {property.error} (Tier 1 wire-result
+                // syntax) even when the JS uses imperative .then()/.catch() (Tier 2).
+                // Accessing .data on a plain array is undefined at connect phase →
+                // "Cannot read properties of undefined (reading 'data')".
+                // Fix: if the sibling LwcJs uses imperative pattern → strip .data/.error silently.
+                if (isLwcHtml && String.isNotBlank(xmlContent)) {
+                    String correspondingJs = null;
+                    for (Object f2Raw : files) {
+                        Map<String, Object> f2 = (Map<String, Object>) f2Raw;
+                        if ('LwcJs'.equals((String) f2.get('metadataType'))
+                                && memberName.equals((String) f2.get('memberName'))) {
+                            correspondingJs = (String) f2.get('xmlContent');
+                            break;
+                        }
+                    }
+                    Boolean jsIsImperative = correspondingJs != null
+                        && correspondingJs.contains('.then(');
+                    if (jsIsImperative) {
+                        String htmlBefore = xmlContent;
+                        // {prop.data} → {prop}  (for:each, if:true bindings)
+                        xmlContent = xmlContent.replaceAll(
+                            '\\{([a-zA-Z][a-zA-Z0-9_]*)\\.data\\}', '{$1}'
+                        );
+                        // {prop.error} → {error}
+                        xmlContent = xmlContent.replaceAll(
+                            '\\{([a-zA-Z][a-zA-Z0-9_]*)\\.error\\}', '{error}'
+                        );
+                        if (!xmlContent.equals(htmlBefore)) {
+                            System.debug('[DEPLOY-TRACE] LWC HTML [' + memberName
+                                + '] — auto-sanitized wire-style .data/.error bindings'
+                                + ' for imperative Tier 2 component');
+                        }
+                    }
+                }
+
                 // Guard: skip spurious classes/XxxTrigger.cls files
                 if (metadataType == 'ApexClass'
                         && filePath != null
@@ -1369,7 +1486,30 @@ public class LLMService {
                     continue;
                 }
 
-                if (!isApexCode) {
+                // ── LwcTest: Jest test file — save to ContentDocument, skip deployment ────────
+                // Jest tests are Node.js files. They cannot be deployed to Salesforce.
+                // Store in a ContentVersion so a local script can retrieve and run them.
+                if (isLwcTest && String.isNotBlank(xmlContent)) {
+                    try {
+                        ContentVersion cv = new ContentVersion();
+                        cv.Title       = 'LwcJest_' + memberName;
+                        cv.PathOnClient = memberName + '.test.js';
+                        cv.VersionData  = Blob.valueOf(xmlContent);
+                        cv.IsMajorVersion = true;
+                        insert cv;
+                        System.debug('[DEPLOY-TRACE] Jest test saved to ContentDocument title=[LwcJest_'
+                            + memberName + '] Id=[' + cv.Id + ']');
+                    } catch (Exception e) {
+                        System.debug('[DEPLOY-TRACE] Failed to save Jest test: ' + e.getMessage());
+                    }
+                    continue; // do NOT add to Salesforce deployment ZIP
+                }
+
+                // isNonXmlSource = files whose content is NOT XML (Apex source, LWC html, LWC js)
+                // These skip XML validation. LwcMeta IS XML and goes through validation.
+                Boolean isNonXmlSource = isApexCode || isLwcHtml || isLwcJs || isLwcTest;
+
+                if (!isNonXmlSource) {
                     
                     // ── XML validation — skipped for raw Apex source ──────────
                     // Companion meta files (ApexClassMeta / ApexTriggerMeta) are
@@ -1385,9 +1525,12 @@ public class LLMService {
                         return 'Error: Invalid XML generated for ' + filePath + ': ' + validationError;
                     }
                 } else {
-                    xmlContent = sanitizeApexRegex(xmlContent);
-                    System.debug('[DEPLOY-TRACE] skipping XML validation for Apex code file ['
-                        + filePath + '] — Apex source is compiled by the Metadata API, not pre-validated');
+                    // Non-XML source file — skip XML validation
+                    if (isApexCode) {
+                        xmlContent = sanitizeApexRegex(xmlContent);
+                    }
+                    System.debug('[DEPLOY-TRACE] skipping XML validation for non-XML source file ['
+                        + filePath + '] metadataType=[' + metadataType + ']');
                 }
 
                 // ── Package.xml registration for Apex types ───────────────────
@@ -1402,6 +1545,15 @@ public class LLMService {
                     effectiveType = metadataType.replace('Meta', '');
                     System.debug('[DEPLOY-TRACE] ApexMeta file — normalising metadataType ['
                         + metadataType + '] → [' + effectiveType + '] for package.xml registration');
+                }
+
+                // Normalize all three LWC file types to the single package.xml type.
+                // ZipBuilder.metadataTypes is Map<String, Set<String>> so the same memberName
+                // added three times is deduplicated automatically — no extra logic needed.
+                if (isLwcFile) {
+                    effectiveType = 'LightningComponentBundle';
+                    System.debug('[DEPLOY-TRACE] LWC file — normalising metadataType ['
+                        + metadataType + '] → [LightningComponentBundle] for package.xml');
                 }
 
                 if (zip2FilePaths.contains(filePath)) {
@@ -3680,6 +3832,140 @@ public class LLMService {
                   .replace('\'', '&apos;');
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // EXTRACT LWC COMPONENT NAME FROM TICKET TEXT
+    // Tries four regex patterns in priority order.
+    // Returns the camelCase/lowercase component name or null if not found.
+    // Priority 1: explicit — "called myComponent", "named myComponent"
+    // Priority 2: "the myComponent component/lwc"
+    // Priority 3: "lwc/component myComponent"
+    // Priority 4: "update/modify/fix the myComponent"
+    // If none match → returns null and LLM names the component itself.
+    // ─────────────────────────────────────────────────────────────
+    private static String extractLwcComponentName(String ticketText) {
+        if (String.isBlank(ticketText)) return null;
+
+        // Priority 1: explicit "called myComponent" or "named myComponent"
+        Pattern p1 = Pattern.compile('(?i)(?:called|named)\\s+([a-z][A-Za-z0-9]+)');
+        Matcher m1 = p1.matcher(ticketText);
+        if (m1.find()) {
+            System.debug('extractLwcComponentName: matched P1 → ' + m1.group(1));
+            return m1.group(1);
+        }
+
+        // Priority 2: "the myComponent component" or "the myComponent lwc"
+        Pattern p2 = Pattern.compile(
+            '(?i)(?:the\\s+)?([a-z][A-Za-z0-9]+)\\s+(?:lwc|component|lightning web component|lightning component)'
+        );
+        Matcher m2 = p2.matcher(ticketText);
+        if (m2.find()) {
+            System.debug('extractLwcComponentName: matched P2 → ' + m2.group(1));
+            return m2.group(1);
+        }
+
+        // Priority 3: "lwc myComponent" or "component myComponent"
+        Pattern p3 = Pattern.compile('(?i)(?:lwc|component)\\s+([a-z][A-Za-z0-9]+)');
+        Matcher m3 = p3.matcher(ticketText);
+        if (m3.find()) {
+            System.debug('extractLwcComponentName: matched P3 → ' + m3.group(1));
+            return m3.group(1);
+        }
+
+        // Priority 4: "update/modify/edit/fix the myComponent"
+        Pattern p4 = Pattern.compile(
+            '(?i)(?:update|modify|edit|fix|change)\\s+(?:the\\s+)?([a-z][A-Za-z0-9]+)'
+        );
+        Matcher m4 = p4.matcher(ticketText);
+        if (m4.find()) {
+            System.debug('extractLwcComponentName: matched P4 → ' + m4.group(1));
+            return m4.group(1);
+        }
+
+        System.debug('extractLwcComponentName: no match — LLM will name the component');
+        return null;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // GET LWC COMPONENT STATE
+    // Reads an existing LWC bundle from the org via Tooling API.
+    // Two queries:
+    //   Step 1: LightningComponentBundle → get Id by DeveloperName
+    //   Step 2: LightningComponentResource → get html, js, meta sources
+    //
+    // Returns null if the component does not exist (= create mode).
+    // Returns a map with keys: developerName, html, js, metaXml (= merge mode).
+    // Called directly from runOrgCheck() — no LLM tool loop involved.
+    // ─────────────────────────────────────────────────────────────
+    private static Map<String, Object> getLwcComponentState(String developerName) {
+        try {
+            System.debug('getLwcComponentState: checking for LWC [' + developerName + ']');
+
+            // Step 1 — find the bundle Id
+            String bundleQuery = 'SELECT Id, DeveloperName FROM LightningComponentBundle'
+                + ' WHERE DeveloperName = \'' + developerName + '\''
+                + ' AND NamespacePrefix = null'
+                + ' LIMIT 1';
+
+            Map<String, Object> bundleResult = MetadataHelper.runToolingApiQuery(bundleQuery);
+            List<Object> bundleRecords = (List<Object>) bundleResult.get('records');
+
+            if (bundleRecords == null || bundleRecords.isEmpty()) {
+                System.debug('getLwcComponentState: no bundle found for [' + developerName + '] — create mode');
+                return null;
+            }
+
+            Map<String, Object> bundleRec = (Map<String, Object>) bundleRecords[0];
+            String bundleId = (String) bundleRec.get('Id');
+            System.debug('getLwcComponentState: found bundle id=' + bundleId);
+
+            // Step 2 — fetch the component resource files
+            String resourceQuery = 'SELECT FilePath, Source FROM LightningComponentResource'
+                + ' WHERE LightningComponentBundleId = \'' + bundleId + '\''
+                + ' LIMIT 10';
+
+            Map<String, Object> resourceResult = MetadataHelper.runToolingApiQuery(resourceQuery);
+            List<Object> resourceRecords = (List<Object>) resourceResult.get('records');
+
+            if (resourceRecords == null || resourceRecords.isEmpty()) {
+                System.debug('getLwcComponentState: bundle exists but no resources returned — treating as create mode');
+                return null;
+            }
+
+            String htmlSource = null;
+            String jsSource   = null;
+            String metaXml    = null;
+
+            for (Object raw : resourceRecords) {
+                Map<String, Object> rec = (Map<String, Object>) raw;
+                String filePath = (String) rec.get('FilePath');
+                String source   = (String) rec.get('Source');
+                if (String.isBlank(filePath)) continue;
+
+                // FilePath pattern: lwc/componentName/componentName.html
+                if (filePath.endsWith('.html'))         htmlSource = source;
+                else if (filePath.endsWith('-meta.xml')) metaXml   = source;
+                else if (filePath.endsWith('.js'))       jsSource   = source;
+            }
+
+            System.debug('getLwcComponentState: resolved'
+                + ' html=' + (htmlSource != null)
+                + ' js='   + (jsSource   != null)
+                + ' meta=' + (metaXml    != null));
+
+            return new Map<String, Object>{
+                'developerName' => developerName,
+                'html'          => htmlSource,
+                'js'            => jsSource,
+                'metaXml'       => metaXml
+            };
+
+        } catch (Exception e) {
+            System.debug('getLwcComponentState failed for [' + developerName + ']: ' + e.getMessage());
+            ErrorLogger.log(e);
+            return null;
+        }
+    }
+
     private static String validateRequiredElements(String xml, List<String> requiredElements) {
         for (String element : requiredElements) {
             if (!xml.contains(element)) {
@@ -3827,7 +4113,14 @@ public class LLMService {
             cleaned = cleaned.substring(0, cleaned.length() - 3);
         }
 
-        return cleaned.trim();
+        cleaned = cleaned.trim();
+
+        // Remove trailing commas before } and ] — common LLM JSON generation defect.
+        // e.g. { "key": "value", }  →  { "key": "value" }
+        cleaned = cleaned.replaceAll(',\\s*\\}', '}');
+        cleaned = cleaned.replaceAll(',\\s*\\]', ']');
+
+        return cleaned;
     }
 
     // ─────────────────────────────────────────────────────────────
