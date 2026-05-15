@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Profile</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">PROFILE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== PROFILE RULES ==
+Profiles have TWO paths depending on the operation.
+
+-- PATH 1: CLONE (use dmlOperations) --
+{
+  "type": "profileClone",
+  "sourceProfileName": "Sales User",
+  "newProfileName": "Custom Sales User",
+  "description": "Optional description"
+}
+
+-- PATH 2: PARTIAL UPDATE (generate XML in files[]) --
+File path: profiles/ProfileApiName.profile
+metadataType: Profile
+memberName: ProfileApiName
+
+Only include sections that match what the ticket asks for.
+
+-- OBJECT ACCESS --
+<objectPermissions>
+    <allowCreate>true</allowCreate>
+    <allowDelete>false</allowDelete>
+    <allowEdit>true</allowEdit>
+    <allowRead>true</allowRead>
+    <modifyAllRecords>false</modifyAllRecords>
+    <object>MyObject__c</object>
+    <viewAllRecords>false</viewAllRecords>
+</objectPermissions>
+
+-- FIELD ACCESS --
+<fieldPermissions>
+    <editable>true</editable>
+    <field>MyObject__c.MyField__c</field>
+    <readable>true</readable>
+</fieldPermissions>
+
+-- APEX CLASS ACCESS --
+Query org state to find class names.
+<classAccesses>
+    <apexClass>MyClassName</apexClass>
+    <enabled>true</enabled>
+</classAccesses>
+RULES:
+- apexClass value is the class API name
+- enabled=true to grant, enabled=false to revoke
+- Multiple classes = multiple <classAccesses> blocks in ONE profile file
+
+-- TAB VISIBILITY --
+Use ONLY when ticket explicitly asks to show/hide a tab for the profile.
+DO NOT add tabVisibilities just because you are granting object access.
+<tabVisibilities>
+    <tab>ObjectName__c</tab>
+    <visibility>DefaultOn</visibility>
+</tabVisibilities>
+visibility values: DefaultOn, DefaultOff, Hidden
+
+-- FULL EXAMPLE --
+<?xml version="1.0" encoding="UTF-8"?>
+<Profile xmlns="http://soap.sforce.com/2006/04/metadata">
+    <classAccesses>
+        <apexClass>ReservationController</apexClass>
+        <enabled>true</enabled>
+    </classAccesses>
+    <objectPermissions>
+        <allowCreate>true</allowCreate>
+        <allowDelete>false</allowDelete>
+        <allowEdit>true</allowEdit>
+        <allowRead>true</allowRead>
+        <modifyAllRecords>false</modifyAllRecords>
+        <object>Reservation__c</object>
+        <viewAllRecords>false</viewAllRecords>
+    </objectPermissions>
+</Profile>
+
+CRITICAL PROFILE RULES:
+1. NEVER add <tabVisibilities> unless ticket explicitly asks to show/hide a tab
+2. NEVER reference a CustomTab that does not exist — it will cause a deploy failure
+3. Only include profile sections that match what the ticket asks for
+4. For DELETE: use destructiveFiles with metadataType Profile and member = profile API name
+5. Standard/system profiles (Admin, Standard, StandardAul, MarketingProfile etc.) CANNOT be deleted
+
+TABVISIBILITIES ABSOLUTE RULES:
+- NEVER add <tabVisibilities> for ANY standard object (Account, Case, Contact, Lead, Opportunity etc.)
+- Standard objects already have built-in tabs — referencing them as CustomTab fails with "no CustomTab named X found"
+- ONLY add <tabVisibilities> for custom objects (__c suffix) AND only when ticket explicitly asks
+- When in doubt → OMIT <tabVisibilities> entirely]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">150.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Profile XML: object access, field access, class access, tab visibility</value>
+    </values>
+</CustomMetadata>

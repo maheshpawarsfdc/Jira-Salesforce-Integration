@@ -1,0 +1,461 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>LWC</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LWC</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== LWC — LIGHTNING WEB COMPONENT GENERATION ==
+
+== FILE STRUCTURE ==
+Every LWC requires EXACTLY THREE file entries in files[]:
+
+  1. metadataType: LwcHtml   filePath: lwc/{name}/{name}.html     → HTML template source
+  2. metadataType: LwcJs     filePath: lwc/{name}/{name}.js       → JavaScript source
+  3. metadataType: LwcMeta   filePath: lwc/{name}/{name}.js-meta.xml → XML only
+
+The field in the JSON response for all three is "xmlContent" (consistent with all other types).
+NEVER put <?xml into a .html or .js file.
+NEVER put <template> or import statements into a .js-meta.xml file.
+
+Component naming rules:
+- DeveloperName (memberName): camelCase, starts lowercase, no spaces (e.g. accountCard)
+- If ticket says "Account Card" → memberName = accountCard
+- If ticket says "AccountCard" → memberName = accountCard (lowercase first letter)
+
+== JS-META.XML FORMAT ==
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>61.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__RecordPage</target>
+        <target>lightning__AppPage</target>
+    </targets>
+</LightningComponentBundle>
+
+Target selection rules:
+- Default (ticket does not specify): lightning__RecordPage + lightning__AppPage
+- "Record page" or "on the account/contact/case record": lightning__RecordPage only
+- "App page" or "home page" or "utility bar": use the matching target
+- "Flow screen": lightning__FlowScreen only
+- NEVER include <targetConfigs> — keep meta simple
+
+== DEPLOYMENT PLAN ==
+LWC-only deploys always use scenario = "single".
+If the ticket also creates a new CustomObject: object in ZIP1, layout in ZIP2, LWC always in ZIP1.
+
+== MERGE MODE vs CREATE MODE ==
+The decision is made ENTIRELY from org state — ticket wording does NOT override it.
+
+STEP ZERO — CHECK orgState.existingLwcComponent BEFORE WRITING ANYTHING.
+
+  IF orgState.existingLwcComponent IS NOT NULL → MERGE MODE (see below)
+  IF orgState.existingLwcComponent IS NULL     → CREATE MODE (see below)
+
+Words like "create an LWC", "build a component", "add an LWC" describe BUSINESS INTENT.
+If existingLwcComponent is not null, you are ALWAYS in MERGE MODE regardless of ticket wording.
+
+-- MERGE MODE — existingLwcComponent IS NOT NULL --
+STEP 1: List every section and element in existingLwcComponent.html. ALL must appear in output.
+STEP 2: List every import, property (@api, @track, @wire), and method in existingLwcComponent.js. ALL must appear in output.
+STEP 3: Identify what the ticket is adding or changing.
+STEP 4: Start from existingLwcComponent.html verbatim. Apply only the requested change.
+STEP 5: Start from existingLwcComponent.js verbatim. Apply only the requested change.
+STEP 6: SELF-CHECK:
+  - Does output HTML contain every section from STEP 1? If not, add missing ones.
+  - Does output JS contain every import and method from STEP 2? If not, paste them back.
+  - Is output the COMPLETE file — not a snippet?
+STEP 7: Emit all three files (html, js, meta). The meta file may be unchanged — still include it.
+
+-- CREATE MODE — existingLwcComponent IS NULL --
+Generate all three files from scratch.
+Use the component name from orgState or infer from ticket context.
+
+== TIER 1 — WIRE-BASED (no Apex, read-only display) ==
+Use when: ticket asks to display record fields, related list, or object data.
+No Apex class needed.
+
+-- TEMPLATE PATTERN (Tier 1) --
+<template>
+    <lightning-card title="Card Title" icon-name="standard:account">
+        <div class="slds-p-around_medium">
+            <template if:true={record.data}>
+                <p><strong>Name:</strong> {name}</p>
+                <p><strong>Industry:</strong> {industry}</p>
+            </template>
+            <template if:true={record.error}>
+                <p class="slds-text-color_error">Error loading data.</p>
+            </template>
+        </div>
+    </lightning-card>
+</template>
+
+-- JS PATTERN (Tier 1, getRecord wire) --
+import { LightningElement, api, wire } from 'lwc';
+import { getRecord } from 'lightning/uiRecordApi';
+import NAME_FIELD from '@salesforce/schema/Account.Name';
+import INDUSTRY_FIELD from '@salesforce/schema/Account.Industry';
+
+export default class AccountCard extends LightningElement {
+    @api recordId;
+
+    @wire(getRecord, { recordId: '$recordId', fields: [NAME_FIELD, INDUSTRY_FIELD] })
+    record;
+
+    get name() {
+        return this.record.data?.fields?.Name?.value;
+    }
+
+    get industry() {
+        return this.record.data?.fields?.Industry?.value;
+    }
+}
+
+TIER 1 RULES:
+- Use @api recordId when the component lives on a record page
+- Import each field separately using @salesforce/schema/ObjectName.FieldName
+- Use optional chaining (?.) when reading wire data fields
+- Use if:true={record.data} and if:true={record.error} — ALWAYS both, never one without the other
+- Never hardcode record IDs
+
+== TIER 2 — APEX-CONNECTED (imperative Apex, loading state) ==
+Use when: ticket asks to display data that requires custom SOQL, DML, or business logic.
+An Apex controller MUST be generated or read.
+
+TIER 2 USES IMPERATIVE APEX — NOT @wire.
+Do NOT use @wire in a Tier 2 component. Do NOT import wire from 'lwc' in Tier 2.
+The correct import line for Tier 2 is EXACTLY:
+  import { LightningElement, api, track } from 'lwc';
+If you add wire to that import, you are doing it wrong.
+
+-- TEMPLATE PATTERN (Tier 2) --
+<template>
+    <lightning-card title="Invoice List" icon-name="standard:invoice">
+        <div class="slds-p-around_medium">
+            <template if:true={isLoading}>
+                <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+            </template>
+            <template if:true={error}>
+                <p class="slds-text-color_error">{error}</p>
+            </template>
+            <template if:true={invoices}>
+                <template for:each={invoices} for:item="inv">
+                    <p key={inv.Id}>{inv.Name} — {inv.Amount__c}</p>
+                </template>
+            </template>
+        </div>
+    </lightning-card>
+</template>
+
+-- JS PATTERN (Tier 2, imperative Apex) --
+// CORRECT Tier 2 import — no wire:
+import { LightningElement, api, track } from 'lwc';
+import getInvoices from '@salesforce/apex/InvoiceController.getInvoices';
+
+export default class InvoiceList extends LightningElement {
+    @api recordId;
+    @track invoices;
+    @track isLoading = false;
+    @track error;
+
+    connectedCallback() {
+        this.loadData();
+    }
+
+    loadData() {
+        this.isLoading = true;
+        this.error = undefined;
+        getInvoices({ accountId: this.recordId })
+            .then(result => {
+                this.invoices = result;
+                this.isLoading = false;
+            })
+            .catch(err => {
+                this.error = err.body?.message || 'An unexpected error occurred.';
+                this.isLoading = false;
+            });
+    }
+
+    // Refresh / action button handler pattern:
+    // ALWAYS clear data and error first so spinner appears and user sees visual feedback.
+    // ALWAYS guard with !this.isLoading to prevent double-calls.
+    handleRefresh() {
+        if (!this.isLoading) {
+            this.invoices = undefined;
+            this.error = undefined;
+            this.loadData();
+        }
+    }
+}
+
+TIER 2 RULES:
+- ALWAYS use @track for properties that drive template re-render
+- ALWAYS show lightning-spinner when isLoading is true
+- ALWAYS handle the .catch() — never leave it out
+- ALWAYS reset error to undefined at the start of loadData()
+- ALWAYS call loadData() from connectedCallback() for initial load
+- Import path: @salesforce/apex/ClassName.methodName
+- Use err.body?.message for error display — never err.message directly
+- When a ticket asks for a Refresh/Reload button: ALWAYS clear the data property and error
+  to undefined BEFORE calling loadData() — this gives visible feedback to the user.
+  Without clearing, the list stays visible during reload and the button appears broken.
+- When a Refresh button exists: the Apex method MUST use @AuraEnabled (NOT cacheable=true).
+  @AuraEnabled(cacheable=true) with imperative calls returns platform-cached data for the
+  same parameters — the Refresh button will appear to do nothing even though it runs.
+  Rule: @AuraEnabled(cacheable=true) only for @wire / display-only. @AuraEnabled for any
+  method that must return fresh data on demand (Refresh button, form submit, etc.).
+
+LWC EVENT HANDLER SYNTAX — CRITICAL:
+LWC uses "on" prefix for all event handlers. It does NOT support Vue.js or Angular syntax.
+
+  CORRECT (LWC):                         WRONG (Vue/Angular — FORBIDDEN in LWC):
+  onclick={handleClick}                  @click={handleClick}
+  onchange={handleChange}                (change)={handleChange}
+  onkeyup={handleKeyUp}                  v-on:keyup={handleKeyUp}
+
+Button patterns (use names appropriate to the ticket):
+  <lightning-button label="{ticketLabel}" onclick={handlerMethod}></lightning-button>
+  <lightning-button label="{ticketLabel}" onclick={handlerMethod} disabled={isLoading}></lightning-button>
+
+lightning-card slot placement rule:
+  When a ticket asks for a button or action in the card HEADER, use slot="actions" on the element.
+  Without slot="actions", any element placed inside lightning-card renders in the card BODY, not the header.
+  Slot name reference: "actions" → header right area | (none) → card body | "title" → card title area
+
+Using @click causes compile error: LWC1124 — @click is not a valid attribute.
+
+TIER 2 TEMPLATE DATA ACCESS — CRITICAL:
+In Tier 2, this.opportunities (or this.records, this.items, etc.) is a plain JavaScript Array
+assigned from the imperative .then(result => { this.opportunities = result; }).
+It is NOT a wire result object. It has NO .data or .error properties.
+
+  CORRECT (Tier 2 — imperative):        WRONG (Tier 1 wire pattern — FORBIDDEN in Tier 2):
+  if:true={opportunities}                if:true={opportunities.data}
+  for:each={opportunities}               for:each={opportunities.data}
+  if:true={error}                        if:true={opportunities.error}
+  {error}                                {opportunities.error}
+
+Using {opportunities.data} when opportunities is a plain array causes:
+  "Cannot read properties of undefined (reading 'data')" at connect phase.
+
+The @wire FUNCTION HANDLER pattern also produces a plain array and has the same rules:
+  @wire(getOpps, { accountId: '$recordId' })
+  wiredResult({ data, error }) {
+      if (data) { this.opportunities = data; }  // ← plain array, NOT {data, error} object
+  }
+  In this case too: template uses {opportunities} not {opportunities.data}.
+
+If you are confused about which pattern to use: use the imperative .then().catch() pattern
+(no @wire at all) — it is always safe and unambiguous for Tier 2.
+
+== APEX CONTROLLER FOR LWC ==
+
+-- WHEN TO READ AN EXISTING CONTROLLER --
+Check orgState.existingLwcApexController.
+IF NOT NULL → the class already exists in the org.
+  1. Read the FULL existing body from orgState.existingLwcApexController.body
+  2. Add the new method(s) the ticket requires
+  3. Emit COMPLETE class — ALL existing methods preserved + new method appended
+  4. Emit ApexClass + ApexClassMeta file entries (both required)
+
+IF NULL → generate the class fresh.
+  Naming rule: {ComponentName}Controller with first letter uppercase
+  Example: component "invoiceList" → class "InvoiceListController"
+
+-- APEX CONTROLLER TEMPLATE --
+public with sharing class InvoiceListController {
+
+    @AuraEnabled(cacheable=true)
+    public static List<Invoice__c> getInvoices(Id accountId) {
+        return [
+            SELECT Id, Name, Amount__c, Status__c, CreatedDate
+            FROM Invoice__c
+            WHERE Account__c = :accountId
+            ORDER BY CreatedDate DESC
+            LIMIT 100
+        ];
+    }
+}
+
+-- APEX FILE ENTRIES — EXACT CONTENT ASSIGNMENT (READ THIS CAREFULLY) --
+An Apex class ALWAYS requires exactly 2 file entries. The content types are OPPOSITE to what
+you might expect. Swapping them is the single most common LLM mistake with Apex files.
+
+  File 1 → metadataType: "ApexClass"
+    filePath:   "classes/ClassName.cls"
+    xmlContent: ← APEX SOURCE CODE (public with sharing class ...)
+                   MUST start with "public" or "@isTest" or "global"
+                   NEVER starts with <?xml
+                   NEVER contains <ApexClass>
+
+  File 2 → metadataType: "ApexClassMeta"
+    filePath:   "classes/ClassName.cls-meta.xml"
+    xmlContent: ← META XML ONLY
+                   MUST start with <?xml version
+                   MUST contain <ApexClass xmlns=...>
+                   NEVER contains Apex code
+
+CORRECT EXAMPLE (copy this pattern exactly):
+{
+  "metadataType": "ApexClass",
+  "memberName": "OpportunityListController",
+  "filePath": "classes/OpportunityListController.cls",
+  "xmlContent": "public with sharing class OpportunityListController {\n    @AuraEnabled(cacheable=true)\n    public static List<Opportunity> getOpenOpportunities(Id accountId) {\n        return [SELECT Id, Name, Amount, StageName, CloseDate FROM Opportunity WHERE AccountId = :accountId AND IsClosed = false ORDER BY CloseDate ASC LIMIT 100];\n    }\n}"
+},
+{
+  "metadataType": "ApexClassMeta",
+  "memberName": "OpportunityListController",
+  "filePath": "classes/OpportunityListController.cls-meta.xml",
+  "xmlContent": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ApexClass xmlns=\"http://soap.sforce.com/2006/04/metadata\">\n    <apiVersion>61.0</apiVersion>\n    <status>Active</status>\n</ApexClass>"
+}
+
+APEX CONTROLLER RULES:
+- ALWAYS use "public with sharing" — never "without sharing" unless ticket explicitly requires it
+- READ operations (SELECT only): @AuraEnabled(cacheable=true)
+- WRITE operations (DML): @AuraEnabled — no cacheable
+- NEVER put SOQL inside loops (governor limit violation)
+- ALWAYS use a WHERE clause with a bound variable — never return all records without filter
+- Parameters match what the LWC JS calls: getInvoices({ accountId: this.recordId })
+- If ticket does not specify a class name → use {ComponentName}Controller
+
+-- WHEN TICKET SAYS THE CLASS ALREADY EXISTS --
+If the ticket explicitly says "the class already exists" or "use existing ClassName":
+  1. orgState.existingLwcApexController will contain the body
+  2. Do NOT regenerate it from scratch
+  3. Only add the new method the ticket requests if it is not already there
+  4. If the method already exists, do not duplicate it
+
+== JEST TEST FILE (LwcTest) ==
+ALWAYS generate a Jest test file for every LWC component you create or update.
+
+File type  : LwcTest
+filePath   : lwc/{componentName}/__tests__/{componentName}.test.js
+memberName : {componentName}  (same as the component)
+
+The Jest test validates the generated component logic BEFORE it is accepted.
+The pipeline saves it to a ContentDocument so a local script can retrieve and run it.
+
+-- TIER 2 JEST PATTERN --
+Use this exact structure. Replace component name, import path, and mock data to match the ticket.
+
+import { createElement } from 'lwc';
+import {ComponentClassName} from 'c/{componentName}';
+import {apexMethodName} from '@salesforce/apex/{ControllerName}.{methodName}';
+
+jest.mock(
+    '@salesforce/apex/{ControllerName}.{methodName}',
+    () => ({ default: jest.fn() }),
+    { virtual: true }
+);
+
+const MOCK_DATA = [{ Id: '0010000000001AAA', Name: 'Test Record' }];
+
+describe('c-{component-name}', () => {
+    afterEach(() => {
+        while (document.body.firstChild) {
+            document.body.removeChild(document.body.firstChild);
+        }
+        jest.clearAllMocks();
+    });
+
+    it('shows spinner on initial load before data arrives', () => {
+        {apexMethodName}.mockResolvedValue(MOCK_DATA);
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        document.body.appendChild(element);
+        const spinner = element.shadowRoot.querySelector('lightning-spinner');
+        expect(spinner).not.toBeNull();
+    });
+
+    it('renders list items after successful Apex call', async () => {
+        {apexMethodName}.mockResolvedValue(MOCK_DATA);
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        element.recordId = '0010000000001AAA';
+        document.body.appendChild(element);
+        await Promise.resolve();
+        const items = element.shadowRoot.querySelectorAll('li');
+        expect(items.length).toBe(MOCK_DATA.length);
+    });
+
+    it('hides spinner after data loads', async () => {
+        {apexMethodName}.mockResolvedValue(MOCK_DATA);
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        element.recordId = '0010000000001AAA';
+        document.body.appendChild(element);
+        await Promise.resolve();
+        const spinner = element.shadowRoot.querySelector('lightning-spinner');
+        expect(spinner).toBeNull();
+    });
+
+    it('shows error paragraph when Apex call fails', async () => {
+        {apexMethodName}.mockRejectedValue({ body: { message: 'Server error' } });
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        element.recordId = '0010000000001AAA';
+        document.body.appendChild(element);
+        await Promise.resolve();
+        const errorEl = element.shadowRoot.querySelector('.slds-text-color_error');
+        expect(errorEl).not.toBeNull();
+    });
+});
+
+JEST RULES:
+- ALWAYS include the 4 core test cases: spinner shown, data rendered, spinner hidden, error shown
+- ALWAYS mock every @salesforce/apex import with jest.mock({ virtual: true })
+- ALWAYS clean up DOM in afterEach with document.body.removeChild loop
+- ALWAYS call await Promise.resolve() after appendChild to flush microtask queue
+- Use the EXACT class name and method name from the generated JS import
+- Do NOT import from lwc/jest — use 'lwc' only
+- The filePath MUST be: lwc/componentName/__tests__/{componentName}.test.js
+
+== NEVER ==
+- Never use @click, @change, or any @ event syntax — LWC uses onclick, onchange, etc.
+- Never use @wire in a Tier 2 component — Tier 2 uses imperative .then().catch() only
+- Never import wire from 'lwc' in a Tier 2 component — correct import is: import { LightningElement, api, track } from 'lwc'
+- Never use {property.data} or {property.error} in a Tier 2 template — use {property} and {error} directly
+- Never put <?xml into an ApexClass file — ApexClass.xmlContent MUST be Apex source code starting with "public"
+- Never put Apex code (public with sharing...) into an ApexClassMeta file — its xmlContent MUST be meta XML starting with <?xml
+- Never put <?xml version into a .html or .js file
+- Never put <template> or import statements into a .js-meta.xml file
+- Never use document.getElementById or direct DOM manipulation — use template refs
+- Never leave off the error handling block in Tier 2
+- Never hardcode Salesforce record IDs in JS
+- Never skip the lightning-spinner in Tier 2 components
+- Never use innerHTML — it is not supported in LWC
+- Never forget the key={uniqueField} attribute on for:each items
+- Never generate a FlexiPage XML file — out of scope; tell the user to add via App Builder manually
+- Never generate a CSS file — out of scope for now
+]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">165.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">APEX,APEX_BEST_PRACTICES,LWC_JEST</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >LWC 3-file bundle, Tier 1 wire, Tier 2 Apex, merge mode, controller generation</value>
+    </values>
+</CustomMetadata>

@@ -45,31 +45,6 @@ public class CsvProcessor {
         new Map<String, List<Map<String, Object>>>();
 
     // ─────────────────────────────────────────────────────────────
-    // LIST CSV FILES
-    // ─────────────────────────────────────────────────────────────
-    public static Map<String, Object> listCsvFiles(Map<String, Object> args) {
-        System.debug('CsvProcessor.listCsvFiles() called');
-
-        List<String> csvFiles = new List<String>();
-        List<String> allFiles = new List<String>();
-
-        for (String fileName : StaticResourceHelper.currentAttachments.keySet()) {
-            allFiles.add(fileName);
-            if (fileName.toLowerCase().endsWith('.csv')) {
-                csvFiles.add(fileName);
-            }
-        }
-
-        System.debug('CsvProcessor.listCsvFiles(): found ' + csvFiles.size() + ' CSV file(s)');
-
-        return new Map<String, Object>{
-            'csvFiles' => csvFiles,
-            'allFiles' => allFiles,
-            'totalCsv' => csvFiles.size()
-        };
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // READ CSV
     //
     // Decodes base64 attachment, parses into rows, stores in rowCache.

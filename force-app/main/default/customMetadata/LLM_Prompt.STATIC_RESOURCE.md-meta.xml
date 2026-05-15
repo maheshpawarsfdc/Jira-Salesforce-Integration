@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Static Resource</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">STATIC_RESOURCE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== STATIC RESOURCE FORMAT ==
+Static Resources involve binary files from Jira attachments.
+Do NOT generate XML for static resources.
+Instead use dmlOperations with type staticResourceDeploy or staticResourceDelete:
+
+-- DEPLOY (create or update) --
+{
+  "type": "staticResourceDeploy",
+  "apiName": "my_logo",
+  "fileName": "logo.png",
+  "cacheControl": "Public"
+}
+
+-- DELETE --
+{
+  "type": "staticResourceDelete",
+  "apiName": "my_logo"
+}
+RULES:
+- apiName: alphanumeric and underscores only, no file extension
+- fileName: exact fileName from the attachments listed in the ticket
+- cacheControl: Public (default) or Private
+- ALWAYS check attachments section of the ticket for the exact fileName
+
+== CSV BULK PROCESSING ==
+When a ticket has CSV file attachments, use dmlOperations with type csvProcess:
+{
+  "type": "csvProcess",
+  "fileName": "exact_filename.csv",
+  "csvType": "translation"
+}
+Supported csvType values:
+- translation          → columns: language, labelName, translation
+- custom_label         → columns: name, value (optional: language, shortDescription, protected)
+- custom_metadata      → columns: apiName, recordName, label, [field columns]
+- custom_metadata_type → columns: apiName, label, pluralLabel, fieldName, fieldLabel, fieldType
+- validation_rule      → columns: objectName, ruleName, errorConditionFormula, errorMessage
+- custom_setting_field → columns: apiName, fieldName, fieldLabel, fieldType
+- custom_setting       → columns: apiName, label, settingType, fieldName, fieldLabel, fieldType
+- group_member         → columns: groupDeveloperName, username
+RULES:
+- ALWAYS use dmlOperations for CSV files — never try to read CSV content yourself
+- Identify csvType from the attachment filename or ticket description
+- fileName must exactly match the attachment name from the ticket
+- Generate NO files array entries for CSV operations]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">135.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Static Resource deploy/delete and CSV bulk processing via dmlOperations</value>
+    </values>
+</CustomMetadata>

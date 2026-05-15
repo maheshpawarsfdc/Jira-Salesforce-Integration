@@ -49,54 +49,5 @@ public class JiraCallbackService {
         }
     }
     
-    // ─────────────────────────────────────────────────────────────
-    // LEGACY: POST RESULT AS COMMENT (kept for backwards compat)
-    // ─────────────────────────────────────────────────────────────
-    public static void postComment(String issueKey, String comment) {
-        String endpoint = JIRA_BASE_URL 
-            + '/rest/api/3/issue/' 
-            + issueKey 
-            + '/comment';
-        
-        Map<String, Object> requestBody = new Map<String, Object>{
-            'body' => new Map<String, Object>{
-                'type'    => 'doc',
-                'version' => 1,
-                'content' => new List<Object>{
-                    new Map<String, Object>{
-                        'type'    => 'paragraph',
-                        'content' => new List<Object>{
-                            new Map<String, Object>{
-                                'type' => 'text',
-                                'text' => comment
-                            }
-                        }
-                    }
-                }
-            }
-        };
-        
-        String credentials = JIRA_USER_EMAIL + ':' + JIRA_API_TOKEN;
-        String encodedCredentials = EncodingUtil.base64Encode(Blob.valueOf(credentials));
-        
-        HttpRequest req = new HttpRequest();
-        req.setEndpoint(endpoint);
-        req.setMethod('POST');
-        req.setHeader('Authorization', 'Basic ' + encodedCredentials);
-        req.setHeader('Content-Type', 'application/json');
-        req.setHeader('Accept', 'application/json');
-        req.setTimeout(30000);
-        req.setBody(JSON.serialize(requestBody));
-        
-        Http http = new Http();
-        HttpResponse res = http.send(req);
-        
-        System.debug('JiraCallbackService: Comment response: ' + res.getStatusCode());
-        
-        if (res.getStatusCode() != 201) {
-            System.debug('JiraCallbackService: Failed to post comment');
-        }
-    }
-    
     public class JiraCallbackException extends Exception {}
 }

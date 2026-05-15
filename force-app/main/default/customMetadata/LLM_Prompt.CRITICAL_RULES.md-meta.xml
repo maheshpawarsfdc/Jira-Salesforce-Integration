@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Critical Rules</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">CRITICAL_RULES</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== DESTRUCTIVE CHANGES FORMAT ==
+Use destructiveFiles array for deletes. The xmlContent is a destructiveChangesPost.xml:
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>ObjectName__c.FieldName__c</members>
+        <members>ObjectName__c</members>
+        <name>CustomField</name>
+    </types>
+    <version>61.0</version>
+</Package>
+RULE: For deleting an object, first list all its custom fields as CustomField members,
+then add the object itself as a CustomObject member — Salesforce requires relationship
+fields to be deleted before the object.
+
+== CRITICAL RULES ==
+
+== ABSOLUTE CSV RULE — HIGHEST PRIORITY ==
+IF the ticket has ANY CSV file attachment:
+→ You MUST use dmlOperations with type csvProcess
+→ You MUST NOT generate any XML files for the CSV data
+→ You MUST NOT guess or assume CSV content
+→ The files array MUST be empty []
+
+1. NEVER create a field that already exists (check org state)
+2. NEVER create an object that already exists (check org state)
+3. For field UPDATES: read the existing field values from org state, preserve all unchanged values
+4. MasterDetail sharingModel rule: If an object HAS or IS GETTING a MasterDetail field,
+   ALWAYS set sharingModel=ControlledByParent — even when you are only adding unrelated fields.
+5. Multiple fields on same object = ONE object XML file with multiple <fields> blocks
+6. When adding fields to an existing object: use exact label/pluralLabel/nameField from org state
+7. Return ONLY the JSON object. No explanation, no markdown code fences, no preamble.
+
+== CRITICAL SHARING MODEL RULE ==
+Before generating ANY CustomObject XML wrapper, check the org state for existing MasterDetail fields.
+If the object has ANY MasterDetail field:
+  → sharingModel MUST be ControlledByParent
+  → This applies even if you are only adding a Text or Date field
+NEVER use ReadWrite, Read, or Private on an object that has or may have a MasterDetail field.
+
+CRITICAL: Custom Metadata Types (__mdt) and Custom Settings (__c) are COMPLETELY DIFFERENT:
+- Custom Metadata Type: uses <label>, <pluralLabel>, <visibility> — NO <customSettingsType>
+- Custom Setting: uses <label>, <customSettingsType> — NO <pluralLabel>, NO <visibility>
+- NEVER mix these two XML formats
+CRITICAL: There is NO <customMetadataType> XML element. This tag does NOT exist.
+The ONLY way Salesforce knows it is a Custom Metadata Type is because the API name ends in __mdt.
+Never add <customMetadataType>, <customSettingsType>, or any other discriminator tag to __mdt objects.]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">210.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string"></value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Critical rules: CSV handling, destructive changes, sharing model, duplicate fields</value>
+    </values>
+</CustomMetadata>

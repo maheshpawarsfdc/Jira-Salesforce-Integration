@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Apex</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">APEX</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value xsi:type="xsd:string"><![CDATA[
+== APEX CLASS AND TRIGGER GENERATION ==
+
+Apex files are NOT XML. They are source code deployed as part of a ZIP.
+Every Apex artifact requires EXACTLY TWO file entries in files[]:
+  1. The code file  — metadataType ApexClass or ApexTrigger
+  2. The meta file  — metadataType ApexClassMeta or ApexTriggerMeta
+
+CRITICAL MAPPING — NEVER MIX THESE UP:
+  ApexClass     → .cls file          → xmlContent = public class Foo { ... }   (Apex source)
+  ApexClassMeta → .cls-meta.xml file → xmlContent = <?xml ...><ApexClass>...   (XML only)
+  ApexTrigger   → .trigger file      → xmlContent = trigger Foo on Bar (...) { }(Apex source)
+  ApexTriggerMeta → .trigger-meta.xml → xmlContent = <?xml ...><ApexTrigger>... (XML only)
+NEVER put <?xml into a .cls or .trigger file.
+NEVER put public class / trigger keywords into a -meta.xml file.
+
+Meta file XML format:
+<?xml version="1.0" encoding="UTF-8"?>
+<ApexClass xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>61.0</apiVersion>
+    <status>Active</status>
+</ApexClass>
+(For trigger meta: use <ApexTrigger> root element instead of <ApexClass>.)
+
+package.xml registration:
+- ONE member per class or trigger (both code and meta file share same member name)
+- Apex registers as: metadataType=ApexClass member=ClassName (NOT ApexClassMeta)
+- Apex registers as: metadataType=ApexTrigger member=TriggerName (NOT ApexTriggerMeta)
+
+-- CREATE A NEW CLASS --
+Generate four files[] entries:
+  ApexClass     classes/MyClass.cls              (the source code)
+  ApexClassMeta classes/MyClass.cls-meta.xml     (the meta file)
+
+-- UPDATE AN EXISTING CLASS --
+1. Read the full existing body from orgState.existingClass.body or orgState.existingHandlerClass.body
+2. Add the new method(s) or change requested by the ticket
+3. Output the COMPLETE class — ALL existing methods preserved, new method appended
+4. Emit ApexClass + ApexClassMeta file entries (both files must be present)
+5. NEVER emit only the new snippet — always emit the full class body
+
+-- DELETE A CLASS OR TRIGGER --
+Use destructiveFiles shorthand:
+  { "metadataType": "ApexClass",   "member": "MyClassName"   }
+  { "metadataType": "ApexTrigger",  "member": "MyTriggerName" }
+
+-- DEPLOYMENT PLAN FOR APEX --
+Apex-only deploys always use scenario = "single".
+If the ticket also creates a new custom object: object in ZIP1, layout in ZIP2 — Apex always goes into ZIP1.
+
+CORRECT 4-FILE PATTERN FOR TRIGGER + HANDLER:
+  classes/LeadHandler.cls              ← Apex CLASS source (public class LeadHandler {...})
+  classes/LeadHandler.cls-meta.xml     ← XML meta only
+  triggers/LeadTrigger.trigger         ← Apex TRIGGER source (trigger LeadTrigger on Lead...)
+  triggers/LeadTrigger.trigger-meta.xml ← XML meta only
+
+NEVER PUT <?xml INTO A .cls OR .trigger FILE
+NEVER CREATE classes/XxxTrigger.cls FOR A TRIGGER NAMED XxxTrigger]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">170.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">APEX_BEST_PRACTICES</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value xsi:type="xsd:string">Apex class and trigger file structure, 4-file pattern, create/update/delete</value>
+    </values>
+</CustomMetadata>
