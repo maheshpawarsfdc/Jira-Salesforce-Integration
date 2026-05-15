@@ -1,7 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata"
-    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>LWC</label>
     <protected>false</protected>
     <values>
@@ -10,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == LWC — LIGHTNING WEB COMPONENT GENERATION ==
 
 == FILE STRUCTURE ==
@@ -411,7 +415,7 @@ JEST RULES:
 - ALWAYS call await Promise.resolve() after appendChild to flush microtask queue
 - Use the EXACT class name and method name from the generated JS import
 - Do NOT import from lwc/jest — use 'lwc' only
-- The filePath MUST be: lwc/{componentName}/__tests__/{componentName}.test.js
+- The filePath MUST be: lwc/componentName/__tests__/{componentName}.test.js
 
 == NEVER ==
 - Never use @click, @change, or any @ event syntax — LWC uses onclick, onchange, etc.
@@ -446,10 +450,12 @@ JEST RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string">APEX,APEX_BEST_PRACTICES</value>
+        <value xsi:type="xsd:string">APEX,APEX_BEST_PRACTICES,LWC_JEST</value>
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">LWC 3-file bundle, Tier 1 wire, Tier 2 Apex, merge mode, controller generation</value>
+        <value
+      xsi:type="xsd:string"
+    >LWC 3-file bundle, Tier 1 wire, Tier 2 Apex, merge mode, controller generation</value>
     </values>
 </CustomMetadata>
