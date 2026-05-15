@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>LWC Jest</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LWC_JEST</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== LWC JEST TEST GENERATION — MANDATORY ==
+
+THIS IS NOT OPTIONAL.
+For EVERY LWC ticket you MUST include a Jest test file as the LAST entry in files[].
+No exceptions. No skipping. Even if the ticket does not mention testing.
+
+== FILE ENTRY FORMAT ==
+
+{
+  "metadataType": "LwcTest",
+  "memberName": "{componentName}",
+  "filePath": "lwc/{componentName}/__tests__/{componentName}.test.js",
+  "xmlContent": "... jest test source code ..."
+}
+
+RULES:
+- metadataType MUST be exactly "LwcTest" — not LwcJs, not ApexClass, not anything else
+- filePath MUST follow the exact pattern above — no variation
+- memberName MUST match the LWC component's memberName exactly (camelCase, lowercase first letter)
+- xmlContent contains the Jest test source code (NOT XML — plain JavaScript)
+- This entry MUST be the last item in files[]
+- The pipeline saves this to Salesforce ContentDocument — it does NOT get deployed to Salesforce org
+
+== JEST TEST TEMPLATE (Tier 2 — Apex-connected component) ==
+
+Use this exact structure. Replace {ComponentClassName}, {componentName},
+{ControllerName}, {methodName}, and MOCK_DATA to match the generated component.
+
+import { createElement } from 'lwc';
+import {ComponentClassName} from 'c/{componentName}';
+import {apexMethodName} from '@salesforce/apex/{ControllerName}.{methodName}';
+
+jest.mock(
+    '@salesforce/apex/{ControllerName}.{methodName}',
+    () => ({ default: jest.fn() }),
+    { virtual: true }
+);
+
+const MOCK_DATA = [{ Id: '0010000000001AAA', Name: 'Test Record' }];
+
+describe('c-{component-name}', () => {
+
+    afterEach(() => {
+        while (document.body.firstChild) {
+            document.body.removeChild(document.body.firstChild);
+        }
+        jest.clearAllMocks();
+    });
+
+    it('shows spinner on initial load before data arrives', () => {
+        {apexMethodName}.mockResolvedValue(MOCK_DATA);
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        document.body.appendChild(element);
+        const spinner = element.shadowRoot.querySelector('lightning-spinner');
+        expect(spinner).not.toBeNull();
+    });
+
+    it('renders list items after successful Apex call', async () => {
+        {apexMethodName}.mockResolvedValue(MOCK_DATA);
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        element.recordId = '0010000000001AAA';
+        document.body.appendChild(element);
+        await Promise.resolve();
+        await Promise.resolve();
+        const items = element.shadowRoot.querySelectorAll('li');
+        expect(items.length).toBe(MOCK_DATA.length);
+    });
+
+    it('hides spinner after data loads', async () => {
+        {apexMethodName}.mockResolvedValue(MOCK_DATA);
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        element.recordId = '0010000000001AAA';
+        document.body.appendChild(element);
+        await Promise.resolve();
+        await Promise.resolve();
+        const spinner = element.shadowRoot.querySelector('lightning-spinner');
+        expect(spinner).toBeNull();
+    });
+
+    it('shows error paragraph when Apex call fails', async () => {
+        {apexMethodName}.mockRejectedValue({ body: { message: 'Server error' } });
+        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
+        element.recordId = '0010000000001AAA';
+        document.body.appendChild(element);
+        await Promise.resolve();
+        await Promise.resolve();
+        const errorEl = element.shadowRoot.querySelector('.slds-text-color_error');
+        expect(errorEl).not.toBeNull();
+    });
+
+});
+
+== CRITICAL RULES ==
+
+IMPORT — DEFAULT IMPORT, NO CURLY BRACES:
+  CORRECT : import OpenOpportunityList from 'c/openOpportunityList';
+  WRONG   : import { OpenOpportunityList } from 'c/openOpportunityList';
+LWC components always export a default class. Curly braces cause the component
+to be undefined and every test will fail with "element.shadowRoot is null".
+
+APEX MOCK — ALWAYS USE virtual: true:
+  jest.mock('@salesforce/apex/Controller.method', () => ({ default: jest.fn() }), { virtual: true });
+Without { virtual: true } Jest will throw "Cannot find module" and all tests fail.
+
+AWAIT — ALWAYS TWO Promise.resolve() CALLS:
+  await Promise.resolve();
+  await Promise.resolve();
+One Promise.resolve() is not enough to flush both the Apex promise AND the
+LWC re-render microtask. Always use two.
+
+COMPONENT NAME IN createElement — USE KEBAB-CASE:
+  CORRECT: createElement('c-open-opportunity-list', { is: OpenOpportunityList })
+  WRONG  : createElement('c-openOpportunityList',  { is: OpenOpportunityList })
+The first argument must be kebab-case (camelCase converted: every uppercase
+letter becomes -lowercase). This is an LWC framework requirement.
+
+MOCK DATA — MATCH THE COMPONENT'S ACTUAL FIELDS:
+  Use the same fields the component displays. For Opportunity: Id, Name, Amount, StageName, CloseDate.
+  For Account: Id, Name, Industry. Match what the generated JS actually uses.
+
+QUERY SELECTOR — MATCH THE COMPONENT'S ACTUAL HTML:
+  Check what the generated HTML uses for list items: <li>, <p>, <tr>, or a custom element.
+  Use the correct selector. Do NOT hardcode 'li' if the component uses 'tr' or 'p'.
+
+afterEach CLEANUP — ALWAYS INCLUDE:
+  while (document.body.firstChild) {
+      document.body.removeChild(document.body.firstChild);
+  }
+  jest.clearAllMocks();
+Missing cleanup causes test pollution between test cases.
+
+== WHAT NOT TO DO ==
+- NEVER skip the LwcTest entry — it is MANDATORY for every LWC ticket
+- NEVER use { curly braces } around the component class import
+- NEVER omit { virtual: true } from jest.mock
+- NEVER use only one await Promise.resolve() — always use two
+- NEVER use camelCase in the createElement first argument — always kebab-case
+- NEVER import from 'lwc/jest' — import createElement from 'lwc' only
+- NEVER hardcode wrong field names in MOCK_DATA — match the actual component fields
+- NEVER leave out the afterEach cleanup block
+- NEVER generate only 1 or 2 test cases — always generate all 4 core cases
+]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">166.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string" />
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >Mandatory Jest test file generation for every LWC component — LwcTest file entry, template, critical rules</value>
+    </values>
+</CustomMetadata>

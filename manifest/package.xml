@@ -1,26 +1,17 @@
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
 	<types>
-		<members>Case.Standard</members>
-		<members>Lead.Standard</members>
-		<members>Lead.Test</members>
-		<name>AssignmentRule</name>
+		<members>OpportunityListController</members>
+		<name>ApexClass</name>
 	</types>
 	<types>
-		<members>*</members>
-		<name>AssignmentRules</name>
+		<members>accountSummary</members>
+		<members>diagnosticAssistant</members>
+		<members>diagnosticToolComponent</members>
+		<members>openOpportunityList</members>
+		<members>userSearchComponent</members>
+		<name>LightningComponentBundle</name>
 	</types>
-	<types>
-		<members>*</members>
-		<name>Group</name>
-	</types>
-	<types>
-		<members>*</members>
-		<name>NamedCredential</name>
-	</types>
-	<types>
-		<members>*</members>
-		<name>Queue</name>
-	</types>
+	
 	<version>65.0</version>
 </Package>
