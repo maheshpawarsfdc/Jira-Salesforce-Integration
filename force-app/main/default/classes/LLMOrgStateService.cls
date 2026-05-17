@@ -1372,9 +1372,36 @@ public class LLMOrgStateService {
 
       Map<String, Object> rec = (Map<String, Object>) classRecords[0];
       System.debug('getApexClassState: found class [' + className + ']');
+
+      // Also fetch the test class so the LLM can update it when modifying the class
+      String testClassName = className + '_Test';
+      String testQuery =
+        'SELECT Id, Name, Body FROM ApexClass' +
+        ' WHERE Name = \'' +
+        testClassName +
+        '\'' +
+        ' AND NamespacePrefix = null LIMIT 1';
+      String testJson = JSON.serialize(
+        MetadataHelper.runToolingApiQuery(testQuery)
+      );
+      Map<String, Object> testResult = (Map<String, Object>) JSON.deserializeUntyped(
+        testJson
+      );
+      List<Object> testRecords = (List<Object>) testResult.get('records');
+      String existingTestBody = null;
+      if (testRecords != null && !testRecords.isEmpty()) {
+        Map<String, Object> tRec = (Map<String, Object>) testRecords[0];
+        existingTestBody = (String) tRec.get('Body');
+        System.debug(
+          'getApexClassState: found existing test class [' + testClassName + ']'
+        );
+      }
+
       return new Map<String, Object>{
         'name' => rec.get('Name'),
-        'body' => rec.get('Body')
+        'body' => rec.get('Body'),
+        'testClassName' => testClassName,
+        'existingTestBody' => existingTestBody
       };
     } catch (Exception e) {
       System.debug(

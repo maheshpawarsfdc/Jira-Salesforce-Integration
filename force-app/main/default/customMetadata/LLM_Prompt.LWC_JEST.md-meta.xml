@@ -168,7 +168,7 @@ Missing cleanup causes test pollution between test cases.
     </values>
     <values>
         <field>Is_Active__c</field>
-        <value xsi:type="xsd:boolean">true</value>
+        <value xsi:type="xsd:boolean">false</value>
     </values>
     <values>
         <field>Depends_On__c</field>

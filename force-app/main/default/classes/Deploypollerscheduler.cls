@@ -15,40 +15,53 @@
  * DeployPoller (Queueable) → not done → schedules DeployPollerScheduler → ...
  */
 public class Deploypollerscheduler implements Schedulable {
+  private String jobId;
+  private String issueKey;
+  private Integer attempt;
+  private String pendingZip2DataJson;
+  public String apexTestContextJson;
 
-    private String  jobId;
-    private String  issueKey;
-    private Integer attempt;
-    private String  pendingZip2DataJson;
+  public DeployPollerScheduler(String jobId, String issueKey, Integer attempt) {
+    this.jobId = jobId;
+    this.issueKey = issueKey;
+    this.attempt = attempt;
+  }
 
-    public DeployPollerScheduler(String jobId, String issueKey, Integer attempt) {
-        this.jobId    = jobId;
-        this.issueKey = issueKey;
-        this.attempt  = attempt;
+  public DeployPollerScheduler(
+    String jobId,
+    String issueKey,
+    Integer attempt,
+    String pendingZip2DataJson
+  ) {
+    this.jobId = jobId;
+    this.issueKey = issueKey;
+    this.attempt = attempt;
+    this.pendingZip2DataJson = pendingZip2DataJson;
+  }
+
+  public void execute(SchedulableContext ctx) {
+    System.debug(
+      'DeployPollerScheduler.execute(): enqueuing DeployPoller attempt ' +
+        attempt +
+        ' for jobId=' +
+        jobId
+    );
+
+    // Delete this scheduled job so it doesn't linger
+    try {
+      System.abortJob(ctx.getTriggerId());
+    } catch (Exception e) {
+      System.debug(
+        'DeployPollerScheduler: could not abort scheduled job: ' +
+        e.getMessage()
+      );
+      ErrorLogger.log(e, issueKey);
     }
 
-    public DeployPollerScheduler(String jobId, String issueKey, Integer attempt, String pendingZip2DataJson) {
-        this.jobId               = jobId;
-        this.issueKey            = issueKey;
-        this.attempt             = attempt;
-        this.pendingZip2DataJson = pendingZip2DataJson;
-    }
-
-    public void execute(SchedulableContext ctx) {
-        System.debug('DeployPollerScheduler.execute(): enqueuing DeployPoller attempt ' + attempt
-            + ' for jobId=' + jobId);
-
-        // Delete this scheduled job so it doesn't linger
-        try {
-            System.abortJob(ctx.getTriggerId());
-        } catch (Exception e) {
-            System.debug('DeployPollerScheduler: could not abort scheduled job: ' + e.getMessage());
-            ErrorLogger.log(e, issueKey);
-        }
-
-        // Enqueue the next DeployPoller — fresh queueable stack, depth = 1
-        DeployPoller poller = new DeployPoller(jobId, issueKey, attempt);
-        poller.pendingZip2DataJson = pendingZip2DataJson;
-        System.enqueueJob(poller);
-    }
+    // Enqueue the next DeployPoller — fresh queueable stack, depth = 1
+    DeployPoller poller = new DeployPoller(jobId, issueKey, attempt);
+    poller.pendingZip2DataJson = pendingZip2DataJson;
+    poller.apexTestContextJson = apexTestContextJson;
+    System.enqueueJob(poller);
+  }
 }

@@ -1,6 +1,11 @@
 public class LLMResponseProcessor {
   // ── Shared state written here, read by LLMService after call ──
   public static String pendingZip2DataJson;
+  // ── Apex test context: set when Apex classes + test classes detected ──
+  public static List<String> pendingApexClassNames;
+  public static List<String> pendingApexClassContents;
+  public static List<String> pendingTestClassNames;
+  public static List<String> pendingTestClassContents;
 
   // ─────────────────────────────────────────────────────────────
   // STAGE 1.5 — PROMPT ROUTER
@@ -240,6 +245,12 @@ public class LLMResponseProcessor {
     Map<String, String> zip2Files = new Map<String, String>();
     Map<String, Set<String>> zip2MetadataTypes = new Map<String, Set<String>>();
 
+    // ── Apex test validation tracking ──────────────────────────
+    List<String> detectedApexNames = new List<String>();
+    List<String> detectedApexContents = new List<String>();
+    List<String> detectedTestNames = new List<String>();
+    List<String> detectedTestContents = new List<String>();
+
     List<Object> files = (List<Object>) parsed.get('files');
 
     // ── Trigger merge enforcer (runs before files loop) ────────
@@ -369,6 +380,29 @@ public class LLMResponseProcessor {
               filePath +
               ']'
           );
+        }
+
+        // ── Track Apex classes and their test classes ───────────
+        if (
+          metadataType == 'ApexClass' &&
+          String.isNotBlank(xmlContent) &&
+          !filePath.endsWith('-meta.xml')
+        ) {
+          Boolean isTestClass =
+            (memberName != null &&
+            memberName.toLowerCase().endsWith('_test')) ||
+            xmlContent.toLowerCase().contains('@istest');
+          if (isTestClass) {
+            detectedTestNames.add(memberName);
+            detectedTestContents.add(xmlContent);
+            System.debug('[APEX-TEST] Detected test class: ' + memberName);
+          } else {
+            detectedApexNames.add(memberName);
+            detectedApexContents.add(xmlContent);
+            System.debug(
+              '[APEX-TEST] Detected production Apex class: ' + memberName
+            );
+          }
         }
 
         Boolean isApexCode = (metadataType == 'ApexClass' ||
@@ -610,6 +644,32 @@ public class LLMResponseProcessor {
         System.debug('Type: ' + effectiveType);
         System.debug('Content (first 500 chars): ' + xmlContent.left(500));
         System.debug('========================');
+      }
+    }
+
+    // ── Stage Apex test context if classes detected ──────────────
+    pendingApexClassNames = null;
+    pendingApexClassContents = null;
+    pendingTestClassNames = null;
+    pendingTestClassContents = null;
+    if (!detectedApexNames.isEmpty()) {
+      if (detectedTestNames.isEmpty()) {
+        System.debug(
+          '[APEX-TEST] WARNING — Apex class(es) detected but no test class(es) generated: ' +
+          detectedApexNames
+        );
+      } else {
+        pendingApexClassNames = detectedApexNames;
+        pendingApexClassContents = detectedApexContents;
+        pendingTestClassNames = detectedTestNames;
+        pendingTestClassContents = detectedTestContents;
+        System.debug(
+          '[APEX-TEST] Staged: ' +
+            detectedApexNames.size() +
+            ' class(es), ' +
+            detectedTestNames.size() +
+            ' test class(es) for validation'
+        );
       }
     }
 

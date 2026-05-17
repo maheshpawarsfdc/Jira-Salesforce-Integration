@@ -12,6 +12,10 @@ public class LLMService {
   ) {
     // Hard reset per ticket to prevent stale metadata from any previous run
     LLMResponseProcessor.pendingZip2DataJson = null;
+    LLMResponseProcessor.pendingApexClassNames = null;
+    LLMResponseProcessor.pendingApexClassContents = null;
+    LLMResponseProcessor.pendingTestClassNames = null;
+    LLMResponseProcessor.pendingTestClassContents = null;
     ZipBuilder.clear();
     FunctionHelper.clearQueues();
 
@@ -56,19 +60,50 @@ public class LLMService {
     );
     System.debug('── STAGE 2 complete.');
 
-    // ── ZIP DEPLOY (async) ─────────────────────────────────
+    // ── ZIP DEPLOY (async) ─────────────────────────────────────────
     // Flush DML first — enqueue follows immediately, no callout after
     if (ZipBuilder.hasFiles()) {
       flushDmlQueues();
       FunctionHelper.deferErrorLogDml = false;
-      System.debug('LLMService: ZipBuilder has files, enqueueing deploy...');
-      System.enqueueJob(
-        new ZipDeployQueueable(
+      String zip2Json = LLMResponseProcessor.pendingZip2DataJson;
+      List<String> apxNames = LLMResponseProcessor.pendingApexClassNames;
+      List<String> apxCont = LLMResponseProcessor.pendingApexClassContents;
+      List<String> tstNames = LLMResponseProcessor.pendingTestClassNames;
+      List<String> tstCont = LLMResponseProcessor.pendingTestClassContents;
+
+      if (
+        apxNames != null &&
+        !apxNames.isEmpty() &&
+        tstNames != null &&
+        !tstNames.isEmpty()
+      ) {
+        // Apex-first deploy: test validation before ZIP2
+        ApexTestRunQueueable testJob = ApexTestRunQueueable.forFirstRun(
           issueKey,
-          LLMResponseProcessor.pendingZip2DataJson
-        )
-      );
+          apxNames,
+          apxCont,
+          tstNames,
+          tstCont,
+          zip2Json
+        );
+        System.debug(
+          'LLMService: Apex-first deploy detected — chaining to ApexTestRunQueueable'
+        );
+        System.enqueueJob(
+          new ZipDeployQueueable(issueKey, null, testJob.toJson())
+        );
+      } else {
+        System.debug(
+          'LLMService: standard deploy — enqueueing ZipDeployQueueable'
+        );
+        System.enqueueJob(new ZipDeployQueueable(issueKey, zip2Json));
+      }
+
       LLMResponseProcessor.pendingZip2DataJson = null;
+      LLMResponseProcessor.pendingApexClassNames = null;
+      LLMResponseProcessor.pendingApexClassContents = null;
+      LLMResponseProcessor.pendingTestClassNames = null;
+      LLMResponseProcessor.pendingTestClassContents = null;
       ZipBuilder.clear();
       LLMGroqClient.logTokenSummary();
       LLMGroqClient.resetTokenCounters();
