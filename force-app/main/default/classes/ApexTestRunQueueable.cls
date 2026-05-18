@@ -101,6 +101,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
           ex.getStackTraceString()
       );
       ErrorLogger.log(ex, issueKey);
+      abortApexTestPollerJobs();
       postStatus('error', 'Apex test validation error: ' + ex.getMessage());
     }
   }
@@ -126,6 +127,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
           '/5'
       );
       if (pollAttempt > 5) {
+        abortApexTestPollerJobs();
         postStatus(
           'error',
           'Apex test class(es) not found after deploy: ' +
@@ -187,6 +189,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
       WHERE Id = :asyncApexJobId
     ];
     if (jobs.isEmpty()) {
+      abortApexTestPollerJobs();
       postStatus('error', 'Apex test job not found: ' + asyncApexJobId);
       return;
     }
@@ -197,6 +200,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
     if (status == 'Completed' || status == 'Failed' || status == 'Aborted') {
       checkCoverageAndProceed();
     } else if (pollAttempt >= MAX_POLL_ATTS) {
+      abortApexTestPollerJobs();
       postStatus(
         'error',
         'Apex test run timed out after ' +
@@ -346,6 +350,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
         }
         System.enqueueJob(ZipDeployQueueable.forZip2(issueKey, zip2DataJson));
       } else {
+        abortApexTestPollerJobs();
         postStatus('success', successMsg);
       }
     } else {
@@ -361,6 +366,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
         phase = 'RETRY_LLM';
         System.enqueueJob(this);
       } else {
+        abortApexTestPollerJobs();
         postStatus(
           'error',
           'Apex test validation FAILED after ' +
@@ -401,6 +407,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
       System.debug(
         '[APEX-TEST] LLM retry returned null/no-choices — giving up'
       );
+      abortApexTestPollerJobs();
       postStatus(
         'error',
         'Apex test retry: LLM call failed on attempt ' +
@@ -566,6 +573,40 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
     } catch (Exception e) {
       System.debug('[APEX-TEST] postStatus failed: ' + e.getMessage());
       ErrorLogger.log(e, issueKey);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // ABORT STALE APEX TEST POLLER JOBS FOR THIS ISSUE
+  // Called on all terminal paths to clean up any scheduled
+  // ApexTestPollScheduler jobs left from earlier poll cycles.
+  // ─────────────────────────────────────────────────────────────
+  private void abortApexTestPollerJobs() {
+    try {
+      String namePattern = 'ApexTestPoll_' + issueKey + '_%';
+      for (CronTrigger ct : [
+        SELECT Id, CronJobDetail.Name
+        FROM CronTrigger
+        WHERE
+          CronJobDetail.Name LIKE :namePattern
+          AND State NOT IN ('DELETED', 'COMPLETE', 'ERROR')
+      ]) {
+        try {
+          System.abortJob(ct.Id);
+          System.debug(
+            '[APEX-TEST] aborted stale scheduler job: ' + ct.CronJobDetail.Name
+          );
+        } catch (Exception inner1) {
+          System.debug(
+            '[APEX-TEST] could not abort job ' +
+              ct.CronJobDetail.Name +
+              ': ' +
+              inner1.getMessage()
+          );
+        }
+      }
+    } catch (Exception e) {
+      System.debug('[APEX-TEST] stale job cleanup failed: ' + e.getMessage());
     }
   }
 }

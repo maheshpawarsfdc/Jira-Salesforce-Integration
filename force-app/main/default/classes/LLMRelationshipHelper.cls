@@ -21,7 +21,11 @@ public class LLMRelationshipHelper {
       String.isBlank(parentObjectApiName) ? 'Parent' : parentObjectApiName
     );
 
-    String raw = child + '_' + field + '_' + parent;
+    // Adding org ID suffix ensures relationship names are unique
+    // per org and avoids registry collisions in developer orgs
+    // during repeated test deploys of the same object.
+    String orgIdSuffix = UserInfo.getOrganizationId().left(4);
+    String raw = child + '_' + field + '_' + parent + '_' + orgIdSuffix;
 
     // Truncate input to keep the SHA-1 suffix deterministic at 6 chars
     String hashInput = (raw.length() > 200) ? raw.substring(0, 200) : raw;
@@ -164,6 +168,35 @@ public class LLMRelationshipHelper {
         fieldApi,
         parent
       );
+
+      // Collision check — if this name is already registered on the parent
+      // (e.g. from a soft-deleted object still in the Recycle Bin), append
+      // a counter suffix until we find a free name.
+      Set<String> existingRelNames = getExistingChildRelationshipNames(parent);
+      if (existingRelNames.contains(uniqueName.toLowerCase())) {
+        String baseName = uniqueName.length() > 36
+          ? uniqueName.substring(0, 36)
+          : uniqueName;
+        Integer counter = 2;
+        while (
+          existingRelNames.contains((baseName + '_' + counter).toLowerCase()) &&
+          counter < 20
+        ) {
+          counter++;
+        }
+        String deduped = baseName + '_' + counter;
+        System.debug(
+          'rewriteRelationshipNames: collision on [' +
+            uniqueName +
+            '] for parent [' +
+            parent +
+            '] — using [' +
+            deduped +
+            ']'
+        );
+        uniqueName = deduped;
+      }
+
       String newInner;
 
       if (inners.contains('<relationshipName>')) {

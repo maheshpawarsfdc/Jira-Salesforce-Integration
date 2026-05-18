@@ -231,6 +231,22 @@ public class LLMResponseProcessor {
             hasNewCustomObject = true;
             break;
           }
+          // CustomField files can also signal a new object when the LLM
+          // uses standalone field files instead of a CustomObject wrapper.
+          if (mt == 'CustomField' && mn != null && mn.contains('.')) {
+            String fieldParent = mn.substringBefore('.');
+            if (
+              fieldParent.endsWith('__c') && !existingObjs.contains(fieldParent)
+            ) {
+              hasNewCustomObject = true;
+              System.debug(
+                '[DEPLOY-TRACE] hasNewCustomObject=true via CustomField parent [' +
+                  fieldParent +
+                  '] not in existingObjs'
+              );
+              break;
+            }
+          }
         }
       }
       if (!hasNewCustomObject) {
@@ -298,6 +314,36 @@ public class LLMResponseProcessor {
 
         if (metadataType == 'Layout') {
           xmlContent = LLMXmlSanitizer.sanitizeLayoutXml(xmlContent);
+
+          if (
+            memberName != null &&
+            memberName.contains('-') &&
+            orgState != null
+          ) {
+            String parentObj = memberName.substringBefore('-');
+            Set<String> existingObjs = new Set<String>();
+            Object rawObjs = orgState.get('existingObjects');
+            if (rawObjs instanceof List<Object>) {
+              for (Object o : (List<Object>) rawObjs) {
+                if (o != null)
+                  existingObjs.add(String.valueOf(o));
+              }
+            }
+            if (existingObjs.contains(parentObj)) {
+              String merged = LLMLayoutHelper.mergeLayoutForExistingObject(
+                memberName,
+                xmlContent
+              );
+              if (String.isNotBlank(merged)) {
+                xmlContent = merged;
+                System.debug(
+                  '[DEPLOY-TRACE] mergeLayoutForExistingObject applied to [' +
+                    memberName +
+                    ']'
+                );
+              }
+            }
+          }
         }
 
         if (metadataType == 'CustomLabel' || metadataType == 'CustomLabels') {

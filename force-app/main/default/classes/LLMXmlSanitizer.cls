@@ -712,6 +712,24 @@ public class LLMXmlSanitizer {
           ' broken <layoutItems> block(s) from Layout XML'
       );
     }
+
+    if (cleaned.contains('<field>Name</field>')) {
+      // Enforce Name field is always Required, regardless of LLM output
+      String beforeNameFix = cleaned;
+      cleaned = cleaned.replaceAll(
+        '<behavior>(Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
+        '<behavior>Required</behavior>$2<field>Name</field>'
+      );
+      cleaned = cleaned.replaceAll(
+        '<field>Name</field>(\\s*)<behavior>(Edit|Readonly)</behavior>',
+        '<field>Name</field>$1<behavior>Required</behavior>'
+      );
+      if (cleaned != beforeNameFix) {
+        System.debug(
+          '[DEPLOY-TRACE] sanitizeLayoutXml: enforced Required behavior on Name field'
+        );
+      }
+    }
     return cleaned;
   }
 

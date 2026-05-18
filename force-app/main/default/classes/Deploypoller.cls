@@ -135,6 +135,26 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
               '[DEPLOY-TRACE] FINAL SUCCESS (no chained ZIP2) for issue=' +
               issueKey
             );
+
+            // ── POST-DEPLOY VERIFICATION ──────────────────────────
+            // Salesforce says success but we verify the components
+            // actually exist in the org before telling Jira success.
+            String verificationWarning = verifyDeploy(result);
+            if (String.isNotBlank(verificationWarning)) {
+              successMsg +=
+                '\n\n⚠️ Please double check the following:\n' +
+                verificationWarning;
+              System.debug(
+                '[DEPLOY-TRACE] Verification warnings found: ' +
+                verificationWarning
+              );
+            }
+            // ── END VERIFICATION ──────────────────────────────────
+
+            // ── ABORT STALE POLLER JOBS ───────────────────────────
+            abortPollerJobsForThisDeploy();
+            // ── END ABORT STALE POLLER JOBS ───────────────────────
+
             postStatusToJira(issueKey, 'success', successMsg, jobId);
           }
         } else {
@@ -151,6 +171,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
               ' | errorPreview=' +
               errorMsg.abbreviate(300)
           );
+          abortPollerJobsForThisDeploy();
           postStatusToJira(issueKey, 'error', errorMsg, jobId);
         }
       } else if (attempt >= MAX_ATTEMPTS) {
@@ -163,6 +184,8 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           'Status: ' +
           result.status +
           '. Check Salesforce deployment status manually.';
+
+        abortPollerJobsForThisDeploy();
         postStatusToJira(issueKey, 'error', timeoutMsg, jobId);
       } else {
         // ── Not done yet, schedule next poll ──────────────
@@ -196,6 +219,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         e.getMessage() +
         ' | ' +
         e.getStackTraceString();
+      abortPollerJobsForThisDeploy();
       postStatusToJira(issueKey, 'error', exceptionMsg, jobId);
     }
   }
@@ -265,6 +289,43 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // ABORT STALE POLLER JOBS FOR THIS DEPLOY
+  // Called on all terminal paths to ensure scheduled jobs created
+  // by earlier poll cycles of the same deploy are cleaned up.
+  // ─────────────────────────────────────────────────────────────
+  @TestVisible
+  private void abortPollerJobsForThisDeploy() {
+    try {
+      String namePattern = 'DeployPoller_' + jobId + '_%';
+      for (CronTrigger ct : [
+        SELECT Id, CronJobDetail.Name
+        FROM CronTrigger
+        WHERE
+          CronJobDetail.Name LIKE :namePattern
+          AND State NOT IN ('DELETED', 'COMPLETE', 'ERROR')
+      ]) {
+        try {
+          System.abortJob(ct.Id);
+          System.debug(
+            'DeployPoller: aborted stale scheduler job: ' +
+            ct.CronJobDetail.Name
+          );
+        } catch (Exception inner1) {
+          System.debug(
+            'DeployPoller: could not abort job ' +
+              ct.CronJobDetail.Name +
+              ': ' +
+              inner1.getMessage()
+          );
+        }
+      }
+    } catch (Exception e) {
+      System.debug('DeployPoller: stale job cleanup failed: ' + e.getMessage());
+      // Non-fatal — do not let cleanup failure block terminal processing
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // PARSE RESULT — human readable deploy outcome (kept for backwards compat)
   // ─────────────────────────────────────────────────────────────
   private String parseResult(MetadataService.DeployResult result) {
@@ -274,5 +335,257 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         ' component(s) deployed.';
     }
     return parseFailureResult(result);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // VERIFY DEPLOY
+  // After Salesforce says success, we check the deployed components
+  // actually exist in the org. Returns a warning string listing
+  // anything that could not be confirmed. Empty string = all good.
+  //
+  // Verification strategy per type:
+  //   CustomObject  → Schema.getGlobalDescribe() — no callout
+  //   CustomField   → Schema field describe — no callout
+  //   ApexClass     → SOQL on ApexClass — no callout
+  //   ApexTrigger   → SOQL on ApexTrigger — no callout
+  //   Layout        → Tooling API query — 1 callout
+  //   Everything else → trusted, not verified
+  // ─────────────────────────────────────────────────────────────
+  private String verifyDeploy(MetadataService.DeployResult result) {
+    List<String> warnings = new List<String>();
+
+    try {
+      if (
+        result.details == null ||
+        result.details.componentSuccesses == null ||
+        result.details.componentSuccesses.isEmpty()
+      ) {
+        System.debug(
+          '[VERIFY] No componentSuccesses in result — skipping verification'
+        );
+        return '';
+      }
+
+      // Collect what was deployed by type
+      List<String> customObjects = new List<String>();
+      List<String> customFields = new List<String>();
+      List<String> apexClasses = new List<String>();
+      List<String> apexTriggers = new List<String>();
+      List<String> layouts = new List<String>();
+
+      for (
+        MetadataService.DeployMessage msg : result.details.componentSuccesses
+      ) {
+        if (
+          msg == null ||
+          String.isBlank(msg.componentType) ||
+          String.isBlank(msg.fullName)
+        ) {
+          continue;
+        }
+        String cType = msg.componentType.toLowerCase();
+        String cName = msg.fullName;
+
+        if (cType == 'customobject') {
+          customObjects.add(cName);
+        } else if (cType == 'customfield') {
+          customFields.add(cName);
+        } else if (cType == 'apexclass') {
+          apexClasses.add(cName);
+        } else if (cType == 'apextrigger') {
+          apexTriggers.add(cName);
+        } else if (cType == 'layout') {
+          layouts.add(cName);
+        }
+        // StaticResource, PermissionSet, Profile, CustomLabel etc
+        // are trusted — Salesforce success is enough for these
+      }
+
+      System.debug(
+        '[VERIFY] Verifying — objects=' +
+          customObjects.size() +
+          ' fields=' +
+          customFields.size() +
+          ' classes=' +
+          apexClasses.size() +
+          ' triggers=' +
+          apexTriggers.size() +
+          ' layouts=' +
+          layouts.size()
+      );
+
+      // ── 1. Verify CustomObjects via Schema ────────────────
+      Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+      for (String objName : customObjects) {
+        // fullName from deploy result is the API name e.g. MyObject__c
+        if (!globalDescribe.containsKey(objName.toLowerCase())) {
+          warnings.add('Object not found after deploy: ' + objName);
+          System.debug('[VERIFY] MISS — CustomObject: ' + objName);
+        } else {
+          System.debug('[VERIFY] OK — CustomObject: ' + objName);
+        }
+      }
+
+      // ── 2. Verify CustomFields via Schema ─────────────────
+      // fullName format from deploy result: ObjectName__c.FieldName__c
+      for (String fieldFullName : customFields) {
+        if (!fieldFullName.contains('.')) {
+          continue; // unexpected format, skip
+        }
+        String objName = fieldFullName.substringBefore('.');
+        String fieldName = fieldFullName.substringAfter('.');
+
+        Schema.SObjectType objType = globalDescribe.get(objName.toLowerCase());
+        if (objType == null) {
+          warnings.add('Parent object not found for field: ' + fieldFullName);
+          System.debug(
+            '[VERIFY] MISS — parent object missing for field: ' + fieldFullName
+          );
+          continue;
+        }
+
+        Map<String, Schema.SObjectField> fieldMap = objType.getDescribe()
+          .fields.getMap();
+        if (!fieldMap.containsKey(fieldName.toLowerCase())) {
+          warnings.add('Field not found after deploy: ' + fieldFullName);
+          System.debug('[VERIFY] MISS — CustomField: ' + fieldFullName);
+        } else {
+          System.debug('[VERIFY] OK — CustomField: ' + fieldFullName);
+        }
+      }
+
+      // ── 3. Verify ApexClasses via SOQL ───────────────────
+      if (!apexClasses.isEmpty()) {
+        Set<String> foundClasses = new Set<String>();
+        for (ApexClass cls : [
+          SELECT Name
+          FROM ApexClass
+          WHERE Name IN :apexClasses AND Status = 'Active'
+        ]) {
+          foundClasses.add(cls.Name.toLowerCase());
+        }
+        for (String clsName : apexClasses) {
+          if (!foundClasses.contains(clsName.toLowerCase())) {
+            warnings.add('Apex class not found after deploy: ' + clsName);
+            System.debug('[VERIFY] MISS — ApexClass: ' + clsName);
+          } else {
+            System.debug('[VERIFY] OK — ApexClass: ' + clsName);
+          }
+        }
+      }
+
+      // ── 4. Verify ApexTriggers via SOQL ──────────────────
+      if (!apexTriggers.isEmpty()) {
+        Set<String> foundTriggers = new Set<String>();
+        for (ApexTrigger trg : [
+          SELECT Name
+          FROM ApexTrigger
+          WHERE Name IN :apexTriggers AND Status = 'Active'
+        ]) {
+          foundTriggers.add(trg.Name.toLowerCase());
+        }
+        for (String trgName : apexTriggers) {
+          if (!foundTriggers.contains(trgName.toLowerCase())) {
+            warnings.add('Apex trigger not found after deploy: ' + trgName);
+            System.debug('[VERIFY] MISS — ApexTrigger: ' + trgName);
+          } else {
+            System.debug('[VERIFY] OK — ApexTrigger: ' + trgName);
+          }
+        }
+      }
+
+      // ── 5. Verify Layouts via Tooling API ─────────────────
+      // fullName format: ObjectName__c-Layout Name
+      // We verify the layout exists — we cannot easily verify
+      // individual fields inside the layout via Tooling API
+      // without multiple callouts, so we check existence only.
+      if (!layouts.isEmpty()) {
+        for (String layoutFullName : layouts) {
+          try {
+            // Layout fullName format: ObjectApiName-Layout Name
+            // Tooling API Name field stores just the layout label part
+            if (!layoutFullName.contains('-')) {
+              System.debug(
+                '[VERIFY] Layout fullName unexpected format, skipping: ' +
+                layoutFullName
+              );
+              continue;
+            }
+            String objPart = layoutFullName.substringBefore('-');
+            String layoutName = layoutFullName.substringAfter('-');
+
+            String query =
+              'SELECT Id, Name FROM Layout' +
+              ' WHERE Name = \'' +
+              String.escapeSingleQuotes(layoutName) +
+              '\'' +
+              ' LIMIT 1';
+
+            String endpoint =
+              'https://' +
+              DomainCreator.getOrgMyDomainHostname() +
+              '/services/data/v61.0/tooling/query?q=' +
+              EncodingUtil.urlEncode(query, 'UTF-8');
+
+            HttpRequest req = new HttpRequest();
+            req.setEndpoint(endpoint);
+            req.setMethod('GET');
+            req.setHeader('Authorization', 'Bearer ' + UserInfo.getSessionId());
+            req.setHeader('Content-Type', 'application/json');
+            req.setTimeout(15000);
+
+            HttpResponse res = new Http().send(req);
+
+            if (res.getStatusCode() == 200) {
+              Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(
+                res.getBody()
+              );
+              Integer totalSize = (Integer) body.get('totalSize');
+              if (totalSize == null || totalSize == 0) {
+                warnings.add(
+                  'Layout not found after deploy: ' +
+                    layoutFullName +
+                    '. The layout section may not have updated correctly.'
+                );
+                System.debug('[VERIFY] MISS — Layout: ' + layoutFullName);
+              } else {
+                System.debug('[VERIFY] OK — Layout: ' + layoutFullName);
+              }
+            } else {
+              // Tooling API failed — do not block success, just log
+              System.debug(
+                '[VERIFY] Layout Tooling API call failed (' +
+                  res.getStatusCode() +
+                  ') for: ' +
+                  layoutFullName +
+                  ' — skipping layout verification'
+              );
+            }
+          } catch (Exception layoutEx) {
+            // Non-fatal — layout verification failure should not
+            // turn a real success into an error
+            System.debug(
+              '[VERIFY] Layout verification exception for [' +
+                layoutFullName +
+                ']: ' +
+                layoutEx.getMessage()
+            );
+          }
+        }
+      }
+    } catch (Exception e) {
+      // Verification itself failed — log it but do not affect
+      // the deploy result. Better to report success with no
+      // verification than to report error on a good deploy.
+      System.debug(
+        '[VERIFY] verifyDeploy() exception: ' +
+          e.getMessage() +
+          ' | ' +
+          e.getStackTraceString()
+      );
+      ErrorLogger.log(e, issueKey);
+    }
+
+    return warnings.isEmpty() ? '' : String.join(warnings, '\n');
   }
 }
