@@ -42,7 +42,7 @@ public class LLMOrgStateService {
   // One Tooling API callout for all objects instead of one per object.
   // Returns Map<objectApiName, List<{fullName: 'ObjName-Layout Label'}>>
   // ─────────────────────────────────────────────────────────────
-  private static Map<String, List<Map<String, Object>>> batchFetchLayoutNames(
+  public static Map<String, List<Map<String, Object>>> batchFetchLayoutNames(
     List<String> objectNames
   ) {
     Map<String, List<Map<String, Object>>> result = new Map<String, List<Map<String, Object>>>();
@@ -192,16 +192,25 @@ public class LLMOrgStateService {
 
       // For custom objects, convert ID back to API name
       // For standard objects, tableEnumOrId IS the API name
+      // Layout query may return 18-char ID; idToApiName keys are 15-char
       String apiName = idToApiName.containsKey(tableEnumOrId)
         ? idToApiName.get(tableEnumOrId)
-        : tableEnumOrId;
+        : idToApiName.containsKey(tableEnumOrId.left(15))
+            ? idToApiName.get(tableEnumOrId.left(15))
+            : tableEnumOrId;
 
       if (!result.containsKey(apiName)) {
         result.put(apiName, new List<Map<String, Object>>());
       }
+      String layoutId = (String) rec.get('Id');
       result.get(apiName)
         .add(
-          new Map<String, Object>{ 'fullName' => apiName + '-' + layoutName }
+          new Map<String, Object>{
+            'fullName' => apiName +
+            '-' +
+            layoutName,
+            'id' => layoutId
+          }
         );
       System.debug(
         'batchFetchLayoutNames: mapped layout [' +
@@ -1093,6 +1102,129 @@ public class LLMOrgStateService {
     } catch (Exception e) {
       System.debug(
         'getLayoutStructure failed for [' + fullName + ']: ' + e.getMessage()
+      );
+      return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // GET LAYOUT STRUCTURE VIA TOOLING API (HTTP fallback)
+  // Used when Metadata.Operations.retrieve() is unavailable.
+  // Calls GET /tooling/sobjects/Layout/{id} and parses the Metadata
+  // field to reconstruct the sections/fields structure.
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, Object> getLayoutStructureViaToolingId(
+    String layoutId
+  ) {
+    if (String.isBlank(layoutId))
+      return null;
+    try {
+      String endpoint =
+        'https://' +
+        DomainCreator.getOrgMyDomainHostname() +
+        '/services/data/v61.0/tooling/sobjects/Layout/' +
+        layoutId;
+      HttpRequest req = new HttpRequest();
+      req.setEndpoint(endpoint);
+      req.setMethod('GET');
+      req.setHeader('Authorization', 'Bearer ' + getMetadataSessionId());
+      req.setHeader('Content-Type', 'application/json');
+      req.setTimeout(20000);
+
+      HttpResponse res = new Http().send(req);
+      if (res.getStatusCode() != 200) {
+        System.debug(
+          'getLayoutStructureViaToolingId: HTTP ' +
+            res.getStatusCode() +
+            ' for id=' +
+            layoutId
+        );
+        return null;
+      }
+
+      Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(
+        res.getBody()
+      );
+      Map<String, Object> metadata = (Map<String, Object>) body.get('Metadata');
+      if (metadata == null)
+        return null;
+
+      List<Map<String, Object>> sections = new List<Map<String, Object>>();
+      Object rawLayoutSections = metadata.get('layoutSections');
+      if (rawLayoutSections instanceof List<Object>) {
+        for (Object rawSec : (List<Object>) rawLayoutSections) {
+          Map<String, Object> sec = (Map<String, Object>) rawSec;
+          String label = (String) sec.get('label');
+          List<String> leftFields = new List<String>();
+          List<String> leftBehaviors = new List<String>();
+          List<String> rightFields = new List<String>();
+          List<String> rightBehaviors = new List<String>();
+
+          Object rawCols = sec.get('layoutColumns');
+          if (rawCols instanceof List<Object>) {
+            List<Object> cols = (List<Object>) rawCols;
+            if (cols.size() > 0) {
+              Map<String, Object> leftCol = (Map<String, Object>) cols[0];
+              Object rawItems = leftCol.get('layoutItems');
+              if (rawItems instanceof List<Object>) {
+                for (Object itemRaw : (List<Object>) rawItems) {
+                  Map<String, Object> item = (Map<String, Object>) itemRaw;
+                  String field = (String) item.get('field');
+                  if (String.isNotBlank(field)) {
+                    leftFields.add(field);
+                    leftBehaviors.add('Edit');
+                  }
+                }
+              }
+            }
+            if (cols.size() > 1) {
+              Map<String, Object> rightCol = (Map<String, Object>) cols[1];
+              Object rawItems = rightCol.get('layoutItems');
+              if (rawItems instanceof List<Object>) {
+                for (Object itemRaw : (List<Object>) rawItems) {
+                  Map<String, Object> item = (Map<String, Object>) itemRaw;
+                  String field = (String) item.get('field');
+                  if (String.isNotBlank(field)) {
+                    rightFields.add(field);
+                    rightBehaviors.add('Edit');
+                  }
+                }
+              }
+            }
+          }
+
+          if (!leftFields.isEmpty() || !rightFields.isEmpty()) {
+            sections.add(
+              new Map<String, Object>{
+                'label' => label,
+                'leftFields' => leftFields,
+                'leftBehaviors' => leftBehaviors,
+                'rightFields' => rightFields,
+                'rightBehaviors' => rightBehaviors
+              }
+            );
+          }
+        }
+      }
+
+      String fullName = (String) body.get('FullName');
+      System.debug(
+        'getLayoutStructureViaToolingId: fetched [' +
+          fullName +
+          '] with ' +
+          sections.size() +
+          ' section(s)'
+      );
+      return new Map<String, Object>{
+        'fullName' => fullName,
+        'sections' => sections
+      };
+    } catch (Exception e) {
+      System.debug(
+        'getLayoutStructureViaToolingId failed for id=[' +
+          layoutId +
+          ']: ' +
+          e.getMessage()
       );
       return null;
     }

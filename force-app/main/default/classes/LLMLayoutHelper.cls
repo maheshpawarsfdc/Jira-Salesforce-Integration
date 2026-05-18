@@ -87,11 +87,11 @@ public class LLMLayoutHelper {
     if (orgState == null)
       return;
     Object rawExistingLayouts = orgState.get('existingLayouts');
-    if (!(rawExistingLayouts instanceof Map<String, Object>))
-      return;
-    Map<String, Object> existingLayouts = (Map<String, Object>) rawExistingLayouts;
-    if (existingLayouts.isEmpty())
-      return;
+    // Do NOT bail out when existingLayouts is missing or empty.
+    // The on-demand fetch below will fill it for any object that needs it.
+    Map<String, Object> existingLayouts = (rawExistingLayouts instanceof Map<String, Object>)
+      ? (Map<String, Object>) rawExistingLayouts
+      : new Map<String, Object>();
 
     Set<String> existingObjects = new Set<String>();
     Object rawExistingObjects = orgState.get('existingObjects');
@@ -140,17 +140,50 @@ public class LLMLayoutHelper {
       }
     }
 
+    // On-demand layout name fetch for objects that have new fields but whose
+    // layout names were not captured during runOrgCheck (e.g. Tooling API
+    // callout timed out or returned empty).  A single batch call covers all
+    // missing objects so we stay within the per-transaction callout limit.
+    List<String> missingFromLayouts = new List<String>();
+    for (String objName : newFieldsByObject.keySet()) {
+      if (
+        !existingLayouts.containsKey(objName) &&
+        existingObjects.contains(objName)
+      ) {
+        missingFromLayouts.add(objName);
+      }
+    }
+    if (!missingFromLayouts.isEmpty()) {
+      try {
+        Map<String, List<Map<String, Object>>> fetched = LLMOrgStateService.batchFetchLayoutNames(
+          missingFromLayouts
+        );
+        for (String objName : fetched.keySet()) {
+          existingLayouts.put(objName, (Object) fetched.get(objName));
+          System.debug(
+            '[DEPLOY-TRACE] backstopB: on-demand layout fetch succeeded for [' +
+              objName +
+              ']'
+          );
+        }
+      } catch (Exception ex) {
+        System.debug(
+          '[DEPLOY-TRACE] backstopB: on-demand layout fetch failed — ' +
+          ex.getMessage()
+        );
+      }
+    }
+
     for (String objName : newFieldsByObject.keySet()) {
       if (!existingLayouts.containsKey(objName))
         continue;
-      if (objectsWithLayoutEmitted.contains(objName)) {
-        System.debug(
-          '[DEPLOY-TRACE] backstopB: Layout already emitted for [' +
-            objName +
-            '] — no injection needed'
-        );
-        continue;
-      }
+      // Do NOT skip when the LLM already emitted a Layout.
+      // mergeLayoutForExistingObject only adds fields present in the LLM's
+      // own layout XML — if the LLM's layout doesn't reference the new
+      // custom fields (common), they are silently omitted from ZIP1.
+      // The backstop's ZIP2 rebuild is always authoritative: it derives
+      // from the live org layout + the new field list, so it is correct
+      // even when ZIP1's layout was incomplete.
 
       List<String> newFields = newFieldsByObject.get(objName);
       if (newFields == null || newFields.isEmpty())
@@ -203,27 +236,27 @@ public class LLMLayoutHelper {
               ']'
           );
         } else {
-          // Cannot fetch structure — build a safe minimal XML directly
-          // rather than calling rebuildLayoutXmlWithNewFields with empty sections
-          System.debug(
-            '[DEPLOY-TRACE] backstopB: could not fetch structure for [' +
-              layoutFullName +
-              '] — using safe minimal XML'
-          );
-          String safeXml = buildSafeLayoutXmlWithFields(newFields);
-          zip2Files.put(layoutPath, safeXml);
-          if (!zip2MetadataTypes.containsKey('Layout')) {
-            zip2MetadataTypes.put('Layout', new Set<String>());
+          // Metadata.Operations.retrieve() failed — try Tooling API using the
+          // layout ID stored by batchFetchLayoutNames as a last resort.
+          String layoutId = (String) firstLayout.get('id');
+          Map<String, Object> toolingStructure = String.isNotBlank(layoutId)
+            ? LLMOrgStateService.getLayoutStructureViaToolingId(layoutId)
+            : null;
+          if (toolingStructure != null) {
+            firstLayout = toolingStructure;
+            System.debug(
+              '[DEPLOY-TRACE] backstopB: Tooling API fallback succeeded for [' +
+                layoutFullName +
+                ']'
+            );
+          } else {
+            System.debug(
+              '[DEPLOY-TRACE] backstopB: all layout structure fetches failed for [' +
+                layoutFullName +
+                '] — skipping to preserve existing layout fields'
+            );
+            continue;
           }
-          zip2MetadataTypes.get('Layout').add(layoutFullName);
-          System.debug(
-            '[DEPLOY-TRACE] *** SCENARIO B BACKSTOP FIRED (safe minimal) *** object=' +
-              objName +
-              ' | appended ' +
-              newFields.size() +
-              ' field(s)'
-          );
-          continue;
         }
       }
 
@@ -367,6 +400,23 @@ public class LLMLayoutHelper {
     if (!(rawSections instanceof List<Object>))
       return null;
     List<Object> sections = (List<Object>) rawSections;
+
+    // Collect every field already in the existing layout so we never inject
+    // a duplicate — duplicate <field> references cause deployment failures.
+    Set<String> alreadyOnLayout = new Set<String>();
+    for (Object rawSecScan : sections) {
+      Map<String, Object> secScan = (Map<String, Object>) rawSecScan;
+      for (String f : toStringList(secScan.get('leftFields')))
+        alreadyOnLayout.add(f.toLowerCase());
+      for (String f : toStringList(secScan.get('rightFields')))
+        alreadyOnLayout.add(f.toLowerCase());
+    }
+    List<String> filteredNew = new List<String>();
+    for (String f : newFields) {
+      if (!alreadyOnLayout.contains(f.toLowerCase()))
+        filteredNew.add(f);
+    }
+    newFields = filteredNew;
 
     String xml =
       '<?xml version="1.0" encoding="UTF-8"?>\n' +
@@ -585,13 +635,23 @@ public class LLMLayoutHelper {
   // ─────────────────────────────────────────────────────────────
   // MERGE LLM LAYOUT WITH EXISTING LAYOUT
   // Called when LLM emits a layout for an existing object.
-  // Fetches existing layout, finds which LLM fields are truly new,
-  // and returns merged XML that preserves all existing fields.
-  // Returns null if structure cannot be fetched (caller keeps LLM XML).
+  // Fetches existing layout structure, merges LLM fields + any
+  // requiredAdditionalFields (new custom fields defined in sibling
+  // CustomObject/CustomField files that the LLM may have omitted
+  // from its layout XML).
+  // Returns null if structure cannot be fetched (caller handles fallback).
   // ─────────────────────────────────────────────────────────────
   public static String mergeLayoutForExistingObject(
     String layoutFullName,
     String llmLayoutXml
+  ) {
+    return mergeLayoutForExistingObject(layoutFullName, llmLayoutXml, null);
+  }
+
+  public static String mergeLayoutForExistingObject(
+    String layoutFullName,
+    String llmLayoutXml,
+    List<String> requiredAdditionalFields
   ) {
     Map<String, Object> existingStructure = LLMOrgStateService.getLayoutStructure(
       layoutFullName
@@ -600,7 +660,7 @@ public class LLMLayoutHelper {
       System.debug(
         '[DEPLOY-TRACE] mergeLayoutForExistingObject: cannot fetch [' +
           layoutFullName +
-          '] — using LLM XML as-is'
+          '] — returning null for caller fallback'
       );
       return null;
     }
@@ -613,16 +673,32 @@ public class LLMLayoutHelper {
       for (Object rawSec : (List<Object>) rawSections) {
         Map<String, Object> sec = (Map<String, Object>) rawSec;
         for (String f : toStringList(sec.get('leftFields')))
-          existingFieldNames.add(f);
+          existingFieldNames.add(f.toLowerCase());
         for (String f : toStringList(sec.get('rightFields')))
-          existingFieldNames.add(f);
+          existingFieldNames.add(f.toLowerCase());
       }
     }
 
     List<String> newFields = new List<String>();
     for (String f : llmFields) {
-      if (!existingFieldNames.contains(f))
+      if (!existingFieldNames.contains(f.toLowerCase()))
         newFields.add(f);
+    }
+    // Also add caller-supplied required fields (from sibling CustomObject/CustomField
+    // files) that the LLM forgot to reference in its layout XML.
+    if (requiredAdditionalFields != null) {
+      Set<String> dedupe = new Set<String>();
+      for (String f : newFields)
+        dedupe.add(f.toLowerCase());
+      for (String f : requiredAdditionalFields) {
+        if (
+          !existingFieldNames.contains(f.toLowerCase()) &&
+          !dedupe.contains(f.toLowerCase())
+        ) {
+          newFields.add(f);
+          dedupe.add(f.toLowerCase());
+        }
+      }
     }
 
     System.debug(
@@ -639,7 +715,65 @@ public class LLMLayoutHelper {
     return rebuildLayoutXmlWithNewFields(existingStructure, newFields);
   }
 
-  private static List<String> extractFieldNamesFromLayoutXml(String xml) {
+  // ─────────────────────────────────────────────────────────────
+  // INJECT NEW FIELDS INTO EXISTING LAYOUT XML
+  // No-API fallback: when Metadata.Operations.retrieve() is unavailable,
+  // inject missing fields directly into the LLM's layout XML string.
+  // Finds the first </layoutColumns> tag and inserts before it.
+  // ─────────────────────────────────────────────────────────────
+  public static String injectNewFieldsIntoLayoutXml(
+    String layoutXml,
+    List<String> fieldsToAdd
+  ) {
+    if (
+      String.isBlank(layoutXml) ||
+      fieldsToAdd == null ||
+      fieldsToAdd.isEmpty()
+    )
+      return layoutXml;
+
+    // Strip fields already referenced anywhere in the layout XML
+    Set<String> alreadyPresent = new Set<String>();
+    Pattern fp = Pattern.compile('<field>([^<]+)</field>');
+    Matcher fm = fp.matcher(layoutXml);
+    while (fm.find())
+      alreadyPresent.add(fm.group(1).trim().toLowerCase());
+
+    List<String> missing = new List<String>();
+    for (String f : fieldsToAdd) {
+      if (!alreadyPresent.contains(f.toLowerCase()))
+        missing.add(f);
+    }
+    if (missing.isEmpty())
+      return layoutXml;
+
+    String injection = '';
+    for (String f : missing) {
+      injection +=
+        '\n            <layoutItems>' +
+        '\n                <behavior>Edit</behavior>' +
+        '\n                <field>' +
+        f +
+        '</field>' +
+        '\n            </layoutItems>';
+    }
+
+    Integer pos = layoutXml.indexOf('</layoutColumns>');
+    if (pos < 0)
+      return layoutXml;
+
+    System.debug(
+      '[DEPLOY-TRACE] injectNewFieldsIntoLayoutXml: injecting ' +
+        missing +
+        ' into layout XML'
+    );
+    return layoutXml.substring(0, pos) +
+      injection +
+      '\n        ' +
+      layoutXml.substring(pos);
+  }
+
+  public static List<String> extractFieldNamesFromLayoutXml(String xml) {
     List<String> fields = new List<String>();
     if (String.isBlank(xml))
       return fields;

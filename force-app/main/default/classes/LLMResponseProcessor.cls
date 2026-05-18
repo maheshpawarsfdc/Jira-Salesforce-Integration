@@ -330,14 +330,55 @@ public class LLMResponseProcessor {
               }
             }
             if (existingObjs.contains(parentObj)) {
+              // Collect new fields defined in sibling CustomObject/CustomField
+              // files so they are injected even if the LLM's layout XML omits
+              // them (LLMs frequently generate a layout without referencing the
+              // exact field API names of the fields they just created).
+              List<String> siblingNewFields = new List<String>();
+              for (Object f2Raw : files) {
+                Map<String, Object> f2 = (Map<String, Object>) f2Raw;
+                String f2mt = (String) f2.get('metadataType');
+                String f2mn = (String) f2.get('memberName');
+                if (f2mt == 'CustomObject' && parentObj.equals(f2mn)) {
+                  List<Map<String, String>> fis = LLMLayoutHelper.extractFieldInfosFromObjectXml(
+                    (String) f2.get('xmlContent')
+                  );
+                  for (Map<String, String> fi : fis) {
+                    siblingNewFields.add(fi.get('name'));
+                  }
+                } else if (
+                  f2mt == 'CustomField' &&
+                  f2mn != null &&
+                  f2mn.contains('.') &&
+                  parentObj.equals(f2mn.substringBefore('.'))
+                ) {
+                  siblingNewFields.add(f2mn.substringAfter('.'));
+                }
+              }
+
               String merged = LLMLayoutHelper.mergeLayoutForExistingObject(
                 memberName,
-                xmlContent
+                xmlContent,
+                siblingNewFields
               );
               if (String.isNotBlank(merged)) {
                 xmlContent = merged;
                 System.debug(
                   '[DEPLOY-TRACE] mergeLayoutForExistingObject applied to [' +
+                    memberName +
+                    ']'
+                );
+              } else if (!siblingNewFields.isEmpty()) {
+                // Metadata API unavailable — inject sibling new fields
+                // directly into the LLM's layout XML (no API call needed).
+                xmlContent = LLMLayoutHelper.injectNewFieldsIntoLayoutXml(
+                  xmlContent,
+                  siblingNewFields
+                );
+                System.debug(
+                  '[DEPLOY-TRACE] Layout fallback injection: added ' +
+                    siblingNewFields +
+                    ' directly into [' +
                     memberName +
                     ']'
                 );
@@ -661,6 +702,13 @@ public class LLMResponseProcessor {
           continue;
         }
 
+        if (metadataType == 'Profile') {
+          xmlContent = xmlContent.replaceAll(
+            '<tabVisibilities>[\\s\\S]*?</tabVisibilities>',
+            ''
+          );
+        }
+
         ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
 
         if (metadataType == 'CustomObject') {
@@ -732,6 +780,36 @@ public class LLMResponseProcessor {
       zip2Files,
       zip2MetadataTypes
     );
+
+    // ── Promote backstop layout files into ZIP1 for single deploys ─────────
+    // When adding fields to an existing object (deployScenario='single'),
+    // the backstop may produce layout files in zip2Files. Rather than
+    // triggering a second deploy chain, inject them directly into ZIP1.
+    if (deployScenario == 'single' && !zip2Files.isEmpty()) {
+      Set<String> promoted = new Set<String>();
+      for (String path : zip2Files.keySet()) {
+        if (!path.startsWith('layouts/'))
+          continue;
+        String layoutFullName = path.removeStart('layouts/')
+          .removeEnd('.layout');
+        ZipBuilder.addFile('Layout', layoutFullName, path, zip2Files.get(path));
+        promoted.add(path);
+        System.debug(
+          '[DEPLOY-TRACE] promoted backstop Layout to ZIP1: ' + path
+        );
+      }
+      for (String path : promoted) {
+        zip2Files.remove(path);
+        if (zip2MetadataTypes.containsKey('Layout')) {
+          String layoutFullName = path.removeStart('layouts/')
+            .removeEnd('.layout');
+          zip2MetadataTypes.get('Layout').remove(layoutFullName);
+          if (zip2MetadataTypes.get('Layout').isEmpty()) {
+            zip2MetadataTypes.remove('Layout');
+          }
+        }
+      }
+    }
 
     // ── Destructive changes ────────────────────────────────────
     List<Object> destructiveFiles = (List<Object>) parsed.get(

@@ -56,6 +56,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   // EXECUTE — called by Salesforce async framework
   // ─────────────────────────────────────────────────────────────
   public void execute(QueueableContext ctx) {
+    FunctionHelper.deferErrorLogDml = true;
     System.debug('');
     System.debug(
       'DeployPoller.execute(): attempt ' +
@@ -151,11 +152,10 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
             }
             // ── END VERIFICATION ──────────────────────────────────
 
-            // ── ABORT STALE POLLER JOBS ───────────────────────────
-            abortPollerJobsForThisDeploy();
-            // ── END ABORT STALE POLLER JOBS ───────────────────────
-
             postStatusToJira(issueKey, 'success', successMsg, jobId);
+            // ── ABORT STALE POLLER JOBS ───────────────────────────────
+            abortPollerJobsForThisDeploy();
+            // ── END ABORT STALE POLLER JOBS ───────────────────────────
           }
         } else {
           // ── Deploy failed — extract error details ─────
@@ -171,8 +171,8 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
               ' | errorPreview=' +
               errorMsg.abbreviate(300)
           );
-          abortPollerJobsForThisDeploy();
           postStatusToJira(issueKey, 'error', errorMsg, jobId);
+          abortPollerJobsForThisDeploy();
         }
       } else if (attempt >= MAX_ATTEMPTS) {
         // ── Max attempts reached without completion ────────
@@ -185,8 +185,8 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           result.status +
           '. Check Salesforce deployment status manually.';
 
-        abortPollerJobsForThisDeploy();
         postStatusToJira(issueKey, 'error', timeoutMsg, jobId);
+        abortPollerJobsForThisDeploy();
       } else {
         // ── Not done yet, schedule next poll ──────────────
         System.debug(
@@ -219,8 +219,8 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         e.getMessage() +
         ' | ' +
         e.getStackTraceString();
-      abortPollerJobsForThisDeploy();
       postStatusToJira(issueKey, 'error', exceptionMsg, jobId);
+      abortPollerJobsForThisDeploy();
     }
   }
 
@@ -274,7 +274,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   // CRON BUILDER — returns a cron expression for ~2 seconds from now
   // ─────────────────────────────────────────────────────────────
   private String buildCronIn2Seconds() {
-    Datetime dt = Datetime.now().addSeconds(2);
+    Datetime dt = Datetime.now().addSeconds(30);
     return dt.second() +
       ' ' +
       dt.minute() +
