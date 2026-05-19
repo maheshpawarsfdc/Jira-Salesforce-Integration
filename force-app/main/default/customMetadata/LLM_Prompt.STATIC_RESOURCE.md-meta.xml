@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Static Resource</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == STATIC RESOURCE FORMAT ==
 Static Resources involve binary files from Jira attachments.
 Do NOT generate XML for static resources.
@@ -49,9 +55,16 @@ Supported csvType values:
 - custom_setting_field → columns: apiName, fieldName, fieldLabel, fieldType
 - custom_setting       → columns: apiName, label, settingType, fieldName, fieldLabel, fieldType
 - group_member         → columns: groupDeveloperName, username
+- custom_object        → columns: objectApiName, objectLabel, objectPluralLabel, sharingModel,
+                         nameFieldLabel, nameFieldType, fieldName, fieldLabel, fieldType
+                         (one row per field; object-level columns repeat across rows for the same object)
+KEY DISAMBIGUATION:
+- Use custom_object   when the column is objectApiName (for __c custom objects)
+- Use custom_metadata_type when the column is apiName and values end in __mdt
+- Use custom_setting  when the column is apiName and values end in __c with a settingType column
 RULES:
 - ALWAYS use dmlOperations for CSV files — never try to read CSV content yourself
-- Identify csvType from the attachment filename or ticket description
+- Identify csvType from the column names in the CSV (listed in org state under csvFiles)
 - fileName must exactly match the attachment name from the ticket
 - Generate NO files array entries for CSV operations]]></value>
     </values>
@@ -69,10 +82,12 @@ RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Static Resource deploy/delete and CSV bulk processing via dmlOperations</value>
+        <value
+      xsi:type="xsd:string"
+    >Static Resource deploy/delete and CSV bulk processing via dmlOperations</value>
     </values>
 </CustomMetadata>

@@ -1101,15 +1101,341 @@ public class LLMResponseProcessor {
             ' rows'
         );
 
-        Map<String, Object> processResult = CsvProcessor.process(
-          new Map<String, Object>{ 'fileName' => fileName, 'type' => csvType }
-        );
-        System.debug(
-          'processDmlOperations: CSV processed — ' +
-            processResult.get('processed') +
-            ' records staged'
-        );
+        String normalizedCsvType = csvType == null
+          ? ''
+          : csvType.toLowerCase().trim().replace('objects', 'object');
+
+        if (normalizedCsvType == 'custom_object') {
+          generateCustomObjectsFromCsvWithLlm(fileName);
+          System.debug(
+            'processDmlOperations: custom_object CSV — LLM generation complete for [' +
+              fileName +
+              ']'
+          );
+        } else {
+          Map<String, Object> processResult = CsvProcessor.process(
+            new Map<String, Object>{ 'fileName' => fileName, 'type' => csvType }
+          );
+          System.debug(
+            'processDmlOperations: CSV processed — ' +
+              processResult.get('processed') +
+              ' records staged'
+          );
+        }
       }
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // CSV CUSTOM OBJECT — LLM-BASED XML GENERATION
+  //
+  // Reads the cached CSV rows for the given file, groups them by
+  // objectApiName, builds a compact definitions JSON, and calls
+  // the LLM to produce CustomObject + CustomField metadata XML in
+  // the standard files[] format.  The files are added directly to
+  // ZipBuilder — identical to the ticket-based flow.
+  //
+  // Expected CSV columns (object-level, repeated per field row):
+  //   objectApiName, objectLabel, objectPluralLabel, sharingModel,
+  //   nameFieldLabel, nameFieldType, description,
+  //   enableActivities, enableHistory, enableReports
+  // Field columns (one per row):
+  //   fieldName, fieldLabel, fieldType,
+  //   length, precision, scale, required, defaultValue,
+  //   picklistValues (semicolon-separated)
+  // ─────────────────────────────────────────────────────────────
+  private static void generateCustomObjectsFromCsvWithLlm(String fileName) {
+    List<Map<String, Object>> rows = CsvProcessor.getCachedRows(fileName);
+    if (rows == null || rows.isEmpty()) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: no cached rows for [' +
+          fileName +
+          ']. Call csv_read first.'
+      );
+    }
+
+    // ── Group rows by objectApiName ───────────────────────────
+    Map<String, Map<String, Object>> firstRowByObj = new Map<String, Map<String, Object>>();
+    Map<String, List<Map<String, Object>>> fieldRowsByObj = new Map<String, List<Map<String, Object>>>();
+
+    for (Map<String, Object> row : rows) {
+      String rawName = csvStr(row, 'objectApiName');
+      if (String.isBlank(rawName))
+        rawName = csvStr(row, 'apiName');
+      if (String.isBlank(rawName))
+        continue;
+      String apiName = rawName.endsWith('__c') ? rawName : rawName + '__c';
+
+      if (!firstRowByObj.containsKey(apiName)) {
+        firstRowByObj.put(apiName, row);
+        fieldRowsByObj.put(apiName, new List<Map<String, Object>>());
+      }
+      if (String.isNotBlank(csvStr(row, 'fieldName'))) {
+        fieldRowsByObj.get(apiName).add(row);
+      }
+    }
+
+    if (firstRowByObj.isEmpty()) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: no valid objectApiName values in [' +
+          fileName +
+          ']'
+      );
+    }
+
+    // ── Build compact definitions JSON ────────────────────────
+    List<Map<String, Object>> objDefs = new List<Map<String, Object>>();
+
+    for (String apiName : firstRowByObj.keySet()) {
+      Map<String, Object> meta = firstRowByObj.get(apiName);
+      String defaultLabel = apiName.replace('__c', '').replace('_', ' ');
+
+      List<Map<String, Object>> fieldDefs = new List<Map<String, Object>>();
+      for (Map<String, Object> row : fieldRowsByObj.get(apiName)) {
+        String fn = csvStr(row, 'fieldName');
+        if (String.isBlank(fn))
+          continue;
+        if (!fn.endsWith('__c'))
+          fn += '__c';
+
+        Map<String, Object> fDef = new Map<String, Object>{
+          'name' => fn,
+          'label' => csvStr(row, 'fieldLabel'),
+          'type' => csvStr(row, 'fieldType')
+        };
+        String len = csvStr(row, 'length');
+        String pre = csvStr(row, 'precision');
+        String scl = csvStr(row, 'scale');
+        String req = csvStr(row, 'required');
+        String dv = csvStr(row, 'defaultValue');
+        String pvs = csvStr(row, 'picklistValues');
+        if (String.isNotBlank(len))
+          fDef.put('length', len);
+        if (String.isNotBlank(pre))
+          fDef.put('precision', pre);
+        if (String.isNotBlank(scl))
+          fDef.put('scale', scl);
+        if (String.isNotBlank(req))
+          fDef.put('required', req);
+        if (String.isNotBlank(dv))
+          fDef.put('defaultValue', dv);
+        if (String.isNotBlank(pvs))
+          fDef.put('picklistValues', pvs);
+        fieldDefs.add(fDef);
+      }
+
+      String resolvedLabel = csvStr(meta, 'objectLabel');
+      if (String.isBlank(resolvedLabel))
+        resolvedLabel = csvStrDef(meta, 'label', defaultLabel);
+      String resolvedPluralLabel = csvStr(meta, 'objectPluralLabel');
+      if (String.isBlank(resolvedPluralLabel))
+        resolvedPluralLabel = csvStrDef(
+          meta,
+          'pluralLabel',
+          defaultLabel + 's'
+        );
+
+      Map<String, Object> objDef = new Map<String, Object>{
+        'apiName' => apiName,
+        'label' => resolvedLabel,
+        'pluralLabel' => resolvedPluralLabel,
+        'sharingModel' => csvStrDef(meta, 'sharingModel', 'ReadWrite'),
+        'nameFieldLabel' => csvStrDef(
+          meta,
+          'nameFieldLabel',
+          defaultLabel + ' Name'
+        ),
+        'nameFieldType' => csvStrDef(meta, 'nameFieldType', 'Text'),
+        'fields' => fieldDefs
+      };
+      String objDesc = csvStr(meta, 'description');
+      if (String.isNotBlank(objDesc))
+        objDef.put('description', objDesc);
+      String enAct = csvStr(meta, 'enableActivities');
+      String enHist = csvStr(meta, 'enableHistory');
+      String enRep = csvStr(meta, 'enableReports');
+      if (String.isNotBlank(enAct))
+        objDef.put('enableActivities', enAct);
+      if (String.isNotBlank(enHist))
+        objDef.put('enableHistory', enHist);
+      if (String.isNotBlank(enRep))
+        objDef.put('enableReports', enRep);
+
+      objDefs.add(objDef);
+    }
+
+    String definitionsJson = JSON.serialize(
+      new Map<String, Object>{ 'objects' => objDefs }
+    );
+    System.debug(
+      'generateCustomObjectsFromCsvWithLlm: definitions = ' + definitionsJson
+    );
+
+    // ── Build LLM messages ────────────────────────────────────
+    String systemPrompt =
+      'You are a Salesforce Metadata API XML generator.\n' +
+      'Generate ONE file per custom object. Fields are EMBEDDED inside the object XML — do NOT create separate field files.\n\n' +
+      'Return ONLY a JSON object — no markdown, no explanation:\n' +
+      '{\n  "files": [\n' +
+      '    { "metadataType": "CustomObject",\n' +
+      '      "memberName": "<ObjectApiName__c>",\n' +
+      '      "filePath": "objects/<ObjectApiName__c>.object",\n' +
+      '      "xmlContent": "<full XML including all fields>" }\n' +
+      '  ]\n}\n\n' +
+      'CRITICAL FILE PATH RULE:\n' +
+      '  filePath MUST be "objects/<ObjectApiName__c>.object" — example: "objects/Customer_Config__c.object"\n' +
+      '  Do NOT use subdirectories. Do NOT use -meta.xml suffix. Do NOT create separate field files.\n\n' +
+      'CustomObject XML structure:\n' +
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
+      '  <label>...</label>\n' +
+      '  <pluralLabel>...</pluralLabel>\n' +
+      '  <nameField><label>...</label><type>Text</type></nameField>\n' +
+      '  <deploymentStatus>Deployed</deploymentStatus>\n' +
+      '  <sharingModel>ReadWrite</sharingModel>\n' +
+      '  <fields>... one <fields> block per field ...</fields>\n' +
+      '</CustomObject>\n\n' +
+      'FORBIDDEN at root CustomObject level: <apiName> — the object API name is determined by file path only.\n\n' +
+      'Each field must be wrapped in a <fields>...</fields> element (plural, NOT <field>).\n' +
+      'Inside each <fields> block use ONLY these elements:\n' +
+      '  <fullName>FieldName__c</fullName>  — REQUIRED, the field API name\n' +
+      '  <label>Field Label</label>          — REQUIRED\n' +
+      '  <type>Text</type>                   — REQUIRED (Text, Number, Currency, Percent, Email, Phone, Url, Date, DateTime, Checkbox, Picklist, LongTextArea, TextArea, Lookup)\n' +
+      '  <required>false</required>\n' +
+      '  <trackTrending>false</trackTrending>\n' +
+      '  Text:    <length>255</length>\n' +
+      '  Number/Currency/Percent: <precision>18</precision><scale>2</scale>\n' +
+      '  Checkbox: <defaultValue>false</defaultValue>\n' +
+      '  LongTextArea: <length>32768</length><visibleLines>3</visibleLines>\n' +
+      '  Picklist: <valueSet><valueSetDefinition><sorted>false</sorted><value><fullName>Option1</fullName><default>false</default><label>Option 1</label></value></valueSetDefinition></valueSet>\n' +
+      'DO NOT use <field> (singular) anywhere. DO NOT nest <fields> inside <fields>.\n' +
+      'Escape XML special chars in label values.';
+
+    String userPrompt =
+      'Generate Salesforce custom object and field metadata XML for:\n' +
+      definitionsJson;
+
+    List<Map<String, Object>> messages = new List<Map<String, Object>>{
+      new Map<String, Object>{ 'role' => 'system', 'content' => systemPrompt },
+      new Map<String, Object>{ 'role' => 'user', 'content' => userPrompt }
+    };
+
+    // ── Call LLM ─────────────────────────────────────────────
+    System.debug(
+      'generateCustomObjectsFromCsvWithLlm: calling LLM for [' +
+        fileName +
+        ']...'
+    );
+    Map<String, Object> llmResponse = LLMGroqClient.callGroq(
+      messages,
+      null,
+      null,
+      8192
+    );
+
+    List<Object> choices = (List<Object>) llmResponse.get('choices');
+    if (choices == null || choices.isEmpty()) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: LLM returned no choices for [' +
+          fileName +
+          ']'
+      );
+    }
+    Map<String, Object> msg = (Map<String, Object>) ((Map<String, Object>) choices[0])
+      .get('message');
+    String content = (String) msg.get('content');
+    System.debug(
+      'generateCustomObjectsFromCsvWithLlm: LLM raw response = ' + content
+    );
+
+    // ── Parse files[] ─────────────────────────────────────────
+    String cleanedJson = LLMGroqClient.cleanJsonResponse(content);
+    Map<String, Object> parsed;
+    try {
+      parsed = (Map<String, Object>) JSON.deserializeUntyped(cleanedJson);
+    } catch (Exception e) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: JSON parse failed — ' +
+          e.getMessage() +
+          ' | raw: ' +
+          content
+      );
+    }
+
+    List<Object> files = (List<Object>) parsed.get('files');
+    if (files == null || files.isEmpty()) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: LLM returned no files[] for [' +
+          fileName +
+          ']'
+      );
+    }
+
+    // ── Stage each file into ZipBuilder ──────────────────────
+    Integer count = 0;
+    for (Object fileObj : files) {
+      Map<String, Object> file = (Map<String, Object>) fileObj;
+      String metadataType = (String) file.get('metadataType');
+      String memberName = (String) file.get('memberName');
+      String filePath = (String) file.get('filePath');
+      String xmlContent = (String) file.get('xmlContent');
+
+      if (String.isBlank(filePath) || String.isBlank(xmlContent)) {
+        System.debug(
+          'generateCustomObjectsFromCsvWithLlm: skipping file with blank path or content'
+        );
+        continue;
+      }
+
+      // Strip root-level <apiName> — invalid in CustomObject; name is determined by file path
+      if (metadataType == 'CustomObject') {
+        xmlContent = xmlContent.replaceAll('<apiName>[^<]*</apiName>', '');
+      }
+
+      String effectiveType = String.isNotBlank(metadataType)
+        ? metadataType
+        : 'CustomObject';
+      String effectiveMember = String.isNotBlank(memberName)
+        ? memberName
+        : filePath;
+
+      ZipBuilder.addFile(effectiveType, effectiveMember, filePath, xmlContent);
+      System.debug(
+        'generateCustomObjectsFromCsvWithLlm: staged [' +
+          filePath +
+          '] as [' +
+          effectiveType +
+          ']'
+      );
+      count++;
+    }
+
+    System.debug(
+      'generateCustomObjectsFromCsvWithLlm: ' +
+        count +
+        ' file(s) staged for deploy from [' +
+        fileName +
+        ']'
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // ROW HELPERS (used only by generateCustomObjectsFromCsvWithLlm)
+  // ─────────────────────────────────────────────────────────────
+  private static String csvStr(Map<String, Object> row, String key) {
+    Object val = row?.get(key);
+    if (val == null)
+      return '';
+    String s = String.valueOf(val).trim();
+    return (s == 'null') ? '' : s;
+  }
+
+  private static String csvStrDef(
+    Map<String, Object> row,
+    String key,
+    String defaultVal
+  ) {
+    String v = csvStr(row, key);
+    return String.isBlank(v) ? defaultVal : v;
   }
 }
