@@ -312,6 +312,32 @@ public class LLMResponseProcessor {
           );
         }
 
+        if (
+          metadataType == 'CustomObject' &&
+          memberName != null &&
+          memberName.endsWith('__c') &&
+          orgState != null
+        ) {
+          Set<String> existingObjs = new Set<String>();
+          Object rawObjs = orgState.get('existingObjects');
+          if (rawObjs instanceof List<Object>) {
+            for (Object o : (List<Object>) rawObjs) {
+              if (o != null)
+                existingObjs.add(String.valueOf(o));
+            }
+          }
+          if (existingObjs.contains(memberName)) {
+            xmlContent = LLMXmlSanitizer.sanitizeExistingCustomObjectXml(
+              xmlContent
+            );
+            System.debug(
+              '[DEPLOY-TRACE] sanitizeExistingCustomObjectXml applied to [' +
+                filePath +
+                ']'
+            );
+          }
+        }
+
         if (metadataType == 'Layout') {
           xmlContent = LLMXmlSanitizer.sanitizeLayoutXml(xmlContent);
 
@@ -706,6 +732,29 @@ public class LLMResponseProcessor {
           xmlContent = xmlContent.replaceAll(
             '<tabVisibilities>[\\s\\S]*?</tabVisibilities>',
             ''
+          );
+        }
+
+        // When a permissionSetClone already staged this file path, merge the
+        // new permissions into the cloned XML instead of overwriting it.
+        // Without this, the LLM's files[] entry (containing only the new
+        // object permissions) would silently replace the full cloned XML,
+        // losing all permissions that existed in the source permission set.
+        if (metadataType == 'PermissionSet') {
+          if (ZipBuilder.files.containsKey(filePath)) {
+            String clonedXml = ZipBuilder.files.get(filePath);
+            xmlContent = PermissionSetHelper.mergePermissionXml(
+              clonedXml,
+              xmlContent
+            );
+            System.debug(
+              'processXmlGenerationResponse: merged new PS permissions into cloned base [' +
+                filePath +
+                ']'
+            );
+          }
+          xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
+            xmlContent
           );
         }
 

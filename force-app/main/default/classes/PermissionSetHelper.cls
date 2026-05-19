@@ -359,6 +359,169 @@ public class PermissionSetHelper {
     return result;
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // PERMISSION SET — STRIP REQUIRED FIELD PERMISSIONS
+  //
+  // Salesforce rejects fieldPermissions entries for fields that are
+  // marked Required on the object definition, throwing:
+  //   "You cannot deploy to a required field: Object__c.Field__c"
+  //
+  // Required fields always have implicit read/edit access granted
+  // via object permissions, so they must be absent from fieldPermissions.
+  //
+  // This method removes every <fieldPermissions> block whose target
+  // field resolves as required via Schema describe.
+  // ─────────────────────────────────────────────────────────────
+  public static String stripRequiredFieldPermissions(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fieldPermissions>'))
+      return xml;
+
+    List<Integer> removeStarts = new List<Integer>();
+    List<Integer> removeEnds = new List<Integer>();
+    Integer cursor = 0;
+
+    while (true) {
+      Integer bs = xml.indexOf('<fieldPermissions>', cursor);
+      if (bs < 0)
+        break;
+      Integer be = xml.indexOf('</fieldPermissions>', bs);
+      if (be < 0)
+        break;
+      be += '</fieldPermissions>'.length();
+
+      String block = xml.substring(bs, be);
+      Integer fs = block.indexOf('<field>');
+      Integer fe = block.indexOf('</field>');
+      if (fs >= 0 && fe > fs) {
+        String qualifiedField = block.substring(fs + '<field>'.length(), fe)
+          .trim();
+        if (qualifiedField.contains('.')) {
+          String objectName = qualifiedField.substringBefore('.');
+          String fieldName = qualifiedField.substringAfter('.');
+          if (isRequiredField(objectName, fieldName)) {
+            removeStarts.add(bs);
+            removeEnds.add(be);
+            System.debug(
+              'PermissionSetHelper.stripRequiredFieldPermissions(): removing required field [' +
+                qualifiedField +
+                ']'
+            );
+          }
+        }
+      }
+      cursor = be;
+    }
+
+    if (removeStarts.isEmpty())
+      return xml;
+
+    // Remove in reverse order so earlier indices stay valid
+    String result = xml;
+    for (Integer i = removeStarts.size() - 1; i >= 0; i--) {
+      result =
+        result.substring(0, removeStarts[i]) + result.substring(removeEnds[i]);
+    }
+    return result;
+  }
+
+  private static Boolean isRequiredField(String objectName, String fieldName) {
+    try {
+      Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
+      if (objType == null)
+        return false;
+      Schema.DescribeFieldResult f = objType.getDescribe()
+        .fields.getMap()
+        .get(fieldName)
+        ?.getDescribe();
+      if (f == null)
+        return false;
+      // Required in the permission-set sense: not nillable, not auto-populated,
+      // not an auto-number, not a formula, and not the Id field type.
+      return !f.isNillable() &&
+        !f.isDefaultedOnCreate() &&
+        !f.isAutoNumber() &&
+        !f.isCalculated() &&
+        f.getType() != Schema.DisplayType.ID;
+    } catch (Exception e) {
+      System.debug(
+        'PermissionSetHelper.isRequiredField(): [' +
+          objectName +
+          '.' +
+          fieldName +
+          ']: ' +
+          e.getMessage()
+      );
+      return false;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // PERMISSION SET — MERGE
+  //
+  // Merges permission blocks from additionalXml into baseXml.
+  // Used when clonePermissionSet() has already staged a cloned PS
+  // and files[] also contains a PermissionSet entry for the same
+  // API name (e.g. to add new object permissions to the clone).
+  //
+  // Strategy: extract every known permission block type from
+  // additionalXml and append them to baseXml, then deduplicate.
+  // ─────────────────────────────────────────────────────────────
+  public static String mergePermissionXml(
+    String baseXml,
+    String additionalXml
+  ) {
+    if (String.isBlank(additionalXml))
+      return baseXml;
+    if (String.isBlank(baseXml))
+      return additionalXml;
+
+    List<String> blockTypes = new List<String>{
+      'objectPermissions',
+      'fieldPermissions',
+      'userPermissions',
+      'classAccesses',
+      'pageAccesses',
+      'recordTypeVisibilities',
+      'tabSettings',
+      'applicationVisibilities',
+      'customPermissions',
+      'customMetadataTypeAccesses',
+      'customSettingAccesses',
+      'externalDataSourceAccesses',
+      'flowAccesses'
+    };
+
+    String merged = baseXml;
+    for (String blockType : blockTypes) {
+      String openTag = '<' + blockType + '>';
+      String closeTag = '</' + blockType + '>';
+      if (!additionalXml.contains(openTag))
+        continue;
+
+      Integer cursor = 0;
+      while (true) {
+        Integer bs = additionalXml.indexOf(openTag, cursor);
+        if (bs < 0)
+          break;
+        Integer be = additionalXml.indexOf(closeTag, bs);
+        if (be < 0)
+          break;
+        be += closeTag.length();
+        String block = additionalXml.substring(bs, be);
+        merged = merged.replace(
+          '</PermissionSet>',
+          block + '\n</PermissionSet>'
+        );
+        cursor = be;
+      }
+    }
+
+    System.debug(
+      'PermissionSetHelper.mergePermissionXml(): merge complete, running dedup'
+    );
+    return deduplicateObjectPermissions(merged);
+  }
+
   public static String ensureParentReadAccessForXml(String xml) {
     if (String.isBlank(xml))
       return xml;
