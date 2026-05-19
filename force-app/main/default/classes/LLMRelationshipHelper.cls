@@ -2,8 +2,11 @@ public class LLMRelationshipHelper {
   // ─────────────────────────────────────────────────────────────
   // UNIQUE RELATIONSHIP NAME
   //
-  //   - same ticket → same name (idempotent across re-runs)
-  //   - different {child,field,parent} → different name (no collisions)
+  //   - random 6-char hex suffix per deployment → ghost-proof
+  //   - deleted objects leave their relationship names in Salesforce's
+  //     internal registry (Recycle Bin) so a deterministic hash would
+  //     collide on re-creation; a random suffix guarantees freshness
+  //   - different {child,field,parent} → different base → no collisions
   //   - never equals the legacy "{Child}_{Field}" pattern (clears the org)
   // ─────────────────────────────────────────────────────────────
   public static String uniqueRelationshipName(
@@ -21,15 +24,18 @@ public class LLMRelationshipHelper {
       String.isBlank(parentObjectApiName) ? 'Parent' : parentObjectApiName
     );
 
-    String raw = child + '_' + field + '_' + parent;
-
-    // Truncate input to keep the SHA-1 suffix deterministic at 6 chars
-    String hashInput = (raw.length() > 200) ? raw.substring(0, 200) : raw;
-    String hashHex = EncodingUtil.convertToHex(
-        Crypto.generateDigest('SHA1', Blob.valueOf(hashInput))
-      )
+    // Random 6-char hex suffix — different on every deployment.
+    // This is intentionally non-deterministic: a SHA-1 hash based on
+    // the object/field/parent would produce the same name each time,
+    // which collides with the ghost relationship left in Salesforce's
+    // internal registry when the child object is deleted to the Recycle
+    // Bin and then recreated.  Schema.getChildRelationships() does NOT
+    // surface those ghost names, so pre-flight collision detection alone
+    // cannot save us — a fresh random name per deploy is the only
+    // reliable guard.
+    String suffix = EncodingUtil.convertToHex(Crypto.generateAesKey(128))
+      .substring(0, 6)
       .toUpperCase();
-    String suffix = hashHex.substring(0, 6);
 
     // Max 40 chars total — Salesforce RelationshipName limit
     String base = child + '_' + field;
@@ -164,6 +170,35 @@ public class LLMRelationshipHelper {
         fieldApi,
         parent
       );
+
+      // Collision check — if this name is already registered on the parent
+      // (e.g. from a soft-deleted object still in the Recycle Bin), append
+      // a counter suffix until we find a free name.
+      Set<String> existingRelNames = getExistingChildRelationshipNames(parent);
+      if (existingRelNames.contains(uniqueName.toLowerCase())) {
+        String baseName = uniqueName.length() > 36
+          ? uniqueName.substring(0, 36)
+          : uniqueName;
+        Integer counter = 2;
+        while (
+          existingRelNames.contains((baseName + '_' + counter).toLowerCase()) &&
+          counter < 20
+        ) {
+          counter++;
+        }
+        String deduped = baseName + '_' + counter;
+        System.debug(
+          'rewriteRelationshipNames: collision on [' +
+            uniqueName +
+            '] for parent [' +
+            parent +
+            '] — using [' +
+            deduped +
+            ']'
+        );
+        uniqueName = deduped;
+      }
+
       String newInner;
 
       if (inners.contains('<relationshipName>')) {

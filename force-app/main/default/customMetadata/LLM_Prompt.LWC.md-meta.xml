@@ -336,87 +336,6 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
   3. Only add the new method the ticket requests if it is not already there
   4. If the method already exists, do not duplicate it
 
-== JEST TEST FILE (LwcTest) ==
-ALWAYS generate a Jest test file for every LWC component you create or update.
-
-File type  : LwcTest
-filePath   : lwc/{componentName}/__tests__/{componentName}.test.js
-memberName : {componentName}  (same as the component)
-
-The Jest test validates the generated component logic BEFORE it is accepted.
-The pipeline saves it to a ContentDocument so a local script can retrieve and run it.
-
--- TIER 2 JEST PATTERN --
-Use this exact structure. Replace component name, import path, and mock data to match the ticket.
-
-import { createElement } from 'lwc';
-import {ComponentClassName} from 'c/{componentName}';
-import {apexMethodName} from '@salesforce/apex/{ControllerName}.{methodName}';
-
-jest.mock(
-    '@salesforce/apex/{ControllerName}.{methodName}',
-    () => ({ default: jest.fn() }),
-    { virtual: true }
-);
-
-const MOCK_DATA = [{ Id: '0010000000001AAA', Name: 'Test Record' }];
-
-describe('c-{component-name}', () => {
-    afterEach(() => {
-        while (document.body.firstChild) {
-            document.body.removeChild(document.body.firstChild);
-        }
-        jest.clearAllMocks();
-    });
-
-    it('shows spinner on initial load before data arrives', () => {
-        {apexMethodName}.mockResolvedValue(MOCK_DATA);
-        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
-        document.body.appendChild(element);
-        const spinner = element.shadowRoot.querySelector('lightning-spinner');
-        expect(spinner).not.toBeNull();
-    });
-
-    it('renders list items after successful Apex call', async () => {
-        {apexMethodName}.mockResolvedValue(MOCK_DATA);
-        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
-        element.recordId = '0010000000001AAA';
-        document.body.appendChild(element);
-        await Promise.resolve();
-        const items = element.shadowRoot.querySelectorAll('li');
-        expect(items.length).toBe(MOCK_DATA.length);
-    });
-
-    it('hides spinner after data loads', async () => {
-        {apexMethodName}.mockResolvedValue(MOCK_DATA);
-        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
-        element.recordId = '0010000000001AAA';
-        document.body.appendChild(element);
-        await Promise.resolve();
-        const spinner = element.shadowRoot.querySelector('lightning-spinner');
-        expect(spinner).toBeNull();
-    });
-
-    it('shows error paragraph when Apex call fails', async () => {
-        {apexMethodName}.mockRejectedValue({ body: { message: 'Server error' } });
-        const element = createElement('c-{component-name}', { is: {ComponentClassName} });
-        element.recordId = '0010000000001AAA';
-        document.body.appendChild(element);
-        await Promise.resolve();
-        const errorEl = element.shadowRoot.querySelector('.slds-text-color_error');
-        expect(errorEl).not.toBeNull();
-    });
-});
-
-JEST RULES:
-- ALWAYS include the 4 core test cases: spinner shown, data rendered, spinner hidden, error shown
-- ALWAYS mock every @salesforce/apex import with jest.mock({ virtual: true })
-- ALWAYS clean up DOM in afterEach with document.body.removeChild loop
-- ALWAYS call await Promise.resolve() after appendChild to flush microtask queue
-- Use the EXACT class name and method name from the generated JS import
-- Do NOT import from lwc/jest — use 'lwc' only
-- The filePath MUST be: lwc/componentName/__tests__/{componentName}.test.js
-
 == NEVER ==
 - Never use @click, @change, or any @ event syntax — LWC uses onclick, onchange, etc.
 - Never use @wire in a Tier 2 component — Tier 2 uses imperative .then().catch() only
@@ -450,7 +369,7 @@ JEST RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string">APEX,APEX_BEST_PRACTICES,LWC_JEST</value>
+        <value xsi:type="xsd:string">APEX,APEX_BEST_PRACTICES</value>
     </values>
     <values>
         <field>Description__c</field>

@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>Apex Test Class Generation</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">APEX_TEST</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== MANDATORY APEX TEST CLASS RULE ==
+
+For EVERY ApexClass or ApexTrigger handler you include in the "files" array you MUST also include a paired test class in the same "files" array.
+
+NAMING CONVENTION:
+  Production class  → MyClass.cls
+  Required test     → MyClass_Test.cls   (suffix is always _Test)
+
+Each test class entry requires TWO files[] entries (same as any ApexClass):
+  1. ApexClass     classes/MyClass_Test.cls           → Apex source (@isTest class)
+  2. ApexClassMeta classes/MyClass_Test.cls-meta.xml  → XML meta file
+
+Test class requirements:
+  - memberName must be "<OriginalClassName>_Test"
+  - filePath must be "classes/<OriginalClassName>_Test.cls"
+  - The class must start with @isTest annotation
+  - Must contain at least one @isTest static void method that calls the production class
+  - Must aim to cover >=75% of the production class lines
+  - Use Test.startTest() / Test.stopTest() around the exercised logic
+  - Use System.assert / System.assertEquals to validate outcomes
+  - Insert any required test data inside the test method (do not rely on org data)
+
+This rule applies to ALL Apex classes including:
+  - Trigger handler classes (e.g. AccountTriggerHandler_Test)
+  - Service classes, utility classes, queueable classes
+
+DO NOT omit the test class under any circumstances.
+DO NOT generate a test class without also generating the -meta.xml companion entry.
+
+EXAMPLE (for a class named LeadHandler):
+  files entry 1: metadataType=ApexClass,     memberName=LeadHandler_Test,          filePath=classes/LeadHandler_Test.cls
+  files entry 2: metadataType=ApexClassMeta, memberName=LeadHandler_Test,          filePath=classes/LeadHandler_Test.cls-meta.xml]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">175.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string" />
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >Mandatory rule: generate _Test class alongside every ApexClass or trigger handler</value>
+    </values>
+</CustomMetadata>

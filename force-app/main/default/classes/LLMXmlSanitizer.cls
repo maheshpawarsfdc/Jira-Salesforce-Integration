@@ -90,12 +90,7 @@ public class LLMXmlSanitizer {
       }
       return validateRequiredElements(
         xmlContent,
-        new List<String>{
-          '<label>',
-          '<pluralLabel>',
-          '<nameField>',
-          '<sharingModel>'
-        }
+        new List<String>{ '<label>', '<pluralLabel>', '<nameField>' }
       );
     }
 
@@ -380,6 +375,142 @@ public class LLMXmlSanitizer {
       );
     }
     return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // EXISTING CUSTOM OBJECT XML SANITIZER
+  //
+  // When the LLM adds a validation rule (or other sub-component) to
+  // an existing custom object it often regenerates the full object XML,
+  // including <fields> blocks for pre-existing fields that lack required
+  // type-specific attributes (length, defaultValue, precision, etc.).
+  //
+  // Those incomplete blocks cause Salesforce deploy errors such as:
+  //   "Reservation__c.First_Name__c: length must be specified"
+  //   "Reservation__c.Is_Reserved__c: Must specify 'defaultValue' for Checkbox"
+  //   "Reservation__c.TotalAmount__c: Must specify 'precision' for Currency"
+  //
+  // Additionally, if <sharingModel>ControlledByParent</sharingModel> is
+  // present but no MasterDetail <fields> block remains after stripping,
+  // Salesforce rejects: "Cannot set sharingModel to ControlledByParent
+  // on a CustomObject without a MasterDetail relationship field".
+  //
+  // This sanitizer:
+  // 1. Removes any <fields> block that is missing required attrs for its type
+  // 2. Strips <sharingModel>ControlledByParent</sharingModel> when no
+  //    complete MasterDetail field block survives
+  // ─────────────────────────────────────────────────────────────
+  public static String sanitizeExistingCustomObjectXml(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fields>'))
+      return xml;
+
+    List<String> toRemove = new List<String>();
+    Boolean hasMasterDetail = false;
+    Integer cursor = 0;
+
+    while (true) {
+      Integer bs = xml.indexOf('<fields>', cursor);
+      if (bs < 0)
+        break;
+      Integer be = xml.indexOf('</fields>', bs);
+      if (be < 0)
+        break;
+      be += '</fields>'.length();
+
+      String block = xml.substring(bs, be);
+      String fieldType = extractInlineTagValue(block, 'type');
+
+      if (
+        !isIncompleteFieldBlock(block, fieldType) && fieldType == 'MasterDetail'
+      ) {
+        hasMasterDetail = true;
+      }
+
+      if (isIncompleteFieldBlock(block, fieldType)) {
+        toRemove.add(block);
+        System.debug(
+          '[DEPLOY-TRACE] sanitizeExistingCustomObjectXml: removing incomplete [' +
+            fieldType +
+            '] field block'
+        );
+      }
+
+      cursor = be;
+    }
+
+    for (String block : toRemove) {
+      xml = xml.replace(block, '');
+    }
+
+    if (
+      !hasMasterDetail &&
+      xml.contains('<sharingModel>ControlledByParent</sharingModel>')
+    ) {
+      Pattern p = Pattern.compile(
+        '(?s)\\s*<sharingModel>ControlledByParent</sharingModel>'
+      );
+      Matcher m = p.matcher(xml);
+      xml = m.replaceAll('');
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeExistingCustomObjectXml: ' +
+        'removed <sharingModel>ControlledByParent (no MasterDetail field in deploy)'
+      );
+    }
+
+    if (!toRemove.isEmpty()) {
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeExistingCustomObjectXml: removed ' +
+          toRemove.size() +
+          ' incomplete field block(s)'
+      );
+    }
+    return xml;
+  }
+
+  private static String extractInlineTagValue(String block, String tag) {
+    String open = '<' + tag + '>';
+    String close = '</' + tag + '>';
+    Integer ts = block.indexOf(open);
+    Integer te = block.indexOf(close);
+    if (ts >= 0 && te > ts) {
+      return block.substring(ts + open.length(), te).trim();
+    }
+    return '';
+  }
+
+  private static Boolean isIncompleteFieldBlock(
+    String block,
+    String fieldType
+  ) {
+    if (
+      fieldType == 'Text' ||
+      fieldType == 'TextArea' ||
+      fieldType == 'Phone' ||
+      fieldType == 'Email' ||
+      fieldType == 'Url' ||
+      fieldType == 'EncryptedText'
+    ) {
+      return !block.contains('<length>');
+    }
+    if (fieldType == 'LongTextArea' || fieldType == 'Html') {
+      return !block.contains('<length>') || !block.contains('<visibleLines>');
+    }
+    if (fieldType == 'Checkbox') {
+      return !block.contains('<defaultValue>');
+    }
+    if (
+      fieldType == 'Currency' ||
+      fieldType == 'Number' ||
+      fieldType == 'Percent'
+    ) {
+      return !block.contains('<precision>') || !block.contains('<scale>');
+    }
+    if (fieldType == 'Lookup' || fieldType == 'MasterDetail') {
+      return !block.contains('<referenceTo>') ||
+        !block.contains('<relationshipName>');
+    }
+    // Date, DateTime, Picklist, MultiselectPicklist, etc. — keep by default
+    return false;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -711,6 +842,24 @@ public class LLMXmlSanitizer {
           removed +
           ' broken <layoutItems> block(s) from Layout XML'
       );
+    }
+
+    if (cleaned.contains('<field>Name</field>')) {
+      // Enforce Name field is always Required, regardless of LLM output
+      String beforeNameFix = cleaned;
+      cleaned = cleaned.replaceAll(
+        '<behavior>(Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
+        '<behavior>Required</behavior>$2<field>Name</field>'
+      );
+      cleaned = cleaned.replaceAll(
+        '<field>Name</field>(\\s*)<behavior>(Edit|Readonly)</behavior>',
+        '<field>Name</field>$1<behavior>Required</behavior>'
+      );
+      if (cleaned != beforeNameFix) {
+        System.debug(
+          '[DEPLOY-TRACE] sanitizeLayoutXml: enforced Required behavior on Name field'
+        );
+      }
     }
     return cleaned;
   }

@@ -1,6 +1,11 @@
 public class LLMResponseProcessor {
   // ── Shared state written here, read by LLMService after call ──
   public static String pendingZip2DataJson;
+  // ── Apex test context: set when Apex classes + test classes detected ──
+  public static List<String> pendingApexClassNames;
+  public static List<String> pendingApexClassContents;
+  public static List<String> pendingTestClassNames;
+  public static List<String> pendingTestClassContents;
 
   // ─────────────────────────────────────────────────────────────
   // STAGE 1.5 — PROMPT ROUTER
@@ -226,6 +231,22 @@ public class LLMResponseProcessor {
             hasNewCustomObject = true;
             break;
           }
+          // CustomField files can also signal a new object when the LLM
+          // uses standalone field files instead of a CustomObject wrapper.
+          if (mt == 'CustomField' && mn != null && mn.contains('.')) {
+            String fieldParent = mn.substringBefore('.');
+            if (
+              fieldParent.endsWith('__c') && !existingObjs.contains(fieldParent)
+            ) {
+              hasNewCustomObject = true;
+              System.debug(
+                '[DEPLOY-TRACE] hasNewCustomObject=true via CustomField parent [' +
+                  fieldParent +
+                  '] not in existingObjs'
+              );
+              break;
+            }
+          }
         }
       }
       if (!hasNewCustomObject) {
@@ -239,6 +260,12 @@ public class LLMResponseProcessor {
 
     Map<String, String> zip2Files = new Map<String, String>();
     Map<String, Set<String>> zip2MetadataTypes = new Map<String, Set<String>>();
+
+    // ── Apex test validation tracking ──────────────────────────
+    List<String> detectedApexNames = new List<String>();
+    List<String> detectedApexContents = new List<String>();
+    List<String> detectedTestNames = new List<String>();
+    List<String> detectedTestContents = new List<String>();
 
     List<Object> files = (List<Object>) parsed.get('files');
 
@@ -285,8 +312,105 @@ public class LLMResponseProcessor {
           );
         }
 
+        if (
+          metadataType == 'CustomObject' &&
+          memberName != null &&
+          memberName.endsWith('__c') &&
+          orgState != null
+        ) {
+          Set<String> existingObjs = new Set<String>();
+          Object rawObjs = orgState.get('existingObjects');
+          if (rawObjs instanceof List<Object>) {
+            for (Object o : (List<Object>) rawObjs) {
+              if (o != null)
+                existingObjs.add(String.valueOf(o));
+            }
+          }
+          if (existingObjs.contains(memberName)) {
+            xmlContent = LLMXmlSanitizer.sanitizeExistingCustomObjectXml(
+              xmlContent
+            );
+            System.debug(
+              '[DEPLOY-TRACE] sanitizeExistingCustomObjectXml applied to [' +
+                filePath +
+                ']'
+            );
+          }
+        }
+
         if (metadataType == 'Layout') {
           xmlContent = LLMXmlSanitizer.sanitizeLayoutXml(xmlContent);
+
+          if (
+            memberName != null &&
+            memberName.contains('-') &&
+            orgState != null
+          ) {
+            String parentObj = memberName.substringBefore('-');
+            Set<String> existingObjs = new Set<String>();
+            Object rawObjs = orgState.get('existingObjects');
+            if (rawObjs instanceof List<Object>) {
+              for (Object o : (List<Object>) rawObjs) {
+                if (o != null)
+                  existingObjs.add(String.valueOf(o));
+              }
+            }
+            if (existingObjs.contains(parentObj)) {
+              // Collect new fields defined in sibling CustomObject/CustomField
+              // files so they are injected even if the LLM's layout XML omits
+              // them (LLMs frequently generate a layout without referencing the
+              // exact field API names of the fields they just created).
+              List<String> siblingNewFields = new List<String>();
+              for (Object f2Raw : files) {
+                Map<String, Object> f2 = (Map<String, Object>) f2Raw;
+                String f2mt = (String) f2.get('metadataType');
+                String f2mn = (String) f2.get('memberName');
+                if (f2mt == 'CustomObject' && parentObj.equals(f2mn)) {
+                  List<Map<String, String>> fis = LLMLayoutHelper.extractFieldInfosFromObjectXml(
+                    (String) f2.get('xmlContent')
+                  );
+                  for (Map<String, String> fi : fis) {
+                    siblingNewFields.add(fi.get('name'));
+                  }
+                } else if (
+                  f2mt == 'CustomField' &&
+                  f2mn != null &&
+                  f2mn.contains('.') &&
+                  parentObj.equals(f2mn.substringBefore('.'))
+                ) {
+                  siblingNewFields.add(f2mn.substringAfter('.'));
+                }
+              }
+
+              String merged = LLMLayoutHelper.mergeLayoutForExistingObject(
+                memberName,
+                xmlContent,
+                siblingNewFields
+              );
+              if (String.isNotBlank(merged)) {
+                xmlContent = merged;
+                System.debug(
+                  '[DEPLOY-TRACE] mergeLayoutForExistingObject applied to [' +
+                    memberName +
+                    ']'
+                );
+              } else if (!siblingNewFields.isEmpty()) {
+                // Metadata API unavailable — inject sibling new fields
+                // directly into the LLM's layout XML (no API call needed).
+                xmlContent = LLMLayoutHelper.injectNewFieldsIntoLayoutXml(
+                  xmlContent,
+                  siblingNewFields
+                );
+                System.debug(
+                  '[DEPLOY-TRACE] Layout fallback injection: added ' +
+                    siblingNewFields +
+                    ' directly into [' +
+                    memberName +
+                    ']'
+                );
+              }
+            }
+          }
         }
 
         if (metadataType == 'CustomLabel' || metadataType == 'CustomLabels') {
@@ -369,6 +493,29 @@ public class LLMResponseProcessor {
               filePath +
               ']'
           );
+        }
+
+        // ── Track Apex classes and their test classes ───────────
+        if (
+          metadataType == 'ApexClass' &&
+          String.isNotBlank(xmlContent) &&
+          !filePath.endsWith('-meta.xml')
+        ) {
+          Boolean isTestClass =
+            (memberName != null &&
+            memberName.toLowerCase().endsWith('_test')) ||
+            xmlContent.toLowerCase().contains('@istest');
+          if (isTestClass) {
+            detectedTestNames.add(memberName);
+            detectedTestContents.add(xmlContent);
+            System.debug('[APEX-TEST] Detected test class: ' + memberName);
+          } else {
+            detectedApexNames.add(memberName);
+            detectedApexContents.add(xmlContent);
+            System.debug(
+              '[APEX-TEST] Detected production Apex class: ' + memberName
+            );
+          }
         }
 
         Boolean isApexCode = (metadataType == 'ApexClass' ||
@@ -581,6 +728,36 @@ public class LLMResponseProcessor {
           continue;
         }
 
+        if (metadataType == 'Profile') {
+          xmlContent = xmlContent.replaceAll(
+            '<tabVisibilities>[\\s\\S]*?</tabVisibilities>',
+            ''
+          );
+        }
+
+        // When a permissionSetClone already staged this file path, merge the
+        // new permissions into the cloned XML instead of overwriting it.
+        // Without this, the LLM's files[] entry (containing only the new
+        // object permissions) would silently replace the full cloned XML,
+        // losing all permissions that existed in the source permission set.
+        if (metadataType == 'PermissionSet') {
+          if (ZipBuilder.files.containsKey(filePath)) {
+            String clonedXml = ZipBuilder.files.get(filePath);
+            xmlContent = PermissionSetHelper.mergePermissionXml(
+              clonedXml,
+              xmlContent
+            );
+            System.debug(
+              'processXmlGenerationResponse: merged new PS permissions into cloned base [' +
+                filePath +
+                ']'
+            );
+          }
+          xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
+            xmlContent
+          );
+        }
+
         ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
 
         if (metadataType == 'CustomObject') {
@@ -613,6 +790,32 @@ public class LLMResponseProcessor {
       }
     }
 
+    // ── Stage Apex test context if classes detected ──────────────
+    pendingApexClassNames = null;
+    pendingApexClassContents = null;
+    pendingTestClassNames = null;
+    pendingTestClassContents = null;
+    if (!detectedApexNames.isEmpty()) {
+      if (detectedTestNames.isEmpty()) {
+        System.debug(
+          '[APEX-TEST] WARNING — Apex class(es) detected but no test class(es) generated: ' +
+          detectedApexNames
+        );
+      } else {
+        pendingApexClassNames = detectedApexNames;
+        pendingApexClassContents = detectedApexContents;
+        pendingTestClassNames = detectedTestNames;
+        pendingTestClassContents = detectedTestContents;
+        System.debug(
+          '[APEX-TEST] Staged: ' +
+            detectedApexNames.size() +
+            ' class(es), ' +
+            detectedTestNames.size() +
+            ' test class(es) for validation'
+        );
+      }
+    }
+
     // ── Backstops ──────────────────────────────────────────────
     LLMLayoutHelper.backstopMissingLayoutsForNewObjects(
       files,
@@ -626,6 +829,36 @@ public class LLMResponseProcessor {
       zip2Files,
       zip2MetadataTypes
     );
+
+    // ── Promote backstop layout files into ZIP1 for single deploys ─────────
+    // When adding fields to an existing object (deployScenario='single'),
+    // the backstop may produce layout files in zip2Files. Rather than
+    // triggering a second deploy chain, inject them directly into ZIP1.
+    if (deployScenario == 'single' && !zip2Files.isEmpty()) {
+      Set<String> promoted = new Set<String>();
+      for (String path : zip2Files.keySet()) {
+        if (!path.startsWith('layouts/'))
+          continue;
+        String layoutFullName = path.removeStart('layouts/')
+          .removeEnd('.layout');
+        ZipBuilder.addFile('Layout', layoutFullName, path, zip2Files.get(path));
+        promoted.add(path);
+        System.debug(
+          '[DEPLOY-TRACE] promoted backstop Layout to ZIP1: ' + path
+        );
+      }
+      for (String path : promoted) {
+        zip2Files.remove(path);
+        if (zip2MetadataTypes.containsKey('Layout')) {
+          String layoutFullName = path.removeStart('layouts/')
+            .removeEnd('.layout');
+          zip2MetadataTypes.get('Layout').remove(layoutFullName);
+          if (zip2MetadataTypes.get('Layout').isEmpty()) {
+            zip2MetadataTypes.remove('Layout');
+          }
+        }
+      }
+    }
 
     // ── Destructive changes ────────────────────────────────────
     List<Object> destructiveFiles = (List<Object>) parsed.get(

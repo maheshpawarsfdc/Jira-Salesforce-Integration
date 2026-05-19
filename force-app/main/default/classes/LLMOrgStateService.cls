@@ -38,6 +38,199 @@ public class LLMOrgStateService {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // BATCH LAYOUT NAME FETCH
+  // One Tooling API callout for all objects instead of one per object.
+  // Returns Map<objectApiName, List<{fullName: 'ObjName-Layout Label'}>>
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, List<Map<String, Object>>> batchFetchLayoutNames(
+    List<String> objectNames
+  ) {
+    Map<String, List<Map<String, Object>>> result = new Map<String, List<Map<String, Object>>>();
+    if (objectNames == null || objectNames.isEmpty())
+      return result;
+
+    // ── Step 1: Separate standard vs custom objects ───────────
+    // Standard objects: TableEnumOrId stores API name e.g. 'Account'
+    // Custom objects:   TableEnumOrId stores 15-char object Id
+    List<String> standardObjs = new List<String>();
+    List<String> customObjNames = new List<String>();
+
+    for (String n : objectNames) {
+      if (n.endsWith('__c') || n.endsWith('__mdt')) {
+        customObjNames.add(n);
+      } else {
+        standardObjs.add(n);
+      }
+    }
+
+    // ── Step 2: Resolve custom object API names → 15-char Ids ─
+    // We need these IDs to match TableEnumOrId in the Layout query
+    // Key = 15-char object Id, Value = API name (for mapping back)
+    Map<String, String> idToApiName = new Map<String, String>();
+
+    if (!customObjNames.isEmpty()) {
+      List<String> quotedNames = new List<String>();
+      for (String n : customObjNames) {
+        quotedNames.add('\'' + String.escapeSingleQuotes(n) + '\'');
+      }
+
+      String idSoql =
+        'SELECT QualifiedApiName, DurableId' +
+        ' FROM EntityDefinition' +
+        ' WHERE QualifiedApiName IN (' +
+        String.join(quotedNames, ',') +
+        ')';
+
+      String idEndpoint =
+        'https://' +
+        DomainCreator.getOrgMyDomainHostname() +
+        '/services/data/v61.0/tooling/query?q=' +
+        EncodingUtil.urlEncode(idSoql, 'UTF-8');
+
+      HttpRequest idReq = new HttpRequest();
+      idReq.setEndpoint(idEndpoint);
+      idReq.setMethod('GET');
+      idReq.setHeader('Authorization', 'Bearer ' + getMetadataSessionId());
+      idReq.setHeader('Content-Type', 'application/json');
+      idReq.setTimeout(15000);
+
+      HttpResponse idRes = new Http().send(idReq);
+      if (idRes.getStatusCode() == 200) {
+        Map<String, Object> idBody = (Map<String, Object>) JSON.deserializeUntyped(
+          idRes.getBody()
+        );
+        List<Object> idRecords = (List<Object>) idBody.get('records');
+        if (idRecords != null) {
+          for (Object raw : idRecords) {
+            Map<String, Object> rec = (Map<String, Object>) raw;
+            String apiName = (String) rec.get('QualifiedApiName');
+            String durableId = (String) rec.get('DurableId');
+            // DurableId is 18 chars, TableEnumOrId uses 15 chars
+            if (String.isNotBlank(durableId) && String.isNotBlank(apiName)) {
+              idToApiName.put(durableId.left(15), apiName);
+              System.debug(
+                'batchFetchLayoutNames: resolved [' +
+                  apiName +
+                  '] → id=' +
+                  durableId.left(15)
+              );
+            }
+          }
+        }
+      } else {
+        System.debug(
+          'batchFetchLayoutNames: EntityDefinition lookup failed (' +
+            idRes.getStatusCode() +
+            ') — custom object layouts will be skipped'
+        );
+      }
+    }
+
+    // ── Step 3: Build filter list for Layout query ─────────────
+    // Standard objects use API name, custom objects use 15-char ID
+    List<String> filterValues = new List<String>(standardObjs);
+    filterValues.addAll(idToApiName.keySet());
+
+    if (filterValues.isEmpty()) {
+      System.debug(
+        'batchFetchLayoutNames: no valid filter values — returning empty'
+      );
+      return result;
+    }
+
+    // ── Step 4: Query layouts in one callout ───────────────────
+    List<String> quoted = new List<String>();
+    for (String v : filterValues) {
+      quoted.add('\'' + String.escapeSingleQuotes(v) + '\'');
+    }
+
+    String soql =
+      'SELECT Id, Name, TableEnumOrId FROM Layout' +
+      ' WHERE TableEnumOrId IN (' +
+      String.join(quoted, ',') +
+      ')' +
+      ' ORDER BY TableEnumOrId, Name';
+
+    String endpoint =
+      'https://' +
+      DomainCreator.getOrgMyDomainHostname() +
+      '/services/data/v61.0/tooling/query?q=' +
+      EncodingUtil.urlEncode(soql, 'UTF-8');
+
+    HttpRequest req = new HttpRequest();
+    req.setEndpoint(endpoint);
+    req.setMethod('GET');
+    req.setHeader('Authorization', 'Bearer ' + getMetadataSessionId());
+    req.setHeader('Content-Type', 'application/json');
+    req.setTimeout(20000);
+
+    HttpResponse res = new Http().send(req);
+    if (res.getStatusCode() != 200) {
+      System.debug(
+        'batchFetchLayoutNames: Layout query failed (' +
+          res.getStatusCode() +
+          ')'
+      );
+      return result;
+    }
+
+    Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(
+      res.getBody()
+    );
+    List<Object> records = (List<Object>) body.get('records');
+    if (records == null)
+      return result;
+
+    // ── Step 5: Map results back to API names ──────────────────
+    for (Object raw : records) {
+      Map<String, Object> rec = (Map<String, Object>) raw;
+      String tableEnumOrId = (String) rec.get('TableEnumOrId');
+      String layoutName = (String) rec.get('Name');
+
+      if (String.isBlank(tableEnumOrId) || String.isBlank(layoutName))
+        continue;
+
+      // For custom objects, convert ID back to API name
+      // For standard objects, tableEnumOrId IS the API name
+      // Layout query may return 18-char ID; idToApiName keys are 15-char
+      String apiName = idToApiName.containsKey(tableEnumOrId)
+        ? idToApiName.get(tableEnumOrId)
+        : idToApiName.containsKey(tableEnumOrId.left(15))
+            ? idToApiName.get(tableEnumOrId.left(15))
+            : tableEnumOrId;
+
+      if (!result.containsKey(apiName)) {
+        result.put(apiName, new List<Map<String, Object>>());
+      }
+      String layoutId = (String) rec.get('Id');
+      result.get(apiName)
+        .add(
+          new Map<String, Object>{
+            'fullName' => apiName +
+            '-' +
+            layoutName,
+            'id' => layoutId
+          }
+        );
+      System.debug(
+        'batchFetchLayoutNames: mapped layout [' +
+          apiName +
+          '-' +
+          layoutName +
+          ']'
+      );
+    }
+
+    System.debug(
+      'batchFetchLayoutNames: returning layouts for ' +
+        result.size() +
+        ' object(s): ' +
+        result.keySet()
+    );
+    return result;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // LIGHTWEIGHT ORG CHECK
   // Reads existing fields, layouts, queues, labels, triggers, LWC
   // so XML generation stage knows what already exists in the org.
@@ -63,9 +256,15 @@ public class LLMOrgStateService {
         String objShortName = apiName.replace('__c', '')
           .replace('_', '')
           .toLowerCase();
+        // Also match natural "two word" form: AI_Message__c → "ai message"
+        String objSpacedName = apiName.replace('__c', '')
+          .replace('_', ' ')
+          .toLowerCase()
+          .trim();
         if (
           !ticketText.contains(objShortName) &&
-          !ticketText.contains(apiName.toLowerCase())
+          !ticketText.contains(apiName.toLowerCase()) &&
+          !ticketText.contains(objSpacedName)
         )
           continue;
 
@@ -164,37 +363,24 @@ public class LLMOrgStateService {
       orgState.put('sharingModels', sharingModels);
 
       if (!existingObjects.isEmpty()) {
-        Map<String, List<Map<String, Object>>> layoutsByObject = new Map<String, List<Map<String, Object>>>();
-
-        for (String objName : existingObjects) {
-          try {
-            List<Map<String, Object>> layouts = PageLayoutHelper.listPageLayouts(
-              new Map<String, Object>{ 'objectApiName' => objName }
-            );
-
-            List<Map<String, Object>> layoutDetails = new List<Map<String, Object>>();
-            for (Map<String, Object> layout : layouts) {
-              String fullName = (String) layout.get('fullName');
-              Map<String, Object> structure = getLayoutStructure(fullName);
-              if (structure != null) {
-                layoutDetails.add(structure);
-              }
-            }
-
-            if (!layoutDetails.isEmpty()) {
-              layoutsByObject.put(objName, layoutDetails);
-            }
-          } catch (Exception e) {
+        try {
+          Map<String, List<Map<String, Object>>> layoutsByObject = batchFetchLayoutNames(
+            existingObjects
+          );
+          if (!layoutsByObject.isEmpty()) {
+            orgState.put('existingLayouts', layoutsByObject);
             System.debug(
-              'runOrgCheck: layout fetch failed for [' +
-                objName +
-                ']: ' +
-                e.getMessage()
+              'runOrgCheck: batch-fetched layouts for ' +
+                layoutsByObject.size() +
+                ' custom object(s)'
             );
           }
+        } catch (Exception e) {
+          System.debug(
+            'runOrgCheck: batch layout fetch failed — ' + e.getMessage()
+          );
+          ErrorLogger.log(e);
         }
-
-        orgState.put('existingLayouts', layoutsByObject);
       }
 
       if (!StaticResourceHelper.currentAttachments.isEmpty()) {
@@ -406,40 +592,41 @@ public class LLMOrgStateService {
           'Product2',
           'Pricebook2'
         };
-        Map<String, Object> stdLayoutNames = new Map<String, Object>();
+        List<String> matchedStdObjects = new List<String>();
         for (String stdObj : stdObjects) {
-          if (!ticketTextLower.contains(stdObj.toLowerCase()))
-            continue;
+          if (ticketTextLower.contains(stdObj.toLowerCase()))
+            matchedStdObjects.add(stdObj);
+        }
+        if (!matchedStdObjects.isEmpty()) {
           try {
-            List<Map<String, Object>> layouts = PageLayoutHelper.listPageLayouts(
-              new Map<String, Object>{ 'objectApiName' => stdObj }
+            Map<String, List<Map<String, Object>>> stdLayouts = batchFetchLayoutNames(
+              matchedStdObjects
             );
-            List<String> fullNames = new List<String>();
-            for (Map<String, Object> layout : layouts) {
-              String fn = (String) layout.get('fullName');
-              if (String.isNotBlank(fn))
-                fullNames.add(fn);
+            Map<String, Object> stdLayoutNames = new Map<String, Object>();
+            for (String obj : stdLayouts.keySet()) {
+              List<String> fullNames = new List<String>();
+              for (Map<String, Object> l : stdLayouts.get(obj)) {
+                String fn = (String) l.get('fullName');
+                if (String.isNotBlank(fn))
+                  fullNames.add(fn);
+              }
+              if (!fullNames.isEmpty())
+                stdLayoutNames.put(obj, fullNames);
             }
-            if (!fullNames.isEmpty()) {
-              stdLayoutNames.put(stdObj, fullNames);
+            if (!stdLayoutNames.isEmpty()) {
+              orgState.put('standardObjectLayoutNames', stdLayoutNames);
               System.debug(
-                'runOrgCheck: standardObjectLayoutNames[' +
-                  stdObj +
-                  '] = ' +
-                  fullNames
+                'runOrgCheck: standardObjectLayoutNames fetched for ' +
+                  stdLayoutNames.size() +
+                  ' standard object(s)'
               );
             }
           } catch (Exception e) {
             System.debug(
-              'runOrgCheck: layout fetch failed for std obj [' +
-                stdObj +
-                ']: ' +
-                e.getMessage()
+              'runOrgCheck: std object batch layout fetch failed — ' +
+              e.getMessage()
             );
           }
-        }
-        if (!stdLayoutNames.isEmpty()) {
-          orgState.put('standardObjectLayoutNames', stdLayoutNames);
         }
       }
 
@@ -920,6 +1107,129 @@ public class LLMOrgStateService {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // GET LAYOUT STRUCTURE VIA TOOLING API (HTTP fallback)
+  // Used when Metadata.Operations.retrieve() is unavailable.
+  // Calls GET /tooling/sobjects/Layout/{id} and parses the Metadata
+  // field to reconstruct the sections/fields structure.
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, Object> getLayoutStructureViaToolingId(
+    String layoutId
+  ) {
+    if (String.isBlank(layoutId))
+      return null;
+    try {
+      String endpoint =
+        'https://' +
+        DomainCreator.getOrgMyDomainHostname() +
+        '/services/data/v61.0/tooling/sobjects/Layout/' +
+        layoutId;
+      HttpRequest req = new HttpRequest();
+      req.setEndpoint(endpoint);
+      req.setMethod('GET');
+      req.setHeader('Authorization', 'Bearer ' + getMetadataSessionId());
+      req.setHeader('Content-Type', 'application/json');
+      req.setTimeout(20000);
+
+      HttpResponse res = new Http().send(req);
+      if (res.getStatusCode() != 200) {
+        System.debug(
+          'getLayoutStructureViaToolingId: HTTP ' +
+            res.getStatusCode() +
+            ' for id=' +
+            layoutId
+        );
+        return null;
+      }
+
+      Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(
+        res.getBody()
+      );
+      Map<String, Object> metadata = (Map<String, Object>) body.get('Metadata');
+      if (metadata == null)
+        return null;
+
+      List<Map<String, Object>> sections = new List<Map<String, Object>>();
+      Object rawLayoutSections = metadata.get('layoutSections');
+      if (rawLayoutSections instanceof List<Object>) {
+        for (Object rawSec : (List<Object>) rawLayoutSections) {
+          Map<String, Object> sec = (Map<String, Object>) rawSec;
+          String label = (String) sec.get('label');
+          List<String> leftFields = new List<String>();
+          List<String> leftBehaviors = new List<String>();
+          List<String> rightFields = new List<String>();
+          List<String> rightBehaviors = new List<String>();
+
+          Object rawCols = sec.get('layoutColumns');
+          if (rawCols instanceof List<Object>) {
+            List<Object> cols = (List<Object>) rawCols;
+            if (cols.size() > 0) {
+              Map<String, Object> leftCol = (Map<String, Object>) cols[0];
+              Object rawItems = leftCol.get('layoutItems');
+              if (rawItems instanceof List<Object>) {
+                for (Object itemRaw : (List<Object>) rawItems) {
+                  Map<String, Object> item = (Map<String, Object>) itemRaw;
+                  String field = (String) item.get('field');
+                  if (String.isNotBlank(field)) {
+                    leftFields.add(field);
+                    leftBehaviors.add('Edit');
+                  }
+                }
+              }
+            }
+            if (cols.size() > 1) {
+              Map<String, Object> rightCol = (Map<String, Object>) cols[1];
+              Object rawItems = rightCol.get('layoutItems');
+              if (rawItems instanceof List<Object>) {
+                for (Object itemRaw : (List<Object>) rawItems) {
+                  Map<String, Object> item = (Map<String, Object>) itemRaw;
+                  String field = (String) item.get('field');
+                  if (String.isNotBlank(field)) {
+                    rightFields.add(field);
+                    rightBehaviors.add('Edit');
+                  }
+                }
+              }
+            }
+          }
+
+          if (!leftFields.isEmpty() || !rightFields.isEmpty()) {
+            sections.add(
+              new Map<String, Object>{
+                'label' => label,
+                'leftFields' => leftFields,
+                'leftBehaviors' => leftBehaviors,
+                'rightFields' => rightFields,
+                'rightBehaviors' => rightBehaviors
+              }
+            );
+          }
+        }
+      }
+
+      String fullName = (String) body.get('FullName');
+      System.debug(
+        'getLayoutStructureViaToolingId: fetched [' +
+          fullName +
+          '] with ' +
+          sections.size() +
+          ' section(s)'
+      );
+      return new Map<String, Object>{
+        'fullName' => fullName,
+        'sections' => sections
+      };
+    } catch (Exception e) {
+      System.debug(
+        'getLayoutStructureViaToolingId failed for id=[' +
+          layoutId +
+          ']: ' +
+          e.getMessage()
+      );
+      return null;
+    }
+  }
+
   public static String behaviorToString(Metadata.UiBehavior b) {
     if (b == null)
       return 'Edit';
@@ -1372,9 +1682,36 @@ public class LLMOrgStateService {
 
       Map<String, Object> rec = (Map<String, Object>) classRecords[0];
       System.debug('getApexClassState: found class [' + className + ']');
+
+      // Also fetch the test class so the LLM can update it when modifying the class
+      String testClassName = className + '_Test';
+      String testQuery =
+        'SELECT Id, Name, Body FROM ApexClass' +
+        ' WHERE Name = \'' +
+        testClassName +
+        '\'' +
+        ' AND NamespacePrefix = null LIMIT 1';
+      String testJson = JSON.serialize(
+        MetadataHelper.runToolingApiQuery(testQuery)
+      );
+      Map<String, Object> testResult = (Map<String, Object>) JSON.deserializeUntyped(
+        testJson
+      );
+      List<Object> testRecords = (List<Object>) testResult.get('records');
+      String existingTestBody = null;
+      if (testRecords != null && !testRecords.isEmpty()) {
+        Map<String, Object> tRec = (Map<String, Object>) testRecords[0];
+        existingTestBody = (String) tRec.get('Body');
+        System.debug(
+          'getApexClassState: found existing test class [' + testClassName + ']'
+        );
+      }
+
       return new Map<String, Object>{
         'name' => rec.get('Name'),
-        'body' => rec.get('Body')
+        'body' => rec.get('Body'),
+        'testClassName' => testClassName,
+        'existingTestBody' => existingTestBody
       };
     } catch (Exception e) {
       System.debug(

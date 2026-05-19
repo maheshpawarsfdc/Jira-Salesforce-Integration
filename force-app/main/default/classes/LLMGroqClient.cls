@@ -47,13 +47,27 @@ public class LLMGroqClient {
 
     req.setBody(JSON.serialize(body));
 
-    HttpResponse res = new Http().send(req);
-    System.debug('Groq HTTP Status: ' + res.getStatusCode());
-
-    if (res.getStatusCode() != 200) {
-      System.debug('Groq API Error: ' + res.getBody());
-      throw new LLMService.LLMException(
-        'Groq API error ' + res.getStatusCode() + ': ' + res.getBody()
+    HttpResponse res;
+    Integer MAX_RETRIES = 2;
+    for (Integer retry = 0; retry <= MAX_RETRIES; retry++) {
+      res = new Http().send(req);
+      System.debug(
+        'Groq HTTP Status: ' +
+          res.getStatusCode() +
+          (retry > 0 ? ' (retry ' + retry + ')' : '')
+      );
+      if (res.getStatusCode() == 200) {
+        break; // success — fall through to response processing below
+      }
+      if (res.getStatusCode() != 429 || retry == MAX_RETRIES) {
+        System.debug('Groq API Error: ' + res.getBody());
+        throw new LLMService.LLMException(
+          'Groq API error ' + res.getStatusCode() + ': ' + res.getBody()
+        );
+      }
+      // 429 and retries remain — log and loop (callout overhead is ~100-300ms)
+      System.debug(
+        'Groq 429 rate-limit — retrying (' + retry + '/' + MAX_RETRIES + ')'
       );
     }
 
