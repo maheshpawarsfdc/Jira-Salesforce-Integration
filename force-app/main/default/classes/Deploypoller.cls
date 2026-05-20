@@ -274,7 +274,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   // CRON BUILDER — returns a cron expression for ~2 seconds from now
   // ─────────────────────────────────────────────────────────────
   private String buildCronIn2Seconds() {
-    Datetime dt = Datetime.now().addSeconds(30);
+    Datetime dt = Datetime.now().addSeconds(2);
     return dt.second() +
       ' ' +
       dt.minute() +
