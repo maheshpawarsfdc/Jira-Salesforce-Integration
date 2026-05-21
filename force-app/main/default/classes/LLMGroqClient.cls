@@ -20,10 +20,21 @@ public class LLMGroqClient {
     List<Map<String, Object>> tools,
     String toolChoice
   ) {
+    return callGroq(messages, tools, toolChoice, 4096);
+  }
+
+  public static Map<String, Object> callGroq(
+    List<Map<String, Object>> messages,
+    List<Map<String, Object>> tools,
+    String toolChoice,
+    Integer maxTokens
+  ) {
     HttpRequest req = new HttpRequest();
 
     apiCallCount++;
-    System.debug('── GROQ API CALL #' + apiCallCount);
+    System.debug(
+      '── GROQ API CALL #' + apiCallCount + ' (max_tokens=' + maxTokens + ')'
+    );
 
     req.setEndpoint(GROQ_BASE_URL + '/chat/completions');
     req.setMethod('POST');
@@ -34,7 +45,7 @@ public class LLMGroqClient {
     Map<String, Object> body = new Map<String, Object>{
       'model' => GROQ_MODEL,
       'messages' => messages,
-      'max_tokens' => 4096
+      'max_tokens' => maxTokens
     };
 
     if (tools != null && !tools.isEmpty()) {
