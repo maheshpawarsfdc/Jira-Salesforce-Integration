@@ -860,6 +860,23 @@ public class LLMXmlSanitizer {
           '[DEPLOY-TRACE] sanitizeLayoutXml: enforced Required behavior on Name field'
         );
       }
+    } else if (cleaned.contains('<layoutColumns>')) {
+      // Name is absent entirely — inject it at the top of the first column.
+      // Salesforce requires Name on every layout; LLMs often omit it.
+      Integer insertPos =
+        cleaned.indexOf('<layoutColumns>') + '<layoutColumns>'.length();
+      String nameItem =
+        '\n            <layoutItems>\n' +
+        '                <behavior>Required</behavior>\n' +
+        '                <field>Name</field>\n' +
+        '            </layoutItems>';
+      cleaned =
+        cleaned.substring(0, insertPos) +
+        nameItem +
+        cleaned.substring(insertPos);
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeLayoutXml: injected missing Name field into layout'
+      );
     }
     return cleaned;
   }
