@@ -95,18 +95,6 @@ public class LLMGroqClient {
       totalPromptTokens += prompt;
       totalCompletionTokens += completion;
       totalTokens += total;
-
-      System.debug(
-        'TOKENS [call #' +
-          apiCallCount +
-          '] >> ' +
-          'prompt=' +
-          prompt +
-          ' completion=' +
-          completion +
-          ' total=' +
-          total
-      );
     }
 
     return response;
