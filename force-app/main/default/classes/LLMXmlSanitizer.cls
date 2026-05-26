@@ -30,6 +30,17 @@ public class LLMXmlSanitizer {
     'Solution' => 'Solution'
   };
 
+  // ── Metadata element defaults (UI-consistent) ──────────────────
+  // To add a new default: add an entry here — no other code changes needed.
+  private static final Map<String, Map<String, String>> METADATA_DEFAULTS = new Map<String, Map<String, String>>{
+    'CustomObject' => new Map<String, String>{
+      'deploymentStatus' => 'Deployed',
+      'sharingModel' => 'ReadWrite',
+      'enableBulkApi' => 'true',
+      'enableStreamingApi' => 'true'
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────
   // XML VALIDATION
   // ─────────────────────────────────────────────────────────────
@@ -129,17 +140,22 @@ public class LLMXmlSanitizer {
         xmlContent,
         new List<String>{ '<fullName>', '<value>' }
       );
-      if (String.isNotBlank(baseError))
+      if (String.isNotBlank(baseError)) {
         return baseError;
+      }
+
       Set<String> seenNames = new Set<String>();
       Integer searchFrom = 0;
       while (true) {
         Integer fnStart = xmlContent.indexOf('<fullName>', searchFrom);
-        if (fnStart == -1)
+        if (fnStart == -1) {
           break;
+        }
+
         Integer fnEnd = xmlContent.indexOf('</fullName>', fnStart);
-        if (fnEnd == -1)
+        if (fnEnd == -1) {
           break;
+        }
         String labelName = xmlContent.substring(
             fnStart + '<fullName>'.length(),
             fnEnd
@@ -167,8 +183,9 @@ public class LLMXmlSanitizer {
           '<principalType>'
         }
       );
-      if (String.isNotBlank(baseError))
+      if (String.isNotBlank(baseError)) {
         return baseError;
+      }
 
       if (xmlContent.contains('<principalType>Anonymous</principalType>')) {
         return 'Invalid principalType — Named Principal credentials must use NamedUser, not Anonymous';
@@ -199,8 +216,9 @@ public class LLMXmlSanitizer {
         xmlContent,
         new List<String>{ '<friendlyName>', '<providerType>' }
       );
-      if (String.isNotBlank(baseError))
+      if (String.isNotBlank(baseError)) {
         return baseError;
+      }
 
       if (xmlContent.contains('<fullName>')) {
         return 'Invalid element <fullName> inside AuthProvider XML — remove it, the file name is the identity';
@@ -280,8 +298,9 @@ public class LLMXmlSanitizer {
   // AUTH PROVIDER XML SANITIZER
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeAuthProviderXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
+    }
 
     List<String> forbiddenTags = new List<String>{
       'developerName',
@@ -312,8 +331,9 @@ public class LLMXmlSanitizer {
   // Strips: <nameField>, <pluralLabel>, <deploymentStatus>, <sharingModel>
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeStandardObjectXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
+    }
 
     Integer removedCount = 0;
     List<String> forbiddenBlocks = new List<String>{
@@ -348,8 +368,9 @@ public class LLMXmlSanitizer {
   // Strips: <customSettingsType>, <customMetadataType>
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeMdtObjectXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
+    }
 
     Integer removedCount = 0;
     List<String> forbiddenTags = new List<String>{
@@ -379,30 +400,11 @@ public class LLMXmlSanitizer {
 
   // ─────────────────────────────────────────────────────────────
   // EXISTING CUSTOM OBJECT XML SANITIZER
-  //
-  // When the LLM adds a validation rule (or other sub-component) to
-  // an existing custom object it often regenerates the full object XML,
-  // including <fields> blocks for pre-existing fields that lack required
-  // type-specific attributes (length, defaultValue, precision, etc.).
-  //
-  // Those incomplete blocks cause Salesforce deploy errors such as:
-  //   "Reservation__c.First_Name__c: length must be specified"
-  //   "Reservation__c.Is_Reserved__c: Must specify 'defaultValue' for Checkbox"
-  //   "Reservation__c.TotalAmount__c: Must specify 'precision' for Currency"
-  //
-  // Additionally, if <sharingModel>ControlledByParent</sharingModel> is
-  // present but no MasterDetail <fields> block remains after stripping,
-  // Salesforce rejects: "Cannot set sharingModel to ControlledByParent
-  // on a CustomObject without a MasterDetail relationship field".
-  //
-  // This sanitizer:
-  // 1. Removes any <fields> block that is missing required attrs for its type
-  // 2. Strips <sharingModel>ControlledByParent</sharingModel> when no
-  //    complete MasterDetail field block survives
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeExistingCustomObjectXml(String xml) {
-    if (String.isBlank(xml) || !xml.contains('<fields>'))
+    if (String.isBlank(xml) || !xml.contains('<fields>')) {
       return xml;
+    }
 
     List<String> toRemove = new List<String>();
     Boolean hasMasterDetail = false;
@@ -410,11 +412,13 @@ public class LLMXmlSanitizer {
 
     while (true) {
       Integer bs = xml.indexOf('<fields>', cursor);
-      if (bs < 0)
+      if (bs < 0) {
         break;
+      }
       Integer be = xml.indexOf('</fields>', bs);
-      if (be < 0)
+      if (be < 0) {
         break;
+      }
       be += '</fields>'.length();
 
       String block = xml.substring(bs, be);
@@ -518,8 +522,9 @@ public class LLMXmlSanitizer {
   // Strips any <tabVisibilities> block whose <tab> does NOT end with __c
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeProfileStandardObjectTabs(String xml) {
-    if (String.isBlank(xml) || !xml.contains('<tabVisibilities>'))
+    if (String.isBlank(xml) || !xml.contains('<tabVisibilities>')) {
       return xml;
+    }
 
     Pattern tvPat = Pattern.compile(
       '(?s)\\s*<tabVisibilities>\\s*<tab>([^<]+)</tab>.*?</tabVisibilities>'
@@ -556,10 +561,12 @@ public class LLMXmlSanitizer {
 
   // Remove unsupported Profile elements that LLM may emit.
   public static String sanitizeProfileXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
-    if (!xml.contains('<cloneFrom>'))
+    }
+    if (!xml.contains('<cloneFrom>')) {
       return xml;
+    }
     String cleaned = xml.replaceAll('(?s)\\s*<cloneFrom>.*?</cloneFrom>', '');
     System.debug(
       '[DEPLOY-TRACE] sanitizeProfileXml: removed unsupported <cloneFrom> element'
@@ -575,10 +582,12 @@ public class LLMXmlSanitizer {
     String memberName,
     Map<String, Object> orgState
   ) {
-    if (String.isBlank(xml) || !xml.contains('<recordTypes>'))
+    if (String.isBlank(xml) || !xml.contains('<recordTypes>')) {
       return xml;
-    if (!PROCESS_DRIVEN_OBJECTS.containsKey(memberName))
+    }
+    if (!PROCESS_DRIVEN_OBJECTS.containsKey(memberName)) {
       return xml;
+    }
     String tableEnumOrId = PROCESS_DRIVEN_OBJECTS.get(memberName);
 
     String bpName = null;
@@ -593,8 +602,9 @@ public class LLMXmlSanitizer {
         Object bpListRaw = bpMap.get(tableEnumOrId);
         if (bpListRaw instanceof List<Object>) {
           List<Object> bpList = (List<Object>) bpListRaw;
-          if (!bpList.isEmpty())
+          if (!bpList.isEmpty()) {
             bpName = String.valueOf(bpList[0]);
+          }
         }
       } catch (Exception e) {
         System.debug(
@@ -620,8 +630,9 @@ public class LLMXmlSanitizer {
 
     while (rm.find()) {
       String fullBlock = rm.group(0);
-      if (fullBlock.contains('<businessProcess>'))
+      if (fullBlock.contains('<businessProcess>')) {
         continue;
+      }
       String fixedBlock = fullBlock.replace(
         '</active>',
         '</active> <businessProcess>' + bpName + '</businessProcess>'
@@ -647,8 +658,9 @@ public class LLMXmlSanitizer {
   // AUTO-PREFIX BARE LAYOUT NAMES IN PROFILE <layoutAssignments>
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeProfileLayoutAssignments(String xml) {
-    if (String.isBlank(xml) || !xml.contains('<layoutAssignments>'))
+    if (String.isBlank(xml) || !xml.contains('<layoutAssignments>')) {
       return xml;
+    }
 
     Map<String, String> objToLayout = new Map<String, String>();
     Pattern blockPat = Pattern.compile(
@@ -661,13 +673,15 @@ public class LLMXmlSanitizer {
         '<recordType>([^.<]+)[.]([^<]+)</recordType>'
       );
       Matcher rm = rtPat.matcher(inner1);
-      if (!rm.find())
+      if (!rm.find()) {
         continue;
+      }
       String objName = rm.group(1).trim();
       Pattern lPat = Pattern.compile('<layout>([^<]+)</layout>');
       Matcher lm = lPat.matcher(inner1);
-      if (!lm.find())
+      if (!lm.find()) {
         continue;
+      }
       String layoutVal = lm.group(1).trim();
       if (layoutVal.contains('-')) {
         objToLayout.put(objName, layoutVal.substringBefore('-'));
@@ -686,11 +700,13 @@ public class LLMXmlSanitizer {
 
       Pattern layoutPat = Pattern.compile('<layout>([^<]+)</layout>');
       Matcher lm = layoutPat.matcher(inner1);
-      if (!lm.find())
+      if (!lm.find()) {
         continue;
+      }
       String layoutVal = lm.group(1).trim();
-      if (layoutVal.contains('-'))
+      if (layoutVal.contains('-')) {
         continue;
+      }
 
       String objName = null;
 
@@ -708,8 +724,9 @@ public class LLMXmlSanitizer {
         objName = objToLayout.values()[0];
       }
 
-      if (String.isBlank(objName))
+      if (String.isBlank(objName)) {
         continue;
+      }
 
       String fixedLayout = objName + '-' + layoutVal;
       String fixedBlock = fullBlock.replace(
@@ -736,8 +753,9 @@ public class LLMXmlSanitizer {
   // AUTO-INJECT/CORRECT <--master--> recordTypeVisibilities
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeProfileMasterRecordType(String xml) {
-    if (String.isBlank(xml) || !xml.contains('<recordTypeVisibilities>'))
+    if (String.isBlank(xml) || !xml.contains('<recordTypeVisibilities>')) {
       return xml;
+    }
 
     Pattern masterEntryPat = Pattern.compile(
       '(?s)\\s*<recordTypeVisibilities>\\s*<recordType>[^<]+\\.Master</recordType>.*?</recordTypeVisibilities>'
@@ -765,16 +783,18 @@ public class LLMXmlSanitizer {
         '<recordType>([^.<]+)[.]([^<]+)</recordType>'
       );
       Matcher rm = rtPat.matcher(inner2);
-      if (!rm.find())
+      if (!rm.find()) {
         continue;
+      }
       String objName = rm.group(1).trim();
       Boolean isDef = inner2.contains('<default>true</default>');
       if (!objHasDefault.containsKey(objName)) {
         objHasDefault.put(objName, false);
         objFirstBlock.put(objName, bm.group(0));
       }
-      if (isDef)
+      if (isDef) {
         objHasDefault.put(objName, true);
+      }
     }
 
     for (String objName : objHasDefault.keySet()) {
@@ -801,10 +821,12 @@ public class LLMXmlSanitizer {
   // Strips <layoutItems> blocks with empty <field>/<behavior>
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeLayoutXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
-    if (!xml.contains('<layoutItems>'))
+    }
+    if (!xml.contains('<layoutItems>')) {
       return xml;
+    }
 
     String cleaned = xml;
     Integer removed = 0;
@@ -823,13 +845,15 @@ public class LLMXmlSanitizer {
       } else if (emptyFieldIdx >= 0) {
         target = emptyFieldIdx;
       }
-      if (target < 0)
+      if (target < 0) {
         break;
+      }
 
       Integer itemStart = cleaned.lastIndexOf('<layoutItems>', target);
       Integer itemEnd = cleaned.indexOf('</layoutItems>', target);
-      if (itemStart < 0 || itemEnd < 0)
+      if (itemStart < 0 || itemEnd < 0) {
         break;
+      }
       itemEnd += '</layoutItems>'.length();
 
       cleaned = cleaned.substring(0, itemStart) + cleaned.substring(itemEnd);
@@ -889,29 +913,34 @@ public class LLMXmlSanitizer {
     String apexCode,
     Map<String, Object> orgState
   ) {
-    if (String.isBlank(apexCode) || orgState == null)
+    if (String.isBlank(apexCode) || orgState == null) {
       return apexCode;
+    }
 
     Map<String, Object> existingFields = (Map<String, Object>) orgState.get(
       'existingFields'
     );
-    if (existingFields == null || existingFields.isEmpty())
+    if (existingFields == null || existingFields.isEmpty()) {
       return apexCode;
+    }
 
     String result = apexCode;
 
     for (String objectName : existingFields.keySet()) {
-      if (objectName.endsWith('__c') || objectName.endsWith('__mdt'))
+      if (objectName.endsWith('__c') || objectName.endsWith('__mdt')) {
         continue;
+      }
 
       List<Object> rawFields = (List<Object>) existingFields.get(objectName);
-      if (rawFields == null)
+      if (rawFields == null) {
         continue;
+      }
 
       for (Object rawField : rawFields) {
         String fieldName = String.valueOf(rawField);
-        if (fieldName.endsWith('__c'))
+        if (fieldName.endsWith('__c')) {
           continue;
+        }
 
         String wrongName = fieldName + '__c';
         if (result.containsIgnoreCase(wrongName)) {
@@ -939,10 +968,12 @@ public class LLMXmlSanitizer {
   // NORMALIZE TRANSLATION LANGUAGE CODE
   // ─────────────────────────────────────────────────────────────
   public static String normalizeTranslationLanguageCode(String lang) {
-    if (String.isBlank(lang))
+    if (String.isBlank(lang)) {
       return lang;
-    if (!lang.contains('_'))
+    }
+    if (!lang.contains('_')) {
       return lang;
+    }
     Set<String> validCompound = new Set<String>{
       'pt_BR',
       'zh_CN',
@@ -955,21 +986,22 @@ public class LLMXmlSanitizer {
       'en_AU',
       'en_IN'
     };
-    if (validCompound.contains(lang))
+    if (validCompound.contains(lang)) {
       return lang;
+    }
     return lang.substringBefore('_');
   }
 
   // ─────────────────────────────────────────────────────────────
   // SANITIZE CUSTOM LABELS XML
-  // Strips non-en_US <labels> blocks, redirecting them to the
-  // correct translations/{lang}.translation file via ZipBuilder.
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeCustomLabelsXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
-    if (!xml.contains('<labels>'))
+    }
+    if (!xml.contains('<labels>')) {
       return xml;
+    }
 
     Set<String> seenFullNames = new Set<String>();
     String sanitized = xml;
@@ -980,11 +1012,13 @@ public class LLMXmlSanitizer {
 
     while (safety-- > 0) {
       Integer blockStart = sanitized.indexOf('<labels>', searchFrom);
-      if (blockStart == -1)
+      if (blockStart == -1) {
         break;
+      }
       Integer blockEnd = sanitized.indexOf('</labels>', blockStart);
-      if (blockEnd == -1)
+      if (blockEnd == -1) {
         break;
+      }
       blockEnd += '</labels>'.length();
 
       String block = sanitized.substring(blockStart, blockEnd);
@@ -1069,8 +1103,9 @@ public class LLMXmlSanitizer {
         sanitized =
           sanitized.substring(0, blockStart) + sanitized.substring(blockEnd);
       } else {
-        if (String.isNotBlank(fullName))
+        if (String.isNotBlank(fullName)) {
           seenFullNames.add(fullName);
+        }
         searchFrom = blockEnd;
       }
     }
@@ -1090,11 +1125,11 @@ public class LLMXmlSanitizer {
 
   // ─────────────────────────────────────────────────────────────
   // APEX REGEX SANITIZER
-  // Fixes illegal escape sequences LLM commonly emits in Apex code
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeApexRegex(String apexCode) {
-    if (String.isBlank(apexCode))
+    if (String.isBlank(apexCode)) {
       return apexCode;
+    }
 
     apexCode = apexCode.replace('\\+', '[+]');
     apexCode = apexCode.replace('\\d', '[0-9]');
@@ -1115,18 +1150,65 @@ public class LLMXmlSanitizer {
 
   // ─────────────────────────────────────────────────────────────
   // STANDARD OBJECT LAYOUT GUARD
-  // Returns true if this Layout memberName targets a standard object
   // ─────────────────────────────────────────────────────────────
   public static Boolean isStandardObjectLayout(String memberName) {
-    if (String.isBlank(memberName) || !memberName.contains('-'))
+    if (String.isBlank(memberName) || !memberName.contains('-')) {
       return false;
+    }
     String objPart = memberName.substringBefore('-');
     return STANDARD_OBJECTS.contains(objPart);
   }
 
   // ─────────────────────────────────────────────────────────────
+  // INJECT MISSING XML DEFAULTS
+  // Injects UI-consistent default values for any elements absent
+  // from the LLM-generated XML.  To add a new default for any
+  // metadata type, update METADATA_DEFAULTS only — no other
+  // code changes required.
+  // ─────────────────────────────────────────────────────────────
+  public static String injectMissingXmlDefaults(
+    String metadataType,
+    String xml
+  ) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+    Map<String, String> defaults = METADATA_DEFAULTS.get(metadataType);
+    if (defaults == null || defaults.isEmpty()) {
+      return xml;
+    }
+    String closeRoot = '</' + metadataType + '>';
+    if (!xml.contains(closeRoot)) {
+      return xml;
+    }
+    List<String> injected = new List<String>();
+    for (String element : defaults.keySet()) {
+      if (!xml.contains('<' + element + '>')) {
+        String line =
+          '    <' +
+          element +
+          '>' +
+          defaults.get(element) +
+          '</' +
+          element +
+          '>';
+        xml = xml.replace(closeRoot, line + '\n' + closeRoot);
+        injected.add(element);
+      }
+    }
+    if (!injected.isEmpty()) {
+      System.debug(
+        '[SANITIZE] injectMissingXmlDefaults [' +
+          metadataType +
+          ']: injected ' +
+          injected
+      );
+    }
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // APPEND DESTRUCTIVE MEMBER
-  // Adds a single entry to destructiveChangesPost.xml in ZipBuilder
   // ─────────────────────────────────────────────────────────────
   public static void appendDestructiveMember(
     String metadataType,
@@ -1171,8 +1253,9 @@ public class LLMXmlSanitizer {
   }
 
   public static String escapeXmlValue(String val) {
-    if (String.isBlank(val))
+    if (String.isBlank(val)) {
       return '';
+    }
     return val.replace('&', '&amp;')
       .replace('<', '&lt;')
       .replace('>', '&gt;')

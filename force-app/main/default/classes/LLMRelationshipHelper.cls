@@ -64,20 +64,26 @@ public class LLMRelationshipHelper {
   }
 
   public static String sanitizeRelToken(String token) {
-    if (String.isBlank(token))
+    if (String.isBlank(token)) {
       return '';
+    }
     String t = token.trim();
-    if (t.endsWith('__c'))
+    if (t.endsWith('__c')) {
       t = t.substring(0, t.length() - 3);
-    if (t.endsWith('__mdt'))
+    }
+    if (t.endsWith('__mdt')) {
       t = t.substring(0, t.length() - 5);
+    }
     t = t.replaceAll('[^A-Za-z0-9_]', '_');
-    while (t.contains('__'))
+    while (t.contains('__')) {
       t = t.replace('__', '_');
-    if (t.startsWith('_'))
+    }
+    if (t.startsWith('_')) {
       t = t.substring(1);
-    if (t.endsWith('_'))
+    }
+    if (t.endsWith('_')) {
       t = t.substring(0, t.length() - 1);
+    }
     return t;
   }
 
@@ -90,20 +96,23 @@ public class LLMRelationshipHelper {
     String parentApiName
   ) {
     Set<String> names = new Set<String>();
-    if (String.isBlank(parentApiName))
+    if (String.isBlank(parentApiName)) {
       return names;
+    }
     try {
       Schema.SObjectType objType = Schema.getGlobalDescribe()
         .get(parentApiName);
-      if (objType == null)
+      if (objType == null) {
         return names;
+      }
       for (
         Schema.ChildRelationship cr : objType.getDescribe()
           .getChildRelationships()
       ) {
         String relName = cr.getRelationshipName();
-        if (String.isNotBlank(relName))
+        if (String.isNotBlank(relName)) {
           names.add(relName.toLowerCase());
+        }
       }
     } catch (Exception e) {
       System.debug(
@@ -121,12 +130,14 @@ public class LLMRelationshipHelper {
   // Derives "Reservation__c" from "objects/Reservation__c.object"
   // ─────────────────────────────────────────────────────────────
   public static String extractSourceObjectFromObjectPath(String filePath) {
-    if (String.isBlank(filePath))
+    if (String.isBlank(filePath)) {
       return '';
+    }
     String name = filePath;
     Integer slash = name.lastIndexOf('/');
-    if (slash >= 0)
+    if (slash >= 0) {
       name = name.substring(slash + 1);
+    }
     if (name.toLowerCase().endsWith('.object')) {
       name = name.substring(0, name.length() - '.object'.length());
     }
@@ -143,8 +154,9 @@ public class LLMRelationshipHelper {
     String xmlContent,
     String sourceObjectApiName
   ) {
-    if (String.isBlank(xmlContent) || !xmlContent.contains('<fields>'))
+    if (String.isBlank(xmlContent) || !xmlContent.contains('<fields>')) {
       return xmlContent;
+    }
 
     Pattern fieldsBlock = Pattern.compile('(?s)<fields>(.*?)</fields>');
     Matcher m = fieldsBlock.matcher(xmlContent);
@@ -157,13 +169,15 @@ public class LLMRelationshipHelper {
       String inners = m.group(1);
 
       String typeVal = extractFirstTagValue(inners, 'type');
-      if (typeVal != 'Lookup' && typeVal != 'MasterDetail')
+      if (typeVal != 'Lookup' && typeVal != 'MasterDetail') {
         continue;
+      }
 
       String fieldApi = extractFirstTagValue(inners, 'fullName');
       String parent = extractFirstTagValue(inners, 'referenceTo');
-      if (String.isBlank(fieldApi) || String.isBlank(parent))
+      if (String.isBlank(fieldApi) || String.isBlank(parent)) {
         continue;
+      }
 
       String uniqueName = uniqueRelationshipName(
         sourceObjectApiName,
@@ -171,9 +185,6 @@ public class LLMRelationshipHelper {
         parent
       );
 
-      // Collision check — if this name is already registered on the parent
-      // (e.g. from a soft-deleted object still in the Recycle Bin), append
-      // a counter suffix until we find a free name.
       Set<String> existingRelNames = getExistingChildRelationshipNames(parent);
       if (existingRelNames.contains(uniqueName.toLowerCase())) {
         String baseName = uniqueName.length() > 36
@@ -200,7 +211,6 @@ public class LLMRelationshipHelper {
       }
 
       String newInner;
-
       if (inners.contains('<relationshipName>')) {
         newInner = inners.replaceFirst(
           '<relationshipName>.*?</relationshipName>',
@@ -238,12 +248,14 @@ public class LLMRelationshipHelper {
   // Pulls the text value of the first <tagName>…</tagName> found.
   // ─────────────────────────────────────────────────────────────
   public static String extractFirstTagValue(String xml, String tagName) {
-    if (String.isBlank(xml) || String.isBlank(tagName))
+    if (String.isBlank(xml) || String.isBlank(tagName)) {
       return null;
+    }
     Pattern p = Pattern.compile('(?s)<' + tagName + '>(.*?)</' + tagName + '>');
     Matcher m = p.matcher(xml);
-    if (m.find())
+    if (m.find()) {
       return m.group(1).trim();
+    }
     return null;
   }
 }

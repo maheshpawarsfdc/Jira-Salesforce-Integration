@@ -173,8 +173,9 @@ public class LLMGroqClient {
   // Strips markdown code fences if present
   // ─────────────────────────────────────────────────────────────
   public static String cleanJsonResponse(String response) {
-    if (String.isBlank(response))
+    if (String.isBlank(response)) {
       return '{}';
+    }
 
     String cleaned = response.trim();
 

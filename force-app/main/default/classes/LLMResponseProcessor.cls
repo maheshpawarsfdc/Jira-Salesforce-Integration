@@ -322,8 +322,9 @@ public class LLMResponseProcessor {
           Object rawObjs = orgState.get('existingObjects');
           if (rawObjs instanceof List<Object>) {
             for (Object o : (List<Object>) rawObjs) {
-              if (o != null)
+              if (o != null) {
                 existingObjs.add(String.valueOf(o));
+              }
             }
           }
           if (existingObjs.contains(memberName)) {
@@ -336,6 +337,15 @@ public class LLMResponseProcessor {
                 ']'
             );
           }
+          xmlContent = LLMXmlSanitizer.injectMissingXmlDefaults(
+            'CustomObject',
+            xmlContent
+          );
+          System.debug(
+            '[DEPLOY-TRACE] injectMissingXmlDefaults applied to [' +
+              filePath +
+              ']'
+          );
         }
 
         if (metadataType == 'Layout') {
@@ -351,8 +361,9 @@ public class LLMResponseProcessor {
             Object rawObjs = orgState.get('existingObjects');
             if (rawObjs instanceof List<Object>) {
               for (Object o : (List<Object>) rawObjs) {
-                if (o != null)
+                if (o != null) {
                   existingObjs.add(String.valueOf(o));
+                }
               }
             }
             if (existingObjs.contains(parentObj)) {
@@ -837,8 +848,9 @@ public class LLMResponseProcessor {
     if (deployScenario == 'single' && !zip2Files.isEmpty()) {
       Set<String> promoted = new Set<String>();
       for (String path : zip2Files.keySet()) {
-        if (!path.startsWith('layouts/'))
+        if (!path.startsWith('layouts/')) {
           continue;
+        }
         String layoutFullName = path.removeStart('layouts/')
           .removeEnd('.layout');
         ZipBuilder.addFile('Layout', layoutFullName, path, zip2Files.get(path));
@@ -875,11 +887,13 @@ public class LLMResponseProcessor {
         String xmlContent = (String) file.get('xmlContent');
         if (String.isBlank(xmlContent)) {
           String metadataType = (String) file.get('metadataType');
-          if (String.isBlank(metadataType))
+          if (String.isBlank(metadataType)) {
             metadataType = (String) file.get('type');
+          }
           String memberName = (String) file.get('member');
-          if (String.isBlank(memberName))
+          if (String.isBlank(memberName)) {
             memberName = (String) file.get('memberName');
+          }
           if (String.isBlank(metadataType) || String.isBlank(memberName)) {
             FunctionHelper.hadError = true;
             return 'Error: Invalid destructiveFiles entry. Provide xmlContent OR metadataType/type + member/memberName.';
@@ -945,8 +959,9 @@ public class LLMResponseProcessor {
     String xmlContent
   ) {
     List<String> result = new List<String>();
-    if (String.isBlank(xmlContent) || !xmlContent.contains('<recordTypes>'))
+    if (String.isBlank(xmlContent) || !xmlContent.contains('<recordTypes>')) {
       return result;
+    }
 
     Pattern rtBlock = Pattern.compile('(?s)<recordTypes>(.*?)</recordTypes>');
     Matcher m = rtBlock.matcher(xmlContent);
@@ -1160,10 +1175,12 @@ public class LLMResponseProcessor {
 
     for (Map<String, Object> row : rows) {
       String rawName = csvStr(row, 'objectApiName');
-      if (String.isBlank(rawName))
+      if (String.isBlank(rawName)) {
         rawName = csvStr(row, 'apiName');
-      if (String.isBlank(rawName))
+      }
+      if (String.isBlank(rawName)) {
         continue;
+      }
       String apiName = rawName.endsWith('__c') ? rawName : rawName + '__c';
 
       if (!firstRowByObj.containsKey(apiName)) {
@@ -1193,10 +1210,12 @@ public class LLMResponseProcessor {
       List<Map<String, Object>> fieldDefs = new List<Map<String, Object>>();
       for (Map<String, Object> row : fieldRowsByObj.get(apiName)) {
         String fn = csvStr(row, 'fieldName');
-        if (String.isBlank(fn))
+        if (String.isBlank(fn)) {
           continue;
-        if (!fn.endsWith('__c'))
+        }
+        if (!fn.endsWith('__c')) {
           fn += '__c';
+        }
 
         Map<String, Object> fDef = new Map<String, Object>{
           'name' => fn,
@@ -1209,31 +1228,39 @@ public class LLMResponseProcessor {
         String req = csvStr(row, 'required');
         String dv = csvStr(row, 'defaultValue');
         String pvs = csvStr(row, 'picklistValues');
-        if (String.isNotBlank(len))
+        if (String.isNotBlank(len)) {
           fDef.put('length', len);
-        if (String.isNotBlank(pre))
+        }
+        if (String.isNotBlank(pre)) {
           fDef.put('precision', pre);
-        if (String.isNotBlank(scl))
+        }
+        if (String.isNotBlank(scl)) {
           fDef.put('scale', scl);
-        if (String.isNotBlank(req))
+        }
+        if (String.isNotBlank(req)) {
           fDef.put('required', req);
-        if (String.isNotBlank(dv))
+        }
+        if (String.isNotBlank(dv)) {
           fDef.put('defaultValue', dv);
-        if (String.isNotBlank(pvs))
+        }
+        if (String.isNotBlank(pvs)) {
           fDef.put('picklistValues', pvs);
+        }
         fieldDefs.add(fDef);
       }
 
       String resolvedLabel = csvStr(meta, 'objectLabel');
-      if (String.isBlank(resolvedLabel))
+      if (String.isBlank(resolvedLabel)) {
         resolvedLabel = csvStrDef(meta, 'label', defaultLabel);
+      }
       String resolvedPluralLabel = csvStr(meta, 'objectPluralLabel');
-      if (String.isBlank(resolvedPluralLabel))
+      if (String.isBlank(resolvedPluralLabel)) {
         resolvedPluralLabel = csvStrDef(
           meta,
           'pluralLabel',
           defaultLabel + 's'
         );
+      }
 
       Map<String, Object> objDef = new Map<String, Object>{
         'apiName' => apiName,
@@ -1249,17 +1276,21 @@ public class LLMResponseProcessor {
         'fields' => fieldDefs
       };
       String objDesc = csvStr(meta, 'description');
-      if (String.isNotBlank(objDesc))
+      if (String.isNotBlank(objDesc)) {
         objDef.put('description', objDesc);
+      }
       String enAct = csvStr(meta, 'enableActivities');
       String enHist = csvStr(meta, 'enableHistory');
       String enRep = csvStr(meta, 'enableReports');
-      if (String.isNotBlank(enAct))
+      if (String.isNotBlank(enAct)) {
         objDef.put('enableActivities', enAct);
-      if (String.isNotBlank(enHist))
+      }
+      if (String.isNotBlank(enHist)) {
         objDef.put('enableHistory', enHist);
-      if (String.isNotBlank(enRep))
+      }
+      if (String.isNotBlank(enRep)) {
         objDef.put('enableReports', enRep);
+      }
 
       objDefs.add(objDef);
     }
@@ -1272,44 +1303,12 @@ public class LLMResponseProcessor {
     );
 
     // ── Build LLM messages ────────────────────────────────────
-    String systemPrompt =
-      'You are a Salesforce Metadata API XML generator.\n' +
-      'Generate ONE file per custom object. Fields are EMBEDDED inside the object XML — do NOT create separate field files.\n\n' +
-      'Return ONLY a JSON object — no markdown, no explanation:\n' +
-      '{\n  "files": [\n' +
-      '    { "metadataType": "CustomObject",\n' +
-      '      "memberName": "<ObjectApiName__c>",\n' +
-      '      "filePath": "objects/<ObjectApiName__c>.object",\n' +
-      '      "xmlContent": "<full XML including all fields>" }\n' +
-      '  ]\n}\n\n' +
-      'CRITICAL FILE PATH RULE:\n' +
-      '  filePath MUST be "objects/<ObjectApiName__c>.object" — example: "objects/Customer_Config__c.object"\n' +
-      '  Do NOT use subdirectories. Do NOT use -meta.xml suffix. Do NOT create separate field files.\n\n' +
-      'CustomObject XML structure:\n' +
-      '<?xml version="1.0" encoding="UTF-8"?>\n' +
-      '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
-      '  <label>...</label>\n' +
-      '  <pluralLabel>...</pluralLabel>\n' +
-      '  <nameField><label>...</label><type>Text</type></nameField>\n' +
-      '  <deploymentStatus>Deployed</deploymentStatus>\n' +
-      '  <sharingModel>ReadWrite</sharingModel>\n' +
-      '  <fields>... one <fields> block per field ...</fields>\n' +
-      '</CustomObject>\n\n' +
-      'FORBIDDEN at root CustomObject level: <apiName> — the object API name is determined by file path only.\n\n' +
-      'Each field must be wrapped in a <fields>...</fields> element (plural, NOT <field>).\n' +
-      'Inside each <fields> block use ONLY these elements:\n' +
-      '  <fullName>FieldName__c</fullName>  — REQUIRED, the field API name\n' +
-      '  <label>Field Label</label>          — REQUIRED\n' +
-      '  <type>Text</type>                   — REQUIRED (Text, Number, Currency, Percent, Email, Phone, Url, Date, DateTime, Checkbox, Picklist, LongTextArea, TextArea, Lookup)\n' +
-      '  <required>false</required>\n' +
-      '  <trackTrending>false</trackTrending>\n' +
-      '  Text:    <length>255</length>\n' +
-      '  Number/Currency/Percent: <precision>18</precision><scale>2</scale>\n' +
-      '  Checkbox: <defaultValue>false</defaultValue>\n' +
-      '  LongTextArea: <length>32768</length><visibleLines>3</visibleLines>\n' +
-      '  Picklist: <valueSet><valueSetDefinition><sorted>false</sorted><value><fullName>Option1</fullName><default>false</default><label>Option 1</label></value></valueSetDefinition></valueSet>\n' +
-      'DO NOT use <field> (singular) anywhere. DO NOT nest <fields> inside <fields>.\n' +
-      'Escape XML special chars in label values.';
+    String systemPrompt = PromptService.getPromptByKey('CSV_OBJECT_GENERATION');
+    if (String.isBlank(systemPrompt)) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: CSV_OBJECT_GENERATION prompt not found in LLM_Prompt__mdt. Deploy the CMT record.'
+      );
+    }
 
     String userPrompt =
       'Generate Salesforce custom object and field metadata XML for:\n' +
@@ -1424,8 +1423,9 @@ public class LLMResponseProcessor {
   // ─────────────────────────────────────────────────────────────
   private static String csvStr(Map<String, Object> row, String key) {
     Object val = row?.get(key);
-    if (val == null)
+    if (val == null) {
       return '';
+    }
     String s = String.valueOf(val).trim();
     return (s == 'null') ? '' : s;
   }
