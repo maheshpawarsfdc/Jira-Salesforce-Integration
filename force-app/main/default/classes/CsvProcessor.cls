@@ -408,8 +408,9 @@ public class CsvProcessor {
     for (Object raw : rawRows) {
       Map<String, Object> row = (Map<String, Object>) raw;
       String apiName = getRowValue(row, 'apiName');
-      if (String.isBlank(apiName))
+      if (String.isBlank(apiName)) {
         continue;
+      }
 
       String fullApiName = apiName.endsWith('__mdt')
         ? apiName
@@ -1009,13 +1010,15 @@ public class CsvProcessor {
         }
       }
       String blocks = '';
-      for (Map<String, String> lbl : labels)
+      for (Map<String, String> lbl : labels) {
         blocks += buildLabelBlock(lbl);
+      }
       fileXml = fileXml.replace('</CustomLabels>', blocks + '</CustomLabels>');
     } else {
       String blocks = '';
-      for (Map<String, String> lbl : labels)
+      for (Map<String, String> lbl : labels) {
         blocks += buildLabelBlock(lbl);
+      }
       fileXml =
         '<?xml version="1.0" encoding="UTF-8"?>\n' +
         '<CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
@@ -1073,7 +1076,7 @@ public class CsvProcessor {
 
   private static String getXsiTypeForValue(String fieldApiName, String val) {
     // Detect by field name suffix or value pattern
-    String lower = fieldApiName.toLowerCase();
+    //String lower = fieldApiName.toLowerCase();
 
     // Checkbox fields — value is true/false
     if (
@@ -1159,16 +1162,19 @@ public class CsvProcessor {
   // ─────────────────────────────────────────────────────────────
   private static Map<String, String> parseExistingTranslationXml(String xml) {
     Map<String, String> result = new Map<String, String>();
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return result;
+    }
     Integer searchFrom = 0;
     while (true) {
       Integer blockStart = xml.indexOf('<customLabels>', searchFrom);
-      if (blockStart == -1)
+      if (blockStart == -1) {
         break;
+      }
       Integer blockEnd = xml.indexOf('</customLabels>', blockStart);
-      if (blockEnd == -1)
+      if (blockEnd == -1) {
         break;
+      }
       String block = xml.substring(blockStart, blockEnd);
       Integer nameStart = block.indexOf('<name>') + '<name>'.length();
       Integer nameEnd = block.indexOf('</name>');
@@ -1211,12 +1217,14 @@ public class CsvProcessor {
     String delimiter
   ) {
     csvText = csvText.replace('\r\n', '\n').replace('\r', '\n').trim();
-    if (String.isBlank(csvText))
+    if (String.isBlank(csvText)) {
       throw new CsvException('CSV file [' + fileName + '] is empty.');
+    }
 
     List<String> lines = csvText.split('\n');
-    if (lines.isEmpty())
+    if (lines.isEmpty()) {
       throw new CsvException('CSV file [' + fileName + '] has no lines.');
+    }
 
     // Parse headers
     List<String> rawCols = splitCsvLine(lines[0], delimiter);
@@ -1226,13 +1234,15 @@ public class CsvProcessor {
         .replace('\uFEFF', '')
         .replace('\u00EF\u00BB\u00BF', '')
         .trim();
-      if (String.isNotBlank(c) && cleanCols.size() < MAX_COLUMNS)
+      if (String.isNotBlank(c) && cleanCols.size() < MAX_COLUMNS) {
         cleanCols.add(c);
+      }
     }
-    if (cleanCols.isEmpty())
+    if (cleanCols.isEmpty()) {
       throw new CsvException(
         'CSV file [' + fileName + '] has no valid column headers.'
       );
+    }
 
     System.debug('CsvProcessor.parseCsv(): columns=' + cleanCols);
 
@@ -1245,8 +1255,9 @@ public class CsvProcessor {
         skipped++;
         continue;
       }
-      if (rows.size() >= MAX_ROWS)
+      if (rows.size() >= MAX_ROWS) {
         break;
+      }
       List<String> values = splitCsvLine(line, delimiter);
       Map<String, Object> row = new Map<String, Object>();
       for (Integer c = 0; c < cleanCols.size(); c++) {
@@ -1270,16 +1281,19 @@ public class CsvProcessor {
   // ─────────────────────────────────────────────────────────────
   private static List<String> splitCsvLine(String line, String delimiter) {
     List<String> result = new List<String>();
-    if (String.isBlank(line))
+    if (String.isBlank(line)) {
       return result;
+    }
 
     if (!line.contains('"')) {
       if (delimiter == ',') {
-        for (String v : line.split(',', -1))
+        for (String v : line.split(',', -1)) {
           result.add(v);
+        }
       } else {
-        for (String v : line.split(';', -1))
+        for (String v : line.split(';', -1)) {
           result.add(v);
+        }
       }
       return result;
     }
@@ -1351,8 +1365,9 @@ public class CsvProcessor {
 
   private static String getRequiredArg(Map<String, Object> args, String key) {
     Object val = args?.get(key);
-    if (val == null || String.isBlank(String.valueOf(val)))
+    if (val == null || String.isBlank(String.valueOf(val))) {
       throw new CsvException('Required parameter missing: ' + key);
+    }
     return String.valueOf(val).trim();
   }
 
@@ -1362,8 +1377,9 @@ public class CsvProcessor {
     String defaultValue
   ) {
     Object val = args?.get(key);
-    if (val == null)
+    if (val == null) {
       return defaultValue;
+    }
     String strVal = String.valueOf(val).trim();
     return (String.isBlank(strVal) || strVal == 'null') ? defaultValue : strVal;
   }
@@ -1372,8 +1388,9 @@ public class CsvProcessor {
   // Metadata API for Custom Metadata Type fields.
   // Fixes: case variants (URL→Url), unsupported types (Currency→Number).
   private static String normalizeCmtFieldType(String raw) {
-    if (String.isBlank(raw))
+    if (String.isBlank(raw)) {
       return 'Text';
+    }
     String t = raw.trim();
 
     // Exact-match map: key = lowercase input, value = correct API enum value
@@ -1408,8 +1425,9 @@ public class CsvProcessor {
     };
 
     String mapped = cmtTypeMap.get(t.toLowerCase());
-    if (mapped != null)
+    if (mapped != null) {
       return mapped;
+    }
 
     // Unknown type — return as-is and let the API report the error
     System.debug(

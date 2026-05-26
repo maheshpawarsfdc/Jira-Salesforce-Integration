@@ -29,6 +29,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   // CONSTRUCTORS
   // ─────────────────────────────────────────────────────────────
   public DeployPoller() {
+    // Required for Type.forName() instantiation from DeployService
   }
 
   public DeployPoller(String jobId, String issueKey, Integer attempt) {
@@ -511,7 +512,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
               );
               continue;
             }
-            String objPart = layoutFullName.substringBefore('-');
+            //String objPart = layoutFullName.substringBefore('-');
             String layoutName = layoutFullName.substringAfter('-');
 
             String query =

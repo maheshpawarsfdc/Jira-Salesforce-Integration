@@ -22,8 +22,9 @@ public class LLMOrgStateService {
   // METADATA SESSION ID
   // ─────────────────────────────────────────────────────────────
   public static String getMetadataSessionId() {
-    if (Test.isRunningTest())
+    if (Test.isRunningTest()) {
       return UserInfo.getSessionId();
+    }
     try {
       PageReference vfPage = Page.SessionId;
       String content = vfPage.getContent().toString();
@@ -46,8 +47,9 @@ public class LLMOrgStateService {
     List<String> objectNames
   ) {
     Map<String, List<Map<String, Object>>> result = new Map<String, List<Map<String, Object>>>();
-    if (objectNames == null || objectNames.isEmpty())
+    if (objectNames == null || objectNames.isEmpty()) {
       return result;
+    }
 
     // ── Step 1: Separate standard vs custom objects ───────────
     // Standard objects: TableEnumOrId stores API name e.g. 'Account'
@@ -178,8 +180,9 @@ public class LLMOrgStateService {
       res.getBody()
     );
     List<Object> records = (List<Object>) body.get('records');
-    if (records == null)
+    if (records == null) {
       return result;
+    }
 
     // ── Step 5: Map results back to API names ──────────────────
     for (Object raw : records) {
@@ -187,8 +190,9 @@ public class LLMOrgStateService {
       String tableEnumOrId = (String) rec.get('TableEnumOrId');
       String layoutName = (String) rec.get('Name');
 
-      if (String.isBlank(tableEnumOrId) || String.isBlank(layoutName))
+      if (String.isBlank(tableEnumOrId) || String.isBlank(layoutName)) {
         continue;
+      }
 
       // For custom objects, convert ID back to API name
       // For standard objects, tableEnumOrId IS the API name
@@ -247,8 +251,9 @@ public class LLMOrgStateService {
     try {
       for (Schema.SObjectType objType : Schema.getGlobalDescribe().values()) {
         Schema.DescribeSObjectResult describe = objType.getDescribe();
-        if (!describe.isCustom())
+        if (!describe.isCustom()) {
           continue;
+        }
 
         String apiName = describe.getName();
 
@@ -265,8 +270,9 @@ public class LLMOrgStateService {
           !ticketText.contains(objShortName) &&
           !ticketText.contains(apiName.toLowerCase()) &&
           !ticketText.contains(objSpacedName)
-        )
+        ) {
           continue;
+        }
 
         existingObjects.add(apiName);
 
@@ -327,13 +333,15 @@ public class LLMOrgStateService {
 
       String ticketTextStd = (summary + ' ' + description).toLowerCase();
       for (String stdObjName : standardObjectNames) {
-        if (!ticketTextStd.contains(stdObjName.toLowerCase()))
+        if (!ticketTextStd.contains(stdObjName.toLowerCase())) {
           continue;
+        }
         try {
           Schema.SObjectType stdObjType = Schema.getGlobalDescribe()
             .get(stdObjName);
-          if (stdObjType == null)
+          if (stdObjType == null) {
             continue;
+          }
           Schema.DescribeSObjectResult stdDescribe = stdObjType.getDescribe();
           List<String> stdFieldNames = new List<String>();
           for (Schema.SObjectField f : stdDescribe.fields.getMap().values()) {
@@ -524,8 +532,9 @@ public class LLMOrgStateService {
           List<Map<String, Object>> assignmentRulesState = new List<Map<String, Object>>();
           for (String objType : new List<String>{ 'Lead', 'Case' }) {
             Map<String, Object> state = getAssignmentRulesState(objType);
-            if (state != null)
+            if (state != null) {
               assignmentRulesState.add(state);
+            }
           }
           if (!assignmentRulesState.isEmpty()) {
             orgState.put('existingAssignmentRules', assignmentRulesState);
@@ -594,8 +603,9 @@ public class LLMOrgStateService {
         };
         List<String> matchedStdObjects = new List<String>();
         for (String stdObj : stdObjects) {
-          if (ticketTextLower.contains(stdObj.toLowerCase()))
+          if (ticketTextLower.contains(stdObj.toLowerCase())) {
             matchedStdObjects.add(stdObj);
+          }
         }
         if (!matchedStdObjects.isEmpty()) {
           try {
@@ -607,11 +617,13 @@ public class LLMOrgStateService {
               List<String> fullNames = new List<String>();
               for (Map<String, Object> l : stdLayouts.get(obj)) {
                 String fn = (String) l.get('fullName');
-                if (String.isNotBlank(fn))
+                if (String.isNotBlank(fn)) {
                   fullNames.add(fn);
+                }
               }
-              if (!fullNames.isEmpty())
+              if (!fullNames.isEmpty()) {
                 stdLayoutNames.put(obj, fullNames);
+              }
             }
             if (!stdLayoutNames.isEmpty()) {
               orgState.put('standardObjectLayoutNames', stdLayoutNames);
@@ -1116,8 +1128,9 @@ public class LLMOrgStateService {
   public static Map<String, Object> getLayoutStructureViaToolingId(
     String layoutId
   ) {
-    if (String.isBlank(layoutId))
+    if (String.isBlank(layoutId)) {
       return null;
+    }
     try {
       String endpoint =
         'https://' +
@@ -1146,8 +1159,9 @@ public class LLMOrgStateService {
         res.getBody()
       );
       Map<String, Object> metadata = (Map<String, Object>) body.get('Metadata');
-      if (metadata == null)
+      if (metadata == null) {
         return null;
+      }
 
       List<Map<String, Object>> sections = new List<Map<String, Object>>();
       Object rawLayoutSections = metadata.get('layoutSections');
@@ -1231,12 +1245,15 @@ public class LLMOrgStateService {
   }
 
   public static String behaviorToString(Metadata.UiBehavior b) {
-    if (b == null)
+    if (b == null) {
       return 'Edit';
-    if (b == Metadata.UiBehavior.Required)
+    }
+    if (b == Metadata.UiBehavior.Required) {
       return 'Required';
-    if (b == Metadata.UiBehavior.Readonly)
+    }
+    if (b == Metadata.UiBehavior.Readonly) {
       return 'Readonly';
+    }
     return 'Edit';
   }
 
@@ -1300,8 +1317,9 @@ public class LLMOrgStateService {
         }
       }
 
-      if (ruleList.isEmpty())
+      if (ruleList.isEmpty()) {
         return null;
+      }
 
       System.debug(
         'getAssignmentRulesState: found ' +
@@ -1370,8 +1388,9 @@ public class LLMOrgStateService {
       List<Map<String, Object>> result = new List<Map<String, Object>>();
 
       for (MetadataService.Metadata raw : records) {
-        if (raw == null)
+        if (raw == null) {
           continue;
+        }
         MetadataService.NamedCredential nc = (MetadataService.NamedCredential) raw;
 
         Map<String, Object> ncMap = new Map<String, Object>{
@@ -1387,19 +1406,32 @@ public class LLMOrgStateService {
         };
 
         try {
-          if (nc.authProvider != null)
+          if (nc.authProvider != null) {
             ncMap.put('authProvider', nc.authProvider);
+          }
         } catch (Exception ex) {
+          System.debug(
+            'getNamedCredentialsState: authProvider exception: ' +
+            ex.getMessage()
+          );
         }
         try {
-          if (nc.oauthScope != null)
+          if (nc.oauthScope != null) {
             ncMap.put('oauthScope', nc.oauthScope);
+          }
         } catch (Exception ex) {
+          System.debug(
+            'getNamedCredentialsState: oauthScope exception: ' + ex.getMessage()
+          );
         }
         try {
-          if (nc.username != null)
+          if (nc.username != null) {
             ncMap.put('username', nc.username);
+          }
         } catch (Exception ex) {
+          System.debug(
+            'getNamedCredentialsState: username exception: ' + ex.getMessage()
+          );
         }
 
         result.add(ncMap);
@@ -1447,18 +1479,24 @@ public class LLMOrgStateService {
           'friendlyName' => ap.FriendlyName,
           'providerType' => ap.ProviderType
         };
-        if (ap.ConsumerKey != null)
+        if (ap.ConsumerKey != null) {
           apMap.put('consumerKey', ap.ConsumerKey);
-        if (ap.DefaultScopes != null)
+        }
+        if (ap.DefaultScopes != null) {
           apMap.put('defaultScopes', ap.DefaultScopes);
-        if (ap.AuthorizeUrl != null)
+        }
+        if (ap.AuthorizeUrl != null) {
           apMap.put('authorizeUrl', ap.AuthorizeUrl);
-        if (ap.TokenUrl != null)
+        }
+        if (ap.TokenUrl != null) {
           apMap.put('tokenUrl', ap.TokenUrl);
-        if (ap.UserInfoUrl != null)
+        }
+        if (ap.UserInfoUrl != null) {
           apMap.put('userInfoUrl', ap.UserInfoUrl);
-        if (ap.IconUrl != null)
+        }
+        if (ap.IconUrl != null) {
           apMap.put('iconUrl', ap.IconUrl);
+        }
         result.add(apMap);
         System.debug(
           'getAuthProvidersState: read AP [' +
@@ -1786,14 +1824,16 @@ public class LLMOrgStateService {
         Map<String, Object> rec = (Map<String, Object>) raw;
         String filePath = (String) rec.get('FilePath');
         String source = (String) rec.get('Source');
-        if (String.isBlank(filePath))
+        if (String.isBlank(filePath)) {
           continue;
-        if (filePath.endsWith('.html'))
+        }
+        if (filePath.endsWith('.html')) {
           htmlSource = source;
-        else if (filePath.endsWith('-meta.xml'))
+        } else if (filePath.endsWith('-meta.xml')) {
           metaXml = source;
-        else if (filePath.endsWith('.js'))
+        } else if (filePath.endsWith('.js')) {
           jsSource = source;
+        }
       }
 
       System.debug(
@@ -1828,8 +1868,9 @@ public class LLMOrgStateService {
   // EXTRACT LWC COMPONENT NAME FROM TICKET TEXT
   // ─────────────────────────────────────────────────────────────
   public static String extractLwcComponentName(String ticketText) {
-    if (String.isBlank(ticketText))
+    if (String.isBlank(ticketText)) {
       return null;
+    }
 
     Pattern p1 = Pattern.compile('(?i)(?:called|named)\\s+([a-z][A-Za-z0-9]+)');
     Matcher m1 = p1.matcher(ticketText);

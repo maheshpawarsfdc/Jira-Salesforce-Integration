@@ -25,6 +25,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
   // CONSTRUCTORS
   // ─────────────────────────────────────────────────────────────
   public ApexTestRunQueueable() {
+    // Required for JSON.deserialize round-trip
   }
 
   public static ApexTestRunQueueable forFirstRun(
@@ -56,8 +57,9 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
       contextJson,
       ApexTestRunQueueable.class
     );
-    if (String.isBlank(q.issueKey))
+    if (String.isBlank(q.issueKey)) {
       q.issueKey = issueKey;
+    }
     return q;
   }
 

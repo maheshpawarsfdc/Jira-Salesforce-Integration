@@ -40,6 +40,7 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
 
   // ── Private no-arg constructor — used only by forZip2 factory
   private ZipDeployQueueable() {
+    // Used only by forZip2() static factory — no initialization needed
   }
 
   // ── Static factory for ZIP 2: receives files directly, no ZipBuilder snapshot needed

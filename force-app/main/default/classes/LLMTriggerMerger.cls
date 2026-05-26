@@ -7,8 +7,9 @@ public class LLMTriggerMerger {
     List<Object> files,
     Map<String, Object> orgState
   ) {
-    if (orgState == null)
+    if (orgState == null) {
       return;
+    }
 
     Map<String, Object> existingTrigger = (Map<String, Object>) orgState.get(
       'existingTrigger'
@@ -17,8 +18,9 @@ public class LLMTriggerMerger {
       'existingHandlerClass'
     );
 
-    if (existingTrigger == null)
+    if (existingTrigger == null) {
       return;
+    }
 
     String existingTriggerBody = (String) existingTrigger.get('body');
     String existingHandlerBody = existingHandler != null
@@ -36,15 +38,17 @@ public class LLMTriggerMerger {
       );
     }
 
-    if (files == null)
+    if (files == null) {
       return;
+    }
 
     for (Object rawFile : files) {
       Map<String, Object> file = (Map<String, Object>) rawFile;
       String metadataType = (String) file.get('metadataType');
       String generatedBody = (String) file.get('xmlContent');
-      if (String.isBlank(generatedBody))
+      if (String.isBlank(generatedBody)) {
         continue;
+      }
 
       generatedBody = LLMXmlSanitizer.sanitizeStandardFieldReferences(
         generatedBody,
@@ -88,14 +92,17 @@ public class LLMTriggerMerger {
 
       Matcher em = evPat.matcher(existingBody);
       Matcher gm = evPat.matcher(generatedBody);
-      if (!em.find() || !gm.find())
+      if (!em.find() || !gm.find()) {
         return null;
+      }
 
       Set<String> allEvents = new Set<String>();
-      for (String e : em.group(1).split(','))
+      for (String e : em.group(1).split(',')) {
         allEvents.add(e.trim().toLowerCase());
-      for (String e : gm.group(1).split(','))
+      }
+      for (String e : gm.group(1).split(',')) {
         allEvents.add(e.trim().toLowerCase());
+      }
 
       List<String> canonical = new List<String>{
         'before insert',
@@ -113,10 +120,12 @@ public class LLMTriggerMerger {
       }
 
       Set<String> existingSet = new Set<String>();
-      for (String e : em.group(1).split(','))
+      for (String e : em.group(1).split(',')) {
         existingSet.add(e.trim().toLowerCase());
-      if (merged.size() == existingSet.size())
+      }
+      if (merged.size() == existingSet.size()) {
         return null;
+      }
 
       String mergedStr = String.join(merged, ', ');
       return existingBody.replaceFirst(
@@ -156,8 +165,9 @@ public class LLMTriggerMerger {
 
       List<String> newMethodBodies = new List<String>();
       for (String name : generatedMethods.keySet()) {
-        if (name == 'dispatch')
+        if (name == 'dispatch') {
           continue;
+        }
         if (!existingMethods.containsKey(name)) {
           newMethodBodies.add(generatedMethods.get(name));
           System.debug(
@@ -198,8 +208,9 @@ public class LLMTriggerMerger {
 
       if (!newMethodBodies.isEmpty()) {
         Integer lastBrace = result.lastIndexOf('}');
-        if (lastBrace < 0)
+        if (lastBrace < 0) {
           return null;
+        }
         String injection = '\n\n    // ── Added by automation ──';
         for (String m : newMethodBodies) {
           injection += '\n    ' + m.trim() + '\n';
@@ -229,21 +240,24 @@ public class LLMTriggerMerger {
 
     Set<String> existingOps = new Set<String>();
     Matcher em = opPat.matcher(existingDispatch);
-    while (em.find())
+    while (em.find()) {
       existingOps.add(em.group(1));
+    }
 
     Set<String> generatedOps = new Set<String>();
     Matcher gm = opPat.matcher(generatedDispatch);
-    while (gm.find())
+    while (gm.find()) {
       generatedOps.add(gm.group(1));
+    }
 
     System.debug('extractNewDispatchBlocks: existingOps=' + existingOps);
     System.debug('extractNewDispatchBlocks: generatedOps=' + generatedOps);
 
     String result = '';
     for (String op : generatedOps) {
-      if (existingOps.contains(op))
+      if (existingOps.contains(op)) {
         continue;
+      }
 
       Pattern linePat = Pattern.compile(
         '[ \\t]*(if\\s*\\([^)]*' + op + '[^)]*\\)\\s*\\w+\\([^)]*\\)\\s*;)'
@@ -269,14 +283,16 @@ public class LLMTriggerMerger {
   // ─────────────────────────────────────────────────────────────
   public static Map<String, String> extractTopLevelMethods(String classBody) {
     Map<String, String> result = new Map<String, String>();
-    if (String.isBlank(classBody))
+    if (String.isBlank(classBody)) {
       return result;
+    }
 
     Integer len = classBody.length();
 
     Integer classOpen = classBody.indexOf('{');
-    if (classOpen < 0)
+    if (classOpen < 0) {
       return result;
+    }
 
     Integer i = classOpen + 1;
     Integer depth = 1;
@@ -292,8 +308,9 @@ public class LLMTriggerMerger {
         classBody.substring(i + 1, i + 2) == '/'
       ) {
         i = classBody.indexOf('\n', i);
-        if (i < 0)
+        if (i < 0) {
           break;
+        }
         i++;
         continue;
       }
@@ -363,8 +380,9 @@ public class LLMTriggerMerger {
     Integer i = openBracePos - 1;
     while (i > classOpenPos) {
       String ch = body.substring(i, i + 1);
-      if (ch == ';' || ch == '}')
+      if (ch == ';' || ch == '}') {
         return i + 1;
+      }
       i--;
     }
     return classOpenPos + 1;
@@ -470,23 +488,27 @@ public class LLMTriggerMerger {
       Set<String> generatedOps = new Set<String>();
 
       Matcher em = opPat.matcher(existingDispatch);
-      while (em.find())
+      while (em.find()) {
         existingOps.add(em.group(1));
+      }
 
       Matcher gm = opPat.matcher(generatedDispatch);
-      while (gm.find())
+      while (gm.find()) {
         generatedOps.add(gm.group(1));
+      }
 
       System.debug('mergeDispatchCalls: existingOps  = ' + existingOps);
       System.debug('mergeDispatchCalls: generatedOps = ' + generatedOps);
 
       List<String> missing = new List<String>();
       for (String op : generatedOps) {
-        if (!existingOps.contains(op))
+        if (!existingOps.contains(op)) {
           missing.add(op);
+        }
       }
-      if (missing.isEmpty())
+      if (missing.isEmpty()) {
         return null;
+      }
 
       String injectedCalls = '';
       for (String op : missing) {
@@ -502,12 +524,14 @@ public class LLMTriggerMerger {
         }
       }
 
-      if (String.isBlank(injectedCalls))
+      if (String.isBlank(injectedCalls)) {
         return null;
+      }
 
       Integer lastBrace = existingDispatch.lastIndexOf('}');
-      if (lastBrace < 0)
+      if (lastBrace < 0) {
         return null;
+      }
 
       return existingDispatch.substring(0, lastBrace) +
         '\n        // ── New op checks ──' +

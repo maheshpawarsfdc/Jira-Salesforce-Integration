@@ -254,10 +254,12 @@ public class PermissionSetHelper {
   // the most-permissive value for each flag is preserved.
   // ─────────────────────────────────────────────────────────────
   public static String deduplicateObjectPermissions(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
-    if (!xml.contains('<objectPermissions>'))
+    }
+    if (!xml.contains('<objectPermissions>')) {
       return xml;
+    }
 
     // Strategy: keep the first block for each object in place, merge later
     // duplicate blocks into it (OR boolean flags), and remove only duplicates.
@@ -270,11 +272,13 @@ public class PermissionSetHelper {
     Integer cursor = 0;
     while (true) {
       Integer bs = xml.indexOf('<objectPermissions>', cursor);
-      if (bs < 0)
+      if (bs < 0) {
         break;
+      }
       Integer be = xml.indexOf('</objectPermissions>', bs);
-      if (be < 0)
+      if (be < 0) {
         break;
+      }
       be += '</objectPermissions>'.length();
 
       String block = xml.substring(bs, be);
@@ -292,8 +296,9 @@ public class PermissionSetHelper {
       cursor = be;
     }
 
-    if (blocks.isEmpty())
+    if (blocks.isEmpty()) {
       return xml;
+    }
 
     Map<String, Integer> firstIndexByObject = new Map<String, Integer>();
     Set<Integer> duplicateIdx = new Set<Integer>();
@@ -333,16 +338,15 @@ public class PermissionSetHelper {
       duplicateIdx.add(i);
     }
 
-    if (duplicateIdx.isEmpty())
+    if (duplicateIdx.isEmpty()) {
       return xml;
+    }
 
     String result = '';
     Integer pos = 0;
     for (Integer i = 0; i < blocks.size(); i++) {
       result += xml.substring(pos, starts[i]);
-      if (duplicateIdx.contains(i)) {
-        // Remove duplicate block.
-      } else {
+      if (!duplicateIdx.contains(i)) {
         result += blocks[i];
       }
       pos = ends[i];
@@ -373,8 +377,9 @@ public class PermissionSetHelper {
   // field resolves as required via Schema describe.
   // ─────────────────────────────────────────────────────────────
   public static String stripRequiredFieldPermissions(String xml) {
-    if (String.isBlank(xml) || !xml.contains('<fieldPermissions>'))
+    if (String.isBlank(xml) || !xml.contains('<fieldPermissions>')) {
       return xml;
+    }
 
     List<Integer> removeStarts = new List<Integer>();
     List<Integer> removeEnds = new List<Integer>();
@@ -382,11 +387,13 @@ public class PermissionSetHelper {
 
     while (true) {
       Integer bs = xml.indexOf('<fieldPermissions>', cursor);
-      if (bs < 0)
+      if (bs < 0) {
         break;
+      }
       Integer be = xml.indexOf('</fieldPermissions>', bs);
-      if (be < 0)
+      if (be < 0) {
         break;
+      }
       be += '</fieldPermissions>'.length();
 
       String block = xml.substring(bs, be);
@@ -412,8 +419,9 @@ public class PermissionSetHelper {
       cursor = be;
     }
 
-    if (removeStarts.isEmpty())
+    if (removeStarts.isEmpty()) {
       return xml;
+    }
 
     // Remove in reverse order so earlier indices stay valid
     String result = xml;
@@ -427,14 +435,16 @@ public class PermissionSetHelper {
   private static Boolean isRequiredField(String objectName, String fieldName) {
     try {
       Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
-      if (objType == null)
+      if (objType == null) {
         return false;
+      }
       Schema.DescribeFieldResult f = objType.getDescribe()
         .fields.getMap()
         .get(fieldName)
         ?.getDescribe();
-      if (f == null)
+      if (f == null) {
         return false;
+      }
       // Required in the permission-set sense: not nillable, not auto-populated,
       // not an auto-number, not a formula, and not the Id field type.
       return !f.isNillable() &&
@@ -470,10 +480,12 @@ public class PermissionSetHelper {
     String baseXml,
     String additionalXml
   ) {
-    if (String.isBlank(additionalXml))
+    if (String.isBlank(additionalXml)) {
       return baseXml;
-    if (String.isBlank(baseXml))
+    }
+    if (String.isBlank(baseXml)) {
       return additionalXml;
+    }
 
     List<String> blockTypes = new List<String>{
       'objectPermissions',
@@ -495,17 +507,20 @@ public class PermissionSetHelper {
     for (String blockType : blockTypes) {
       String openTag = '<' + blockType + '>';
       String closeTag = '</' + blockType + '>';
-      if (!additionalXml.contains(openTag))
+      if (!additionalXml.contains(openTag)) {
         continue;
+      }
 
       Integer cursor = 0;
       while (true) {
         Integer bs = additionalXml.indexOf(openTag, cursor);
-        if (bs < 0)
+        if (bs < 0) {
           break;
+        }
         Integer be = additionalXml.indexOf(closeTag, bs);
-        if (be < 0)
+        if (be < 0) {
           break;
+        }
         be += closeTag.length();
         String block = additionalXml.substring(bs, be);
         merged = merged.replace(
@@ -523,8 +538,9 @@ public class PermissionSetHelper {
   }
 
   public static String ensureParentReadAccessForXml(String xml) {
-    if (String.isBlank(xml))
+    if (String.isBlank(xml)) {
       return xml;
+    }
 
     xml = deduplicateObjectPermissions(xml);
 
@@ -534,12 +550,14 @@ public class PermissionSetHelper {
 
     while (true) {
       Integer blockStart = updatedXml.indexOf('<objectPermissions>', cursor);
-      if (blockStart < 0)
+      if (blockStart < 0) {
         break;
+      }
 
       Integer blockEnd = updatedXml.indexOf('</objectPermissions>', blockStart);
-      if (blockEnd < 0)
+      if (blockEnd < 0) {
         break;
+      }
       blockEnd += '</objectPermissions>'.length();
 
       String block = updatedXml.substring(blockStart, blockEnd);
@@ -763,31 +781,38 @@ public class PermissionSetHelper {
     String objectName,
     Set<String> visited
   ) {
-    if (visited.contains(objectName))
+    if (visited.contains(objectName)) {
       return xml;
+    }
+
     visited.add(objectName);
 
     Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
-    if (objType == null)
+    if (objType == null) {
       return xml;
+    }
 
     for (
       Schema.SObjectField field : objType.getDescribe().fields.getMap().values()
     ) {
       Schema.DescribeFieldResult f = field.getDescribe();
-      if (f.getType() != Schema.DisplayType.REFERENCE)
+      if (f.getType() != Schema.DisplayType.REFERENCE) {
         continue;
+      }
 
       for (Schema.SObjectType ref : f.getReferenceTo()) {
         String parentName = ref.getDescribe().getName();
 
         // Skip self-lookups and standard non-permissionable objects
-        if (parentName == objectName)
+        if (parentName == objectName) {
           continue;
-        if (parentName == 'User' || parentName == 'RecordType')
+        }
+        if (parentName == 'User' || parentName == 'RecordType') {
           continue;
-        if (visited.contains(parentName))
+        }
+        if (visited.contains(parentName)) {
           continue;
+        }
 
         if (!xml.contains('<object>' + parentName + '</object>')) {
           System.debug(
@@ -882,8 +907,9 @@ public class PermissionSetHelper {
   }
 
   private static String escapeXml(String val) {
-    if (String.isBlank(val))
+    if (String.isBlank(val)) {
       return '';
+    }
     return val.replace('&', '&amp;')
       .replace('<', '&lt;')
       .replace('>', '&gt;')
@@ -908,11 +934,13 @@ public class PermissionSetHelper {
     String defaultValue
   ) {
     Object val = args?.get(key);
-    if (val == null)
+    if (val == null) {
       return defaultValue;
+    }
     String strVal = String.valueOf(val).trim();
-    if (String.isBlank(strVal) || strVal == 'null')
+    if (String.isBlank(strVal) || strVal == 'null') {
       return defaultValue;
+    }
     return strVal;
   }
 
