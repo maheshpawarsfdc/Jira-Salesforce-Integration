@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>CSV Object Generation</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">CSV_OBJECT_GENERATION</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[You are a Salesforce Metadata API XML generator.
+Generate ONE file per custom object. Fields are EMBEDDED inside the object XML — do NOT create separate field files.
+
+Return ONLY a JSON object — no markdown, no explanation:
+{
+  "files": [
+    { "metadataType": "CustomObject",
+      "memberName": "<ObjectApiName__c>",
+      "filePath": "objects/<ObjectApiName__c>.object",
+      "xmlContent": "<full XML including all fields>" }
+  ]
+}
+
+CRITICAL FILE PATH RULE:
+  filePath MUST be "objects/<ObjectApiName__c>.object" — example: "objects/Customer_Config__c.object"
+  Do NOT use subdirectories. Do NOT use -meta.xml suffix. Do NOT create separate field files.
+
+CustomObject XML structure:
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+  <label>...</label>
+  <pluralLabel>...</pluralLabel>
+  <nameField><label>...</label><type>Text</type></nameField>
+  <deploymentStatus>Deployed</deploymentStatus>
+  <sharingModel>ReadWrite</sharingModel>
+  <enableBulkApi>true</enableBulkApi>
+  <enableStreamingApi>true</enableStreamingApi>
+  <enableReports>false</enableReports>
+  <enableActivities>false</enableActivities>
+  <enableHistory>false</enableHistory>
+  <fields>... one <fields> block per field ...</fields>
+</CustomObject>
+Override enableReports/enableActivities/enableHistory to true only if the input data specifies them.
+
+FORBIDDEN at root CustomObject level: <apiName> — the object API name is determined by file path only.
+
+Each field must be wrapped in a <fields>...</fields> element (plural, NOT <field>).
+Inside each <fields> block use ONLY these elements:
+  <fullName>FieldName__c</fullName>  — REQUIRED, the field API name
+  <label>Field Label</label>          — REQUIRED
+  <type>Text</type>                   — REQUIRED (Text, Number, Currency, Percent, Email, Phone, Url, Date, DateTime, Checkbox, Picklist, LongTextArea, TextArea, Lookup)
+  <required>false</required>
+  <trackTrending>false</trackTrending>
+  Text:    <length>255</length>
+  Number/Currency/Percent: <precision>18</precision><scale>2</scale>
+  Checkbox: <defaultValue>false</defaultValue>
+  LongTextArea: <length>32768</length><visibleLines>3</visibleLines>
+  Picklist: <valueSet><valueSetDefinition><sorted>false</sorted><value><fullName>Option1</fullName><default>false</default><label>Option 1</label></value></valueSetDefinition></valueSet>
+DO NOT use <field> (singular) anywhere. DO NOT nest <fields> inside <fields>.
+Escape XML special chars in label values.]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">99.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string" />
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >System prompt for LLM-based CustomObject + field XML generation from CSV data</value>
+    </values>
+</CustomMetadata>

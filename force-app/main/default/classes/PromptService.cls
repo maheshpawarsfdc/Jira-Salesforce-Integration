@@ -148,6 +148,32 @@ public with sharing class PromptService {
   }
 
   /**
+   * Returns the Prompt_Content__c for any CMT record by its Feature_Key__c.
+   * Returns null when the record is not found or inactive.
+   */
+  public static String getPromptByKey(String featureKey) {
+    List<LLM_Prompt__mdt> recs = [
+      SELECT Prompt_Content__c
+      FROM LLM_Prompt__mdt
+      WHERE Feature_Key__c = :featureKey AND Is_Active__c = TRUE
+      LIMIT 1
+    ];
+    if (recs.isEmpty()) {
+      System.debug(
+        '[PROMPT-SERVICE] WARNING — CMT record not found for key: ' + featureKey
+      );
+      return null;
+    }
+    System.debug(
+      '[PROMPT-SERVICE] getPromptByKey(' +
+        featureKey +
+        ') loaded. Chars: ' +
+        recs[0].Prompt_Content__c.length()
+    );
+    return recs[0].Prompt_Content__c;
+  }
+
+  /**
    * Returns the Prompt_Content__c for the ROUTER_SYSTEM record.
    * Used as the system prompt for the router LLM call.
    */

@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Custom Object</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == CUSTOM OBJECT XML FORMAT ==
 File path: objects/ObjectName__c.object
 metadataType: CustomObject
@@ -25,6 +31,11 @@ memberName: ObjectName__c
     </nameField>
     <deploymentStatus>Deployed</deploymentStatus>
     <sharingModel>ReadWrite</sharingModel>  <!-- NEW objects with no MasterDetail: ReadWrite. Objects with MasterDetail: MUST be ControlledByParent -->
+    <enableBulkApi>true</enableBulkApi>
+    <enableStreamingApi>true</enableStreamingApi>
+    <enableReports>false</enableReports>       <!-- set true only if ticket explicitly requires reports -->
+    <enableActivities>false</enableActivities> <!-- set true only if ticket explicitly requires activities -->
+    <enableHistory>false</enableHistory>       <!-- set true only if ticket explicitly requires field history -->
 </CustomObject>
 RULE: When creating an object, you MUST also generate:
   - A CustomTab file (see Tab format below)
@@ -70,6 +81,8 @@ memberName: Admin
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Custom Object, Custom Tab and Profile tab visibility XML format</value>
+        <value
+      xsi:type="xsd:string"
+    >Custom Object, Custom Tab and Profile tab visibility XML format</value>
     </values>
 </CustomMetadata>

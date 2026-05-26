@@ -30,6 +30,17 @@ public class LLMXmlSanitizer {
     'Solution' => 'Solution'
   };
 
+  // ── Metadata element defaults (UI-consistent) ──────────────────
+  // To add a new default: add an entry here — no other code changes needed.
+  private static final Map<String, Map<String, String>> METADATA_DEFAULTS = new Map<String, Map<String, String>>{
+    'CustomObject' => new Map<String, String>{
+      'deploymentStatus' => 'Deployed',
+      'sharingModel' => 'ReadWrite',
+      'enableBulkApi' => 'true',
+      'enableStreamingApi' => 'true'
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────
   // XML VALIDATION
   // ─────────────────────────────────────────────────────────────
@@ -1146,6 +1157,54 @@ public class LLMXmlSanitizer {
     }
     String objPart = memberName.substringBefore('-');
     return STANDARD_OBJECTS.contains(objPart);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // INJECT MISSING XML DEFAULTS
+  // Injects UI-consistent default values for any elements absent
+  // from the LLM-generated XML.  To add a new default for any
+  // metadata type, update METADATA_DEFAULTS only — no other
+  // code changes required.
+  // ─────────────────────────────────────────────────────────────
+  public static String injectMissingXmlDefaults(
+    String metadataType,
+    String xml
+  ) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+    Map<String, String> defaults = METADATA_DEFAULTS.get(metadataType);
+    if (defaults == null || defaults.isEmpty()) {
+      return xml;
+    }
+    String closeRoot = '</' + metadataType + '>';
+    if (!xml.contains(closeRoot)) {
+      return xml;
+    }
+    List<String> injected = new List<String>();
+    for (String element : defaults.keySet()) {
+      if (!xml.contains('<' + element + '>')) {
+        String line =
+          '    <' +
+          element +
+          '>' +
+          defaults.get(element) +
+          '</' +
+          element +
+          '>';
+        xml = xml.replace(closeRoot, line + '\n' + closeRoot);
+        injected.add(element);
+      }
+    }
+    if (!injected.isEmpty()) {
+      System.debug(
+        '[SANITIZE] injectMissingXmlDefaults [' +
+          metadataType +
+          ']: injected ' +
+          injected
+      );
+    }
+    return xml;
   }
 
   // ─────────────────────────────────────────────────────────────

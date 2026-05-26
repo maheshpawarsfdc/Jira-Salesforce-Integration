@@ -337,6 +337,15 @@ public class LLMResponseProcessor {
                 ']'
             );
           }
+          xmlContent = LLMXmlSanitizer.injectMissingXmlDefaults(
+            'CustomObject',
+            xmlContent
+          );
+          System.debug(
+            '[DEPLOY-TRACE] injectMissingXmlDefaults applied to [' +
+              filePath +
+              ']'
+          );
         }
 
         if (metadataType == 'Layout') {
@@ -1294,44 +1303,12 @@ public class LLMResponseProcessor {
     );
 
     // ── Build LLM messages ────────────────────────────────────
-    String systemPrompt =
-      'You are a Salesforce Metadata API XML generator.\n' +
-      'Generate ONE file per custom object. Fields are EMBEDDED inside the object XML — do NOT create separate field files.\n\n' +
-      'Return ONLY a JSON object — no markdown, no explanation:\n' +
-      '{\n  "files": [\n' +
-      '    { "metadataType": "CustomObject",\n' +
-      '      "memberName": "<ObjectApiName__c>",\n' +
-      '      "filePath": "objects/<ObjectApiName__c>.object",\n' +
-      '      "xmlContent": "<full XML including all fields>" }\n' +
-      '  ]\n}\n\n' +
-      'CRITICAL FILE PATH RULE:\n' +
-      '  filePath MUST be "objects/<ObjectApiName__c>.object" — example: "objects/Customer_Config__c.object"\n' +
-      '  Do NOT use subdirectories. Do NOT use -meta.xml suffix. Do NOT create separate field files.\n\n' +
-      'CustomObject XML structure:\n' +
-      '<?xml version="1.0" encoding="UTF-8"?>\n' +
-      '<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
-      '  <label>...</label>\n' +
-      '  <pluralLabel>...</pluralLabel>\n' +
-      '  <nameField><label>...</label><type>Text</type></nameField>\n' +
-      '  <deploymentStatus>Deployed</deploymentStatus>\n' +
-      '  <sharingModel>ReadWrite</sharingModel>\n' +
-      '  <fields>... one <fields> block per field ...</fields>\n' +
-      '</CustomObject>\n\n' +
-      'FORBIDDEN at root CustomObject level: <apiName> — the object API name is determined by file path only.\n\n' +
-      'Each field must be wrapped in a <fields>...</fields> element (plural, NOT <field>).\n' +
-      'Inside each <fields> block use ONLY these elements:\n' +
-      '  <fullName>FieldName__c</fullName>  — REQUIRED, the field API name\n' +
-      '  <label>Field Label</label>          — REQUIRED\n' +
-      '  <type>Text</type>                   — REQUIRED (Text, Number, Currency, Percent, Email, Phone, Url, Date, DateTime, Checkbox, Picklist, LongTextArea, TextArea, Lookup)\n' +
-      '  <required>false</required>\n' +
-      '  <trackTrending>false</trackTrending>\n' +
-      '  Text:    <length>255</length>\n' +
-      '  Number/Currency/Percent: <precision>18</precision><scale>2</scale>\n' +
-      '  Checkbox: <defaultValue>false</defaultValue>\n' +
-      '  LongTextArea: <length>32768</length><visibleLines>3</visibleLines>\n' +
-      '  Picklist: <valueSet><valueSetDefinition><sorted>false</sorted><value><fullName>Option1</fullName><default>false</default><label>Option 1</label></value></valueSetDefinition></valueSet>\n' +
-      'DO NOT use <field> (singular) anywhere. DO NOT nest <fields> inside <fields>.\n' +
-      'Escape XML special chars in label values.';
+    String systemPrompt = PromptService.getPromptByKey('CSV_OBJECT_GENERATION');
+    if (String.isBlank(systemPrompt)) {
+      throw new LLMService.LLMException(
+        'generateCustomObjectsFromCsvWithLlm: CSV_OBJECT_GENERATION prompt not found in LLM_Prompt__mdt. Deploy the CMT record.'
+      );
+    }
 
     String userPrompt =
       'Generate Salesforce custom object and field metadata XML for:\n' +
