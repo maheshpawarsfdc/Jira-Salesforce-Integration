@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Field Types</label>
     <protected>false</protected>
     <values>
@@ -8,8 +12,15 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == FIELD TYPE FORMATS ==
+
+== OPTIONAL ELEMENTS — applicable to ALL field types ==
+Include these inside any <fields> block when the ticket specifies them:
+    <description>Internal field description (not visible to users)</description>
+    <inlineHelpText>Help text shown next to the field in the UI</inlineHelpText>
 
 -- Text --
 <fields>
@@ -38,7 +49,7 @@
     <defaultValue>false</defaultValue>
 </fields>
 
--- Date / DateTime / Phone / Email / Url --
+-- Date / DateTime / Phone / Email / Url / Time --
 <fields>
     <fullName>FieldName__c</fullName>
     <label>Field Label</label>
@@ -63,7 +74,73 @@
     <visibleLines>5</visibleLines>
 </fields>
 CRITICAL: <visibleLines> is MANDATORY for LongTextArea — Salesforce will reject the deploy without it.
-Always include <visibleLines> on every LongTextArea field, no exceptions.
+
+-- Html (Rich Text Area) --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Html</type>
+    <length>32768</length>
+    <visibleLines>10</visibleLines>
+</fields>
+CRITICAL: Both <length> and <visibleLines> are MANDATORY for Html type.
+
+-- EncryptedText --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>EncryptedText</type>
+    <length>175</length>
+    <maskChar>asterisk</maskChar>
+    <maskType>all</maskType>
+</fields>
+
+-- AutoNumber (custom field) --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>AutoNumber</type>
+    <displayFormat>REC-{0000}</displayFormat>
+    <startingNumber>1</startingNumber>
+</fields>
+
+-- Geolocation --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Location</type>
+    <scale>5</scale>
+    <displayLocationInDecimal>true</displayLocationInDecimal>
+    <required>false</required>
+</fields>
+
+-- Formula --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Formula</type>
+    <formula>Field1__c + Field2__c</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+    <returnType>Number</returnType>
+    <precision>18</precision>
+    <scale>2</scale>
+</fields>
+FORMULA RETURN TYPES: Text, Number, Currency, Date, DateTime, Checkbox, Percent
+For Text return type: replace precision/scale with <length>255</length>
+For Checkbox/Date/DateTime return type: omit precision, scale, and length entirely.
+
+-- Rollup Summary --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>Summary</type>
+    <summarizedField>ChildObject__c.ChildField__c</summarizedField>
+    <summaryForeignKey>ChildObject__c.ParentLookupField__c</summaryForeignKey>
+    <summaryOperation>SUM</summaryOperation>
+</fields>
+ROLLUP OPS: COUNT, SUM, MIN, MAX.
+For COUNT: omit <summarizedField>. Only valid on Master-Detail parent objects.
+Optional filter: add <summaryFilterItems><field>...</field><operation>equals</operation><value>...</value></summaryFilterItems>
 
 -- Picklist --
 <fields>
@@ -127,8 +204,17 @@ Always include <visibleLines> on every LongTextArea field, no exceptions.
     <writeRequiresMasterRead>false</writeRequiresMasterRead>
 </fields>
 
+-- ExternalLookup --
+<fields>
+    <fullName>FieldName__c</fullName>
+    <label>Field Label</label>
+    <type>ExternalLookup</type>
+    <externalDeveloperName>ExternalObjectApiName</externalDeveloperName>
+    <relationshipName>ChildObject_FieldName</relationshipName>
+</fields>
+
 -- RELATIONSHIP NAME RULES --
-<relationshipName> is REQUIRED on every Lookup / MasterDetail field.
+<relationshipName> is REQUIRED on every Lookup / MasterDetail / ExternalLookup field.
 You MUST include the <relationshipName> tag. A reasonable default is {ChildObjectWithout__c}_{FieldNameWithout__c}.
 Apex will AUTOMATICALLY rewrite the <relationshipName> value to a unique hash-suffixed name
 (e.g. Reservation_AI_Message_7A3F2C) before the XML is deployed. This prevents collisions
@@ -151,10 +237,12 @@ CRITICAL RULE: When a MasterDetail field exists, the object sharingModel MUST be
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">All field type XML formats: Text, Number, Picklist, Lookup, MasterDetail etc.</value>
+        <value
+      xsi:type="xsd:string"
+    >All field type XML formats: Text, Number, Picklist, Lookup, MasterDetail etc.</value>
     </values>
 </CustomMetadata>

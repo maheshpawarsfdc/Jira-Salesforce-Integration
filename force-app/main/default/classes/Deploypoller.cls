@@ -214,14 +214,15 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
       }
     } catch (Exception e) {
       System.debug('DeployPoller: ERROR - ' + e.getMessage());
-      ErrorLogger.log(e, issueKey);
       String exceptionMsg =
         'Deploy poller error: ' +
         e.getMessage() +
         ' | ' +
         e.getStackTraceString();
+      // Callout BEFORE any DML — Salesforce forbids callout after uncommitted DML
       postStatusToJira(issueKey, 'error', exceptionMsg, jobId);
       abortPollerJobsForThisDeploy();
+      ErrorLogger.log(e, issueKey);
     }
   }
 
@@ -275,7 +276,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   // CRON BUILDER — returns a cron expression for ~2 seconds from now
   // ─────────────────────────────────────────────────────────────
   private String buildCronIn2Seconds() {
-    Datetime dt = Datetime.now().addSeconds(2);
+    Datetime dt = Datetime.now().addSeconds(5);
     return dt.second() +
       ' ' +
       dt.minute() +

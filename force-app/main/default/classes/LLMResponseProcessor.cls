@@ -868,6 +868,9 @@ public class LLMResponseProcessor {
       zip2Files,
       zip2MetadataTypes
     );
+    // Inject default FLS (fieldPermissions) for all new custom fields
+    // into every Profile file already staged in ZipBuilder
+    LLMXmlSanitizer.injectDefaultFieldPermissions(files);
 
     // ── Promote backstop layout files into ZIP1 for single deploys ─────────
     // When adding fields to an existing object (deployScenario='single'),
@@ -1436,6 +1439,9 @@ public class LLMResponseProcessor {
       );
       count++;
     }
+
+    // Inject default FLS for all new custom fields into any Profile files staged
+    LLMXmlSanitizer.injectDefaultFieldPermissions(files);
 
     System.debug(
       'generateCustomObjectsFromCsvWithLlm: ' +
