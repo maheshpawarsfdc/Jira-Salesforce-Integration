@@ -305,6 +305,51 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // PERMISSION SET XML SANITIZER
+  // Corrects element names the LLM commonly gets wrong
+  // ─────────────────────────────────────────────────────────────
+  public static String sanitizePermissionSetXml(String xml) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+
+    xml = xml.replace('<apexClassAccesses>', '<classAccesses>')
+      .replace('</apexClassAccesses>', '</classAccesses>')
+      .replace('<apexPageAccesses>', '<pageAccesses>')
+      .replace('</apexPageAccesses>', '</pageAccesses>')
+      .replace('<vfPageAccesses>', '<pageAccesses>')
+      .replace('</vfPageAccesses>', '</pageAccesses>')
+      .replace('<visualforcePageAccesses>', '<pageAccesses>')
+      .replace('</visualforcePageAccesses>', '</pageAccesses>')
+      .replace('<flowDefinitionAccesses>', '<flowAccesses>')
+      .replace('</flowDefinitionAccesses>', '</flowAccesses>')
+      .replace('<connectedAppVisibilities>', '<connectedAppAccesses>')
+      .replace('</connectedAppVisibilities>', '</connectedAppAccesses>');
+
+    // Strip elements confirmed invalid in PermissionSet metadata schema
+    List<String> unsupportedBlocks = new List<String>{
+      'agentAccesses',
+      'connectedAppAccesses',
+      'namedCredentialAccesses'
+    };
+    for (String tag : unsupportedBlocks) {
+      xml = xml.replaceAll('(?s)\\s*<' + tag + '>.*?</' + tag + '>', '');
+    }
+
+    // Inject missing <viewAllFields>false</viewAllFields> into every
+    // objectPermissions block that lacks it (required 7th boolean child)
+    if (xml.contains('<objectPermissions>')) {
+      xml = xml.replaceAll('(?s)\\s*<viewAllFields>[^<]*</viewAllFields>', '');
+      xml = xml.replace(
+        '<viewAllRecords>',
+        '<viewAllFields>false</viewAllFields>\n        <viewAllRecords>'
+      );
+    }
+
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // AUTH PROVIDER XML SANITIZER
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeAuthProviderXml(String xml) {

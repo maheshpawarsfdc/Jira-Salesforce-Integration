@@ -496,11 +496,18 @@ public class PermissionSetHelper {
       'recordTypeVisibilities',
       'tabSettings',
       'applicationVisibilities',
+      'connectedAppAccesses',
       'customPermissions',
       'customMetadataTypeAccesses',
       'customSettingAccesses',
       'externalDataSourceAccesses',
-      'flowAccesses'
+      'externalCredentialPrincipalAccesses',
+      'flowAccesses',
+      'namedCredentialAccesses',
+      'organizationWideEmailAddressAccesses',
+      'servicePresenceStatusAccesses',
+      'standardInvocableActionAccesses',
+      'agentAccesses'
     };
 
     String merged = baseXml;

@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Permission Set</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == PERMISSION SET RULES ==
 Permission Sets have TWO different paths depending on the operation.
 
@@ -57,12 +63,120 @@ With object + field permissions:
         <readable>true</readable>
     </fieldPermissions>
 </PermissionSet>
+With Apex class access:
+<classAccesses>
+    <apexClass>MyApexClass</apexClass>
+    <enabled>true</enabled>
+</classAccesses>
+
+With Visualforce page access:
+<pageAccesses>
+    <apexPage>MyVFPage</apexPage>
+    <enabled>true</enabled>
+</pageAccesses>
+
+With Flow access:
+<flowAccesses>
+    <enabled>true</enabled>
+    <flow>My_Flow_API_Name</flow>
+</flowAccesses>
+
+With tab visibility:
+<tabSettings>
+    <tab>MyObject__c</tab>
+    <visibility>Visible</visibility>
+</tabSettings>
+Valid visibility values: Visible, Hidden, DefaultOn, DefaultOff
+
+With app visibility:
+<applicationVisibilities>
+    <application>MyApp</application>
+    <visible>true</visible>
+</applicationVisibilities>
+
+NOTE: <connectedAppAccesses> and <namedCredentialAccesses> are NOT valid in PermissionSet metadata XML — Salesforce rejects them. Do NOT generate these blocks. Connected App and Named Credential access must be assigned manually via Setup after deployment.
+
+With External Credential Principal access:
+<externalCredentialPrincipalAccesses>
+    <enabled>true</enabled>
+    <externalCredentialPrincipal>My_Credential_Principal</externalCredentialPrincipal>
+</externalCredentialPrincipalAccesses>
+
+With External Data Source access:
+<externalDataSourceAccesses>
+    <enabled>true</enabled>
+    <externalDataSource>My_External_Source</externalDataSource>
+</externalDataSourceAccesses>
+
+With Service Presence Status access:
+<servicePresenceStatusAccesses>
+    <servicePresenceStatus>My_Presence_Status</servicePresenceStatus>
+    <visible>true</visible>
+</servicePresenceStatusAccesses>
+
+With Custom Permission:
+<customPermissions>
+    <enabled>true</enabled>
+    <name>My_Custom_Permission</name>
+</customPermissions>
+
+With Custom Metadata Type access:
+<customMetadataTypeAccesses>
+    <enabled>true</enabled>
+    <name>My_CMT__mdt</name>
+</customMetadataTypeAccesses>
+
+With Custom Setting access:
+<customSettingAccesses>
+    <enabled>true</enabled>
+    <name>My_Custom_Setting__c</name>
+</customSettingAccesses>
+
+With Org-Wide Email Address access:
+<organizationWideEmailAddressAccesses>
+    <enabled>true</enabled>
+    <organizationWideEmailAddress>noreply@example.com</organizationWideEmailAddress>
+</organizationWideEmailAddressAccesses>
+
+With Standard Invocable Action access:
+<standardInvocableActionAccesses>
+    <enabled>true</enabled>
+    <name>ActionName</name>
+    <type>apex</type>
+</standardInvocableActionAccesses>
+
+With Agent access:
+<agentAccesses>
+    <agentName>MyAgent</agentName>
+    <enabled>true</enabled>
+</agentAccesses>
+
+With User Permission (system-level):
+<userPermissions>
+    <enabled>true</enabled>
+    <name>ApiEnabled</name>
+</userPermissions>
+
+With Record Type visibility:
+<recordTypeVisibilities>
+    <default>false</default>
+    <recordType>MyObject__c.MyRecordType</recordType>
+    <visible>true</visible>
+</recordTypeVisibilities>
+
 RULES:
-- Every objectPermissions block needs ALL six boolean children: allowCreate, allowDelete, allowEdit, allowRead, modifyAllRecords, viewAllRecords
 - fieldPermissions: editable and readable are the only children needed
 - If granting field access, always also include an objectPermissions block with at least allowRead=true
 - For DELETE: use destructiveFiles with metadataType PermissionSet and member = API name
-- Do NOT use dmlOperations for Permission Set create/update/delete — only for permissionSetClone]]></value>
+- Do NOT use dmlOperations for Permission Set create/update/delete — only for permissionSetClone
+- Only include block types that the ticket explicitly requests — do not add blocks that were not mentioned
+-- NEVER --
+- Never use <apexClassAccesses> — the correct element is <classAccesses>
+- Never use <apexPageAccesses> or <vfPageAccesses> — the correct element is <pageAccesses>
+- Never use <flowDefinitionAccesses> — the correct element is <flowAccesses>
+- Never use <connectedAppAccesses> — this element does NOT exist in the PermissionSet metadata schema; Connected App access must be assigned via UI after deployment
+- Never use <namedCredentialAccesses> — this element does NOT exist in the PermissionSet metadata schema; Named Credential access must be assigned via UI after deployment
+- Never use <agentAccesses> — this element does NOT exist in the PermissionSet metadata schema]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>
@@ -78,10 +192,12 @@ RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Permission Set XML: clone via dmlOperations, create/update via files[]</value>
+        <value
+      xsi:type="xsd:string"
+    >Permission Set XML: clone via dmlOperations, create/update via files[]</value>
     </values>
 </CustomMetadata>

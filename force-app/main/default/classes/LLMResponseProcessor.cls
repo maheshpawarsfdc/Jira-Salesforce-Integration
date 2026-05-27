@@ -297,8 +297,14 @@ public class LLMResponseProcessor {
         );
 
         if (metadataType == 'PermissionSet') {
+          xmlContent = LLMXmlSanitizer.sanitizePermissionSetXml(xmlContent);
           xmlContent = PermissionSetHelper.ensureParentReadAccessForXml(
             xmlContent
+          );
+          // Strip viewAllFields again — parent injector may reintroduce it
+          xmlContent = xmlContent.replaceAll(
+            '(?s)\\s*<viewAllFields>[^<]*</viewAllFields>',
+            ''
           );
         }
 
@@ -794,6 +800,11 @@ public class LLMResponseProcessor {
           }
           xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
             xmlContent
+          );
+          // Final safety strip — remove viewAllFields which is invalid in PS metadata v61+
+          xmlContent = xmlContent.replaceAll(
+            '(?s)\\s*<viewAllFields>[^<]*</viewAllFields>',
+            ''
           );
         }
 

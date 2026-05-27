@@ -5,5 +5,9 @@
 		<members>Error_Log__c</members>
 		<name>CustomObject</name>
 	</types>
+	<types>
+		<members>Car_Manager</members>
+		<name>PermissionSet</name>
+	</types>
 	<version>65.0</version>
 </Package>
