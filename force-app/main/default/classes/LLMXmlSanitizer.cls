@@ -239,6 +239,15 @@ public class LLMXmlSanitizer {
       if (xmlContent.contains('<urlSuffix>')) {
         return 'Invalid element <urlSuffix> — this element does not exist in AuthProvider metadata XML';
       }
+      if (xmlContent.contains('<customErrorUrl>')) {
+        return 'Invalid element <customErrorUrl> — correct element name is <errorUrl>';
+      }
+      if (xmlContent.contains('<customLogoutUrl>')) {
+        return 'Invalid element <customLogoutUrl> — correct element name is <logoutUrl>';
+      }
+      if (xmlContent.contains('<tokenIssuer>')) {
+        return 'Invalid element <tokenIssuer> — Token Issuer is not supported in AuthProvider metadata XML; set it manually via Setup after deployment';
+      }
 
       Set<String> validTypes = new Set<String>{
         'Apple',
@@ -267,9 +276,10 @@ public class LLMXmlSanitizer {
             ']. Valid values: ' +
             String.join(new List<String>(validTypes), ', ');
         }
+        // Types that have no URL fields (OAuth 1.0a or key-based)
+        Set<String> NO_URL_TYPES = new Set<String>{ 'Twitter', 'Apple' };
         if (
-          (pt == 'OpenIdConnect' || pt == 'MicrosoftACS') &&
-          !xmlContent.contains('<authorizeUrl>')
+          !NO_URL_TYPES.contains(pt) && !xmlContent.contains('<authorizeUrl>')
         ) {
           return 'providerType ' +
             pt +
@@ -305,6 +315,10 @@ public class LLMXmlSanitizer {
     List<String> forbiddenTags = new List<String>{
       'developerName',
       'fullName',
+      'keyId',
+      'servicesId',
+      'teamId',
+      'tokenIssuer',
       'urlSuffix'
     };
     for (String tag : forbiddenTags) {
@@ -316,11 +330,32 @@ public class LLMXmlSanitizer {
       .replace('<authorizeEndpointUrl>', '<authorizeUrl>')
       .replace('</authorizeEndpointUrl>', '</authorizeUrl>')
       .replace('<scope>', '<defaultScopes>')
-      .replace('</scope>', '</defaultScopes>');
+      .replace('</scope>', '</defaultScopes>')
+      .replace('<customErrorUrl>', '<errorUrl>')
+      .replace('</customErrorUrl>', '</errorUrl>')
+      .replace('<customLogoutUrl>', '<logoutUrl>')
+      .replace('</customLogoutUrl>', '</logoutUrl>');
 
     if (!xml.contains('<friendlyName>') && xml.contains('<name>')) {
       xml = xml.replace('<name>', '<friendlyName>')
         .replace('</name>', '</friendlyName>');
+    }
+
+    // Force isPkceEnabled=false for types that Salesforce rejects PKCE on
+    Set<String> NO_PKCE_TYPES = new Set<String>{
+      'Apple',
+      'GitHub',
+      'Janrain',
+      'MicrosoftACS',
+      'Twitter'
+    };
+    Pattern ptPkce = Pattern.compile('<providerType>([^<]+)</providerType>');
+    Matcher mtPkce = ptPkce.matcher(xml);
+    if (mtPkce.find() && NO_PKCE_TYPES.contains(mtPkce.group(1).trim())) {
+      xml = xml.replaceAll(
+        '<isPkceEnabled>true</isPkceEnabled>',
+        '<isPkceEnabled>false</isPkceEnabled>'
+      );
     }
 
     return xml;
