@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Layout</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == PAGE LAYOUT XML FORMAT ==
 File path: layouts/{ObjectName}-{LayoutName}.layout
 metadataType: Layout
@@ -25,7 +31,7 @@ memberName: {ObjectName}-{LayoutName}  (e.g. Car__c-Car Layout)
         <layoutColumns>
             <!-- LEFT COLUMN items (even-indexed fields: 0, 2, 4...) -->
             <layoutItems>
-                <behavior>Required</behavior>
+                <behavior>Edit</behavior>
                 <field>Name</field>
             </layoutItems>
             <layoutItems>
@@ -50,7 +56,8 @@ memberName: {ObjectName}-{LayoutName}  (e.g. Car__c-Car Layout)
 3. Field distribution: Left column gets even-indexed fields (0,2,4...), Right gets odd-indexed (1,3,5...)
 4. behavior values — CRITICAL:
    a) If field is ALREADY PRESENT in existing layout in org state: USE EXACT BEHAVIOR FROM ORG STATE
-   b) If field is NEW: "Readonly" for system/AutoNumber fields; "Required" for required fields and Text Name; "Edit" for all others
+   b) Name field ONLY: use "Readonly" if nameField type is AutoNumber; use "Edit" if nameField type is Text — NEVER use "Required" for Name
+   c) If field is NEW (non-Name): "Required" for fields marked required; "Edit" for all others
 5. style is always TwoColumnsTopToBottom
 6. customLabel, detailHeading, editHeading are always true
 7. EVERY <layoutItems> MUST have a non-empty <field> and non-empty <behavior>
@@ -118,10 +125,12 @@ Standard object layouts already exist — only reference them in Profile <layout
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Page Layout XML format, rules, and all scenarios (A-F)</value>
+        <value
+      xsi:type="xsd:string"
+    >Page Layout XML format, rules, and all scenarios (A-F)</value>
     </values>
 </CustomMetadata>

@@ -351,6 +351,34 @@ public class LLMResponseProcessor {
         if (metadataType == 'Layout') {
           xmlContent = LLMXmlSanitizer.sanitizeLayoutXml(xmlContent);
 
+          if (memberName != null && memberName.contains('-')) {
+            String layoutParentObj = memberName.substringBefore('-');
+            String nameFieldType = 'Text';
+            for (Object f2Raw : files) {
+              Map<String, Object> f2 = (Map<String, Object>) f2Raw;
+              if (
+                'CustomObject'.equals(f2.get('metadataType')) &&
+                layoutParentObj.equals(f2.get('memberName'))
+              ) {
+                String coXml = (String) f2.get('xmlContent');
+                if (String.isNotBlank(coXml)) {
+                  Pattern nfPat = Pattern.compile(
+                    '(?s)<nameField>.*?<type>(\\w+)</type>.*?</nameField>'
+                  );
+                  Matcher nfMat = nfPat.matcher(coXml);
+                  if (nfMat.find()) {
+                    nameFieldType = nfMat.group(1).trim();
+                  }
+                }
+                break;
+              }
+            }
+            xmlContent = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(
+              xmlContent,
+              nameFieldType
+            );
+          }
+
           if (
             memberName != null &&
             memberName.contains('-') &&

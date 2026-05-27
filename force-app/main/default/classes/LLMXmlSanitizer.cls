@@ -868,20 +868,40 @@ public class LLMXmlSanitizer {
       );
     }
 
+    // Strip layoutItems with no valid content element at all
+    // (e.g. behavior-only, or completely empty — Salesforce rejects these)
+    List<Pattern> noContentPatterns = new List<Pattern>{
+      Pattern.compile(
+        '(?s)\\s*<layoutItems>\\s*<behavior>[^<]*</behavior>\\s*</layoutItems>'
+      ),
+      Pattern.compile('(?s)\\s*<layoutItems>\\s*</layoutItems>')
+    };
+    for (Pattern p : noContentPatterns) {
+      Matcher m = p.matcher(cleaned);
+      String after = m.replaceAll('');
+      if (after != cleaned) {
+        System.debug(
+          '[DEPLOY-TRACE] sanitizeLayoutXml: removed layoutItems with no valid content element'
+        );
+        cleaned = after;
+      }
+    }
+
     if (cleaned.contains('<field>Name</field>')) {
-      // Enforce Name field is always Required, regardless of LLM output
+      // Enforce Name field uses Edit behavior — Salesforce rejects Required
+      // on the Name field in layout XML (it is implicitly required at object level)
       String beforeNameFix = cleaned;
       cleaned = cleaned.replaceAll(
-        '<behavior>(Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
-        '<behavior>Required</behavior>$2<field>Name</field>'
+        '<behavior>Required</behavior>(\\s*)<field>Name</field>',
+        '<behavior>Edit</behavior>$1<field>Name</field>'
       );
       cleaned = cleaned.replaceAll(
-        '<field>Name</field>(\\s*)<behavior>(Edit|Readonly)</behavior>',
-        '<field>Name</field>$1<behavior>Required</behavior>'
+        '<field>Name</field>(\\s*)<behavior>Required</behavior>',
+        '<field>Name</field>$1<behavior>Edit</behavior>'
       );
       if (cleaned != beforeNameFix) {
         System.debug(
-          '[DEPLOY-TRACE] sanitizeLayoutXml: enforced Required behavior on Name field'
+          '[DEPLOY-TRACE] sanitizeLayoutXml: corrected Name field behavior to Edit'
         );
       }
     } else if (cleaned.contains('<layoutColumns>')) {
@@ -891,7 +911,7 @@ public class LLMXmlSanitizer {
         cleaned.indexOf('<layoutColumns>') + '<layoutColumns>'.length();
       String nameItem =
         '\n            <layoutItems>\n' +
-        '                <behavior>Required</behavior>\n' +
+        '                <behavior>Edit</behavior>\n' +
         '                <field>Name</field>\n' +
         '            </layoutItems>';
       cleaned =
@@ -1157,6 +1177,42 @@ public class LLMXmlSanitizer {
     }
     String objPart = memberName.substringBefore('-');
     return STANDARD_OBJECTS.contains(objPart);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // NAME FIELD BEHAVIOR FIX FOR LAYOUTS
+  // Salesforce enforces different Name behavior per nameField type:
+  //   AutoNumber  → Readonly  (system-generated, cannot be edited)
+  //   Text        → Edit      (user-entered, never Required)
+  // Called after sanitizeLayoutXml so context from sibling CustomObject
+  // XML can be passed in — no other code changes needed to add new types.
+  // ─────────────────────────────────────────────────────────────
+  public static String fixNameFieldBehaviorInLayout(
+    String xml,
+    String nameFieldType
+  ) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+    String correctBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
+      ? 'Readonly'
+      : 'Edit';
+    xml = xml.replaceAll(
+      '<behavior>(Required|Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
+      '<behavior>' + correctBehavior + '</behavior>$2<field>Name</field>'
+    );
+    xml = xml.replaceAll(
+      '<field>Name</field>(\\s*)<behavior>(Required|Edit|Readonly)</behavior>',
+      '<field>Name</field>$1<behavior>' + correctBehavior + '</behavior>'
+    );
+    System.debug(
+      '[SANITIZE] fixNameFieldBehaviorInLayout: nameFieldType=[' +
+        nameFieldType +
+        '] → behavior=[' +
+        correctBehavior +
+        ']'
+    );
+    return xml;
   }
 
   // ─────────────────────────────────────────────────────────────
