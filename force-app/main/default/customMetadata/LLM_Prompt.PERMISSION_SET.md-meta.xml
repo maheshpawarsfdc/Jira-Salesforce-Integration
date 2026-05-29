@@ -196,13 +196,9 @@ RULES:
     <values>
         <field>Depends_On__c</field>
         <value xsi:type="xsd:string" />
-        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value
-      xsi:type="xsd:string"
-    >Permission Set XML: clone via dmlOperations, create/update via files[]</value>
         <value
       xsi:type="xsd:string"
     >Permission Set XML: clone via dmlOperations, create/update via files[]</value>
