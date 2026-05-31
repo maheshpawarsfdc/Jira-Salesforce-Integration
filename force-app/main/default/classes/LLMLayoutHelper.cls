@@ -374,7 +374,7 @@ public class LLMLayoutHelper {
         : objApi;
       String layoutMember = objApi + '-' + objLabel + ' Layout';
       String layoutPath = 'layouts/' + layoutMember + '.layout';
-      String layoutXml = buildDefaultLayoutXml(fieldInfos);
+      String layoutXml = buildDefaultLayoutXml(fieldInfos, objApi);
 
       zip2Files.put(layoutPath, layoutXml);
       if (!zip2MetadataTypes.containsKey('Layout')) {
@@ -442,6 +442,27 @@ public class LLMLayoutHelper {
       List<String> rightBehaviors = toStringList(sec.get('rightBehaviors'));
 
       if (!injected && label == 'Information') {
+        // Ensure Name field is present at the start of Information section (Salesforce requirement)
+        Boolean nameAlreadyPresent = false;
+        for (String f : leftFields) {
+          if ('Name'.equalsIgnoreCase(f)) {
+            nameAlreadyPresent = true;
+            break;
+          }
+        }
+        if (!nameAlreadyPresent) {
+          for (String f : rightFields) {
+            if ('Name'.equalsIgnoreCase(f)) {
+              nameAlreadyPresent = true;
+              break;
+            }
+          }
+        }
+        if (!nameAlreadyPresent) {
+          leftFields.add(0, 'Name');
+          leftBehaviors.add(0, 'Edit'); // Will be corrected below based on object type
+        }
+
         for (String f : newFields) {
           Integer total = leftFields.size() + rightFields.size();
           if (Math.mod(total, 2) == 0) {
@@ -524,6 +545,25 @@ public class LLMLayoutHelper {
     }
 
     xml += '</Layout>';
+
+    // Fix Name field behavior per object's nameField type before returning
+    // (AutoNumber → Readonly, Text → Edit; NEVER Required)
+    String fullName = (String) layoutStructure.get('fullName');
+    if (String.isNotBlank(fullName) && fullName.contains('-')) {
+      try {
+        String parentObj = fullName.substringBefore('-');
+        String nameFieldType = LLMOrgStateService.getObjectNameFieldType(
+          parentObj
+        );
+        xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(xml, nameFieldType);
+      } catch (Exception ex) {
+        System.debug(
+          '[DEPLOY-TRACE] rebuildLayoutXmlWithNewFields: could not fix Name behavior: ' +
+          ex.getMessage()
+        );
+      }
+    }
+
     return xml;
   }
 
@@ -532,6 +572,13 @@ public class LLMLayoutHelper {
   // ─────────────────────────────────────────────────────────────
   public static String buildDefaultLayoutXml(
     List<Map<String, String>> fieldInfos
+  ) {
+    return buildDefaultLayoutXml(fieldInfos, null);
+  }
+
+  public static String buildDefaultLayoutXml(
+    List<Map<String, String>> fieldInfos,
+    String objectApiName
   ) {
     String s = '<?xml version="1.0" encoding="UTF-8"?>\n';
     s += '<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n';
@@ -542,7 +589,26 @@ public class LLMLayoutHelper {
     s += '        <label>Information</label>\n';
     s += '        <layoutColumns>\n';
     s += '            <layoutItems>\n';
-    s += '                <behavior>Required</behavior>\n';
+
+    // Determine correct Name field behavior based on object's nameField type
+    String nameBehavior = 'Edit';
+    if (String.isNotBlank(objectApiName)) {
+      try {
+        String nameFieldType = LLMOrgStateService.getObjectNameFieldType(
+          objectApiName
+        );
+        nameBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
+          ? 'Readonly'
+          : 'Edit';
+      } catch (Exception ex) {
+        System.debug(
+          '[DEPLOY-TRACE] buildDefaultLayoutXml: could not determine Name behavior: ' +
+          ex.getMessage()
+        );
+      }
+    }
+
+    s += '                <behavior>' + nameBehavior + '</behavior>\n';
     s += '                <field>Name</field>\n';
     s += '            </layoutItems>\n';
     if (fieldInfos != null) {

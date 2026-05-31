@@ -985,22 +985,12 @@ public class LLMXmlSanitizer {
     }
 
     if (cleaned.contains('<field>Name</field>')) {
-      // Enforce Name field uses Edit behavior — Salesforce rejects Required
-      // on the Name field in layout XML (it is implicitly required at object level)
-      String beforeNameFix = cleaned;
-      cleaned = cleaned.replaceAll(
-        '<behavior>Required</behavior>(\\s*)<field>Name</field>',
-        '<behavior>Edit</behavior>$1<field>Name</field>'
+      // Name field behavior is handled by fixNameFieldBehaviorInLayout()
+      // which runs after sanitizeLayoutXml with the correct nameFieldType.
+      // Do NOT modify Name behavior here — leave it as-is.
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeLayoutXml: Name field present — behavior will be set by fixNameFieldBehaviorInLayout'
       );
-      cleaned = cleaned.replaceAll(
-        '<field>Name</field>(\\s*)<behavior>Required</behavior>',
-        '<field>Name</field>$1<behavior>Edit</behavior>'
-      );
-      if (cleaned != beforeNameFix) {
-        System.debug(
-          '[DEPLOY-TRACE] sanitizeLayoutXml: corrected Name field behavior to Edit'
-        );
-      }
     } else if (cleaned.contains('<layoutColumns>')) {
       // Name is absent entirely — inject it at the top of the first column.
       // Salesforce requires Name on every layout; LLMs often omit it.
@@ -1293,7 +1283,7 @@ public class LLMXmlSanitizer {
     }
     String correctBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
       ? 'Readonly'
-      : 'Edit';
+      : 'Required';
     xml = xml.replaceAll(
       '<behavior>(Required|Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
       '<behavior>' + correctBehavior + '</behavior>$2<field>Name</field>'

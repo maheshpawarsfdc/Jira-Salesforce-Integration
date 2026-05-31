@@ -1911,4 +1911,87 @@ public class LLMOrgStateService {
     );
     return null;
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // GET CUSTOM OBJECT NAME FIELD TYPE
+  // Returns 'Text', 'AutoNumber', or defaults to 'Text' on error
+  // ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // GET CUSTOM OBJECT NAME FIELD TYPE
+  // Returns 'Text', 'AutoNumber', or defaults to 'Text' on error
+  // ─────────────────────────────────────────────────────────────
+  public static String getObjectNameFieldType(String objectApiName) {
+    if (String.isBlank(objectApiName)) {
+      return 'Text';
+    }
+    try {
+      String developerName = objectApiName.endsWith('__c')
+        ? objectApiName.removeEnd('__c')
+        : objectApiName;
+
+      String query =
+        'SELECT Id, DeveloperName, NamespacePrefix, Metadata FROM CustomObject' +
+        ' WHERE DeveloperName = \'' +
+        String.escapeSingleQuotes(developerName) +
+        '\'' +
+        ' LIMIT 1';
+
+      Map<String, Object> result = MetadataHelper.runToolingApiQuery(query);
+      List<Object> records = (List<Object>) result.get('records');
+
+      if (records != null && !records.isEmpty()) {
+        Map<String, Object> rec = (Map<String, Object>) records[0];
+        Object metadataRaw = rec.get('Metadata');
+
+        if (metadataRaw instanceof Map<String, Object>) {
+          Map<String, Object> metadata = (Map<String, Object>) metadataRaw;
+          Object nameFieldRaw = metadata.get('nameField');
+          if (nameFieldRaw instanceof Map<String, Object>) {
+            Map<String, Object> nameField = (Map<String, Object>) nameFieldRaw;
+            String type = (String) nameField.get('type');
+            if (String.isNotBlank(type)) {
+              System.debug(
+                '[DEPLOY-TRACE] getObjectNameFieldType: [' +
+                  objectApiName +
+                  '] type=' +
+                  type
+              );
+              return type;
+            }
+          }
+        } else if (metadataRaw instanceof String) {
+          String metadataJson = (String) metadataRaw;
+          Pattern pat = Pattern.compile(
+            '(?s)"nameField"\\s*:\\s*\\{.*?"type"\\s*:\\s*"([^\\"]+)"'
+          );
+          Matcher mat = pat.matcher(metadataJson);
+          if (mat.find()) {
+            String type = mat.group(1);
+            System.debug(
+              '[DEPLOY-TRACE] getObjectNameFieldType: [' +
+                objectApiName +
+                '] type=' +
+                type
+            );
+            return type;
+          }
+        }
+
+        System.debug(
+          '[DEPLOY-TRACE] getObjectNameFieldType: [' +
+            objectApiName +
+            '] no type found, falling back to Text'
+        );
+        return 'Text';
+      }
+    } catch (Exception e) {
+      System.debug(
+        '[DEPLOY-TRACE] getObjectNameFieldType failed for [' +
+          objectApiName +
+          ']: ' +
+          e.getMessage()
+      );
+    }
+    return 'Text';
+  }
 }
