@@ -297,8 +297,14 @@ public class LLMResponseProcessor {
         );
 
         if (metadataType == 'PermissionSet') {
+          xmlContent = LLMXmlSanitizer.sanitizePermissionSetXml(xmlContent);
           xmlContent = PermissionSetHelper.ensureParentReadAccessForXml(
             xmlContent
+          );
+          // Strip viewAllFields again — parent injector may reintroduce it
+          xmlContent = xmlContent.replaceAll(
+            '(?s)\\s*<viewAllFields>[^<]*</viewAllFields>',
+            ''
           );
         }
 
@@ -350,6 +356,34 @@ public class LLMResponseProcessor {
 
         if (metadataType == 'Layout') {
           xmlContent = LLMXmlSanitizer.sanitizeLayoutXml(xmlContent);
+
+          if (memberName != null && memberName.contains('-')) {
+            String layoutParentObj = memberName.substringBefore('-');
+            String nameFieldType = 'Text';
+            for (Object f2Raw : files) {
+              Map<String, Object> f2 = (Map<String, Object>) f2Raw;
+              if (
+                'CustomObject'.equals(f2.get('metadataType')) &&
+                layoutParentObj.equals(f2.get('memberName'))
+              ) {
+                String coXml = (String) f2.get('xmlContent');
+                if (String.isNotBlank(coXml)) {
+                  Pattern nfPat = Pattern.compile(
+                    '(?s)<nameField>.*?<type>(\\w+)</type>.*?</nameField>'
+                  );
+                  Matcher nfMat = nfPat.matcher(coXml);
+                  if (nfMat.find()) {
+                    nameFieldType = nfMat.group(1).trim();
+                  }
+                }
+                break;
+              }
+            }
+            xmlContent = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(
+              xmlContent,
+              nameFieldType
+            );
+          }
 
           if (
             memberName != null &&
@@ -767,6 +801,11 @@ public class LLMResponseProcessor {
           xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
             xmlContent
           );
+          // Final safety strip — remove viewAllFields which is invalid in PS metadata v61+
+          xmlContent = xmlContent.replaceAll(
+            '(?s)\\s*<viewAllFields>[^<]*</viewAllFields>',
+            ''
+          );
         }
 
         ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
@@ -840,6 +879,9 @@ public class LLMResponseProcessor {
       zip2Files,
       zip2MetadataTypes
     );
+    // Inject default FLS (fieldPermissions) for all new custom fields
+    // into every Profile file already staged in ZipBuilder
+    LLMXmlSanitizer.injectDefaultFieldPermissions(files);
 
     // ── Promote backstop layout files into ZIP1 for single deploys ─────────
     // When adding fields to an existing object (deployScenario='single'),
@@ -1408,6 +1450,9 @@ public class LLMResponseProcessor {
       );
       count++;
     }
+
+    // Inject default FLS for all new custom fields into any Profile files staged
+    LLMXmlSanitizer.injectDefaultFieldPermissions(files);
 
     System.debug(
       'generateCustomObjectsFromCsvWithLlm: ' +

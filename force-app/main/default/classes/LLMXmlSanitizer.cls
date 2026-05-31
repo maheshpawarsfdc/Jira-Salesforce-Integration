@@ -239,6 +239,15 @@ public class LLMXmlSanitizer {
       if (xmlContent.contains('<urlSuffix>')) {
         return 'Invalid element <urlSuffix> — this element does not exist in AuthProvider metadata XML';
       }
+      if (xmlContent.contains('<customErrorUrl>')) {
+        return 'Invalid element <customErrorUrl> — correct element name is <errorUrl>';
+      }
+      if (xmlContent.contains('<customLogoutUrl>')) {
+        return 'Invalid element <customLogoutUrl> — correct element name is <logoutUrl>';
+      }
+      if (xmlContent.contains('<tokenIssuer>')) {
+        return 'Invalid element <tokenIssuer> — Token Issuer is not supported in AuthProvider metadata XML; set it manually via Setup after deployment';
+      }
 
       Set<String> validTypes = new Set<String>{
         'Apple',
@@ -267,9 +276,10 @@ public class LLMXmlSanitizer {
             ']. Valid values: ' +
             String.join(new List<String>(validTypes), ', ');
         }
+        // Types that have no URL fields (OAuth 1.0a or key-based)
+        Set<String> NO_URL_TYPES = new Set<String>{ 'Twitter', 'Apple' };
         if (
-          (pt == 'OpenIdConnect' || pt == 'MicrosoftACS') &&
-          !xmlContent.contains('<authorizeUrl>')
+          !NO_URL_TYPES.contains(pt) && !xmlContent.contains('<authorizeUrl>')
         ) {
           return 'providerType ' +
             pt +
@@ -295,6 +305,51 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // PERMISSION SET XML SANITIZER
+  // Corrects element names the LLM commonly gets wrong
+  // ─────────────────────────────────────────────────────────────
+  public static String sanitizePermissionSetXml(String xml) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+
+    xml = xml.replace('<apexClassAccesses>', '<classAccesses>')
+      .replace('</apexClassAccesses>', '</classAccesses>')
+      .replace('<apexPageAccesses>', '<pageAccesses>')
+      .replace('</apexPageAccesses>', '</pageAccesses>')
+      .replace('<vfPageAccesses>', '<pageAccesses>')
+      .replace('</vfPageAccesses>', '</pageAccesses>')
+      .replace('<visualforcePageAccesses>', '<pageAccesses>')
+      .replace('</visualforcePageAccesses>', '</pageAccesses>')
+      .replace('<flowDefinitionAccesses>', '<flowAccesses>')
+      .replace('</flowDefinitionAccesses>', '</flowAccesses>')
+      .replace('<connectedAppVisibilities>', '<connectedAppAccesses>')
+      .replace('</connectedAppVisibilities>', '</connectedAppAccesses>');
+
+    // Strip elements confirmed invalid in PermissionSet metadata schema
+    List<String> unsupportedBlocks = new List<String>{
+      'agentAccesses',
+      'connectedAppAccesses',
+      'namedCredentialAccesses'
+    };
+    for (String tag : unsupportedBlocks) {
+      xml = xml.replaceAll('(?s)\\s*<' + tag + '>.*?</' + tag + '>', '');
+    }
+
+    // Inject missing <viewAllFields>false</viewAllFields> into every
+    // objectPermissions block that lacks it (required 7th boolean child)
+    if (xml.contains('<objectPermissions>')) {
+      xml = xml.replaceAll('(?s)\\s*<viewAllFields>[^<]*</viewAllFields>', '');
+      xml = xml.replace(
+        '<viewAllRecords>',
+        '<viewAllFields>false</viewAllFields>\n        <viewAllRecords>'
+      );
+    }
+
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // AUTH PROVIDER XML SANITIZER
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeAuthProviderXml(String xml) {
@@ -305,6 +360,10 @@ public class LLMXmlSanitizer {
     List<String> forbiddenTags = new List<String>{
       'developerName',
       'fullName',
+      'keyId',
+      'servicesId',
+      'teamId',
+      'tokenIssuer',
       'urlSuffix'
     };
     for (String tag : forbiddenTags) {
@@ -316,11 +375,32 @@ public class LLMXmlSanitizer {
       .replace('<authorizeEndpointUrl>', '<authorizeUrl>')
       .replace('</authorizeEndpointUrl>', '</authorizeUrl>')
       .replace('<scope>', '<defaultScopes>')
-      .replace('</scope>', '</defaultScopes>');
+      .replace('</scope>', '</defaultScopes>')
+      .replace('<customErrorUrl>', '<errorUrl>')
+      .replace('</customErrorUrl>', '</errorUrl>')
+      .replace('<customLogoutUrl>', '<logoutUrl>')
+      .replace('</customLogoutUrl>', '</logoutUrl>');
 
     if (!xml.contains('<friendlyName>') && xml.contains('<name>')) {
       xml = xml.replace('<name>', '<friendlyName>')
         .replace('</name>', '</friendlyName>');
+    }
+
+    // Force isPkceEnabled=false for types that Salesforce rejects PKCE on
+    Set<String> NO_PKCE_TYPES = new Set<String>{
+      'Apple',
+      'GitHub',
+      'Janrain',
+      'MicrosoftACS',
+      'Twitter'
+    };
+    Pattern ptPkce = Pattern.compile('<providerType>([^<]+)</providerType>');
+    Matcher mtPkce = ptPkce.matcher(xml);
+    if (mtPkce.find() && NO_PKCE_TYPES.contains(mtPkce.group(1).trim())) {
+      xml = xml.replaceAll(
+        '<isPkceEnabled>true</isPkceEnabled>',
+        '<isPkceEnabled>false</isPkceEnabled>'
+      );
     }
 
     return xml;
@@ -513,7 +593,24 @@ public class LLMXmlSanitizer {
       return !block.contains('<referenceTo>') ||
         !block.contains('<relationshipName>');
     }
-    // Date, DateTime, Picklist, MultiselectPicklist, etc. — keep by default
+    if (fieldType == 'ExternalLookup') {
+      return !block.contains('<externalDeveloperName>') ||
+        !block.contains('<relationshipName>');
+    }
+    if (fieldType == 'AutoNumber') {
+      return !block.contains('<displayFormat>');
+    }
+    if (fieldType == 'Formula') {
+      return !block.contains('<formula>') || !block.contains('<returnType>');
+    }
+    if (fieldType == 'Summary') {
+      return !block.contains('<summaryOperation>') ||
+        !block.contains('<summaryForeignKey>');
+    }
+    if (fieldType == 'Location') {
+      return !block.contains('<scale>');
+    }
+    // Date, DateTime, Time, Picklist, MultiselectPicklist, etc. — keep by default
     return false;
   }
 
@@ -868,22 +965,32 @@ public class LLMXmlSanitizer {
       );
     }
 
-    if (cleaned.contains('<field>Name</field>')) {
-      // Enforce Name field is always Required, regardless of LLM output
-      String beforeNameFix = cleaned;
-      cleaned = cleaned.replaceAll(
-        '<behavior>(Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
-        '<behavior>Required</behavior>$2<field>Name</field>'
-      );
-      cleaned = cleaned.replaceAll(
-        '<field>Name</field>(\\s*)<behavior>(Edit|Readonly)</behavior>',
-        '<field>Name</field>$1<behavior>Required</behavior>'
-      );
-      if (cleaned != beforeNameFix) {
+    // Strip layoutItems with no valid content element at all
+    // (e.g. behavior-only, or completely empty — Salesforce rejects these)
+    List<Pattern> noContentPatterns = new List<Pattern>{
+      Pattern.compile(
+        '(?s)\\s*<layoutItems>\\s*<behavior>[^<]*</behavior>\\s*</layoutItems>'
+      ),
+      Pattern.compile('(?s)\\s*<layoutItems>\\s*</layoutItems>')
+    };
+    for (Pattern p : noContentPatterns) {
+      Matcher m = p.matcher(cleaned);
+      String after = m.replaceAll('');
+      if (after != cleaned) {
         System.debug(
-          '[DEPLOY-TRACE] sanitizeLayoutXml: enforced Required behavior on Name field'
+          '[DEPLOY-TRACE] sanitizeLayoutXml: removed layoutItems with no valid content element'
         );
+        cleaned = after;
       }
+    }
+
+    if (cleaned.contains('<field>Name</field>')) {
+      // Name field behavior is handled by fixNameFieldBehaviorInLayout()
+      // which runs after sanitizeLayoutXml with the correct nameFieldType.
+      // Do NOT modify Name behavior here — leave it as-is.
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeLayoutXml: Name field present — behavior will be set by fixNameFieldBehaviorInLayout'
+      );
     } else if (cleaned.contains('<layoutColumns>')) {
       // Name is absent entirely — inject it at the top of the first column.
       // Salesforce requires Name on every layout; LLMs often omit it.
@@ -891,7 +998,7 @@ public class LLMXmlSanitizer {
         cleaned.indexOf('<layoutColumns>') + '<layoutColumns>'.length();
       String nameItem =
         '\n            <layoutItems>\n' +
-        '                <behavior>Required</behavior>\n' +
+        '                <behavior>Edit</behavior>\n' +
         '                <field>Name</field>\n' +
         '            </layoutItems>';
       cleaned =
@@ -1160,6 +1267,42 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // NAME FIELD BEHAVIOR FIX FOR LAYOUTS
+  // Salesforce enforces different Name behavior per nameField type:
+  //   AutoNumber  → Readonly  (system-generated, cannot be edited)
+  //   Text        → Edit      (user-entered, never Required)
+  // Called after sanitizeLayoutXml so context from sibling CustomObject
+  // XML can be passed in — no other code changes needed to add new types.
+  // ─────────────────────────────────────────────────────────────
+  public static String fixNameFieldBehaviorInLayout(
+    String xml,
+    String nameFieldType
+  ) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+    String correctBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
+      ? 'Readonly'
+      : 'Required';
+    xml = xml.replaceAll(
+      '<behavior>(Required|Edit|Readonly)</behavior>(\\s*)<field>Name</field>',
+      '<behavior>' + correctBehavior + '</behavior>$2<field>Name</field>'
+    );
+    xml = xml.replaceAll(
+      '<field>Name</field>(\\s*)<behavior>(Required|Edit|Readonly)</behavior>',
+      '<field>Name</field>$1<behavior>' + correctBehavior + '</behavior>'
+    );
+    System.debug(
+      '[SANITIZE] fixNameFieldBehaviorInLayout: nameFieldType=[' +
+        nameFieldType +
+        '] → behavior=[' +
+        correctBehavior +
+        ']'
+    );
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // INJECT MISSING XML DEFAULTS
   // Injects UI-consistent default values for any elements absent
   // from the LLM-generated XML.  To add a new default for any
@@ -1250,6 +1393,257 @@ public class LLMXmlSanitizer {
       'destructiveChangesPost.xml',
       xml
     );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // FIELD-LEVEL SECURITY BACKSTOP
+  //
+  // After all files are processed, scans CustomObject XML in the
+  // deploy batch for new custom fields and ensures <fieldPermissions>
+  // are set correctly for all relevant profiles.
+  //
+  // Default rules:
+  //   - Formula / Summary / AutoNumber → readable=true, editable=false
+  //   - Required fields                → skipped (implicit access)
+  //   - All other custom fields        → readable=true, editable=true
+  //
+  // Profile coverage:
+  //   1. Every Profile file already in ZipBuilder gets patched (LLM-generated
+  //      or ticket-specified profiles)
+  //   2. Admin profile is always guaranteed as minimum fallback
+  //   3. The running user's profile is also guaranteed (if different from Admin)
+  //      so the person who triggered the deploy can always see the new fields
+  //
+  // To add new read-only field types → update READ_ONLY_FIELD_TYPES only.
+  // ─────────────────────────────────────────────────────────────
+  private static final Set<String> READ_ONLY_FIELD_TYPES = new Set<String>{
+    'Formula',
+    'Summary',
+    'AutoNumber'
+  };
+
+  public static void injectDefaultFieldPermissions(List<Object> files) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    // Step 1: Collect new custom fields from CustomObject files
+    Map<String, List<String>> editableByObj = new Map<String, List<String>>();
+    Map<String, List<String>> readOnlyByObj = new Map<String, List<String>>();
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String mt = (String) file.get('metadataType');
+      String mn = (String) file.get('memberName');
+      if (mt != 'CustomObject' || !mn.endsWith('__c')) {
+        continue;
+      }
+      String xml = (String) file.get('xmlContent');
+      if (String.isBlank(xml) || !xml.contains('<fields>')) {
+        continue;
+      }
+
+      List<String> editable = new List<String>();
+      List<String> readOnly = new List<String>();
+      Pattern p = Pattern.compile('(?s)<fields>(.*?)</fields>');
+      Matcher m = p.matcher(xml);
+      while (m.find()) {
+        String block = m.group(1);
+        String fieldName = extractInlineTagValue(block, 'fullName');
+        if (String.isBlank(fieldName)) {
+          continue;
+        }
+        // Required fields have implicit access — Salesforce rejects explicit FLS entries
+        String reqVal = extractInlineTagValue(block, 'required');
+        if ('true'.equalsIgnoreCase(reqVal)) {
+          continue;
+        }
+        String fieldType = extractInlineTagValue(block, 'type');
+        if (READ_ONLY_FIELD_TYPES.contains(fieldType)) {
+          readOnly.add(fieldName);
+        } else {
+          editable.add(fieldName);
+        }
+      }
+
+      if (!editable.isEmpty()) {
+        editableByObj.put(mn, editable);
+      }
+      if (!readOnly.isEmpty()) {
+        readOnlyByObj.put(mn, readOnly);
+      }
+    }
+
+    if (editableByObj.isEmpty() && readOnlyByObj.isEmpty()) {
+      return;
+    }
+
+    // Step 2: Resolve running user's profile metadata member name
+    // Standard profile display names → metadata API member names
+    // (DeveloperName is not accessible via SOQL in all org contexts)
+    String runningUserProfile = 'Admin';
+    try {
+      Profile p = [
+        SELECT Name
+        FROM Profile
+        WHERE Id = :UserInfo.getProfileId()
+        LIMIT 1
+      ];
+      if (String.isNotBlank(p.Name)) {
+        runningUserProfile = profileNameToMemberName(p.Name);
+      }
+    } catch (Exception e) {
+      System.debug(
+        '[FLS] Could not resolve running user profile, defaulting to Admin: ' +
+        e.getMessage()
+      );
+    }
+
+    // Minimum guaranteed profiles — Admin always, plus the triggering user's profile
+    Set<String> defaultProfiles = new Set<String>{
+      'Admin',
+      runningUserProfile
+    };
+
+    // Step 3: Update existing Profile files already in ZipBuilder
+    Set<String> handledProfiles = new Set<String>();
+    List<String> existingPaths = new List<String>();
+    for (String path : ZipBuilder.files.keySet()) {
+      if (path.startsWith('profiles/') && path.endsWith('.profile')) {
+        existingPaths.add(path);
+      }
+    }
+
+    for (String filePath : existingPaths) {
+      String profileName = filePath.removeStart('profiles/')
+        .removeEnd('.profile');
+      String profileXml = ZipBuilder.files.get(filePath);
+      if (String.isBlank(profileXml) || !profileXml.contains('</Profile>')) {
+        continue;
+      }
+      List<String> newBlocks = buildFLSBlocks(
+        editableByObj,
+        readOnlyByObj,
+        profileXml
+      );
+      if (!newBlocks.isEmpty()) {
+        String updatedXml = profileXml.replace(
+          '</Profile>',
+          String.join(newBlocks, '\n') + '\n</Profile>'
+        );
+        ZipBuilder.addFile('Profile', profileName, filePath, updatedXml);
+        System.debug(
+          '[FLS] injectDefaultFieldPermissions: updated [' +
+            filePath +
+            '] \u2190 ' +
+            newBlocks.size() +
+            ' fieldPermissions'
+        );
+      }
+      handledProfiles.add(profileName);
+    }
+
+    // Step 4: Create minimal Profile files for any default profile not yet handled
+    for (String profileName : defaultProfiles) {
+      if (handledProfiles.contains(profileName)) {
+        continue;
+      }
+      List<String> newBlocks = buildFLSBlocks(editableByObj, readOnlyByObj, '');
+      if (newBlocks.isEmpty()) {
+        continue;
+      }
+      String profileXml =
+        '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
+        String.join(newBlocks, '\n') +
+        '\n</Profile>';
+      String filePath = 'profiles/' + profileName + '.profile';
+      ZipBuilder.addFile('Profile', profileName, filePath, profileXml);
+      System.debug(
+        '[FLS] injectDefaultFieldPermissions: created [' +
+          filePath +
+          '] \u2190 ' +
+          newBlocks.size() +
+          ' fieldPermissions'
+      );
+    }
+  }
+
+  // Maps a Profile display Name to its Salesforce metadata member name.
+  // Standard profiles have well-known member names that differ from their
+  // display names. Custom profiles use display name with spaces → underscores.
+  private static String profileNameToMemberName(String displayName) {
+    Map<String, String> KNOWN = new Map<String, String>{
+      'System Administrator' => 'Admin',
+      'Standard User' => 'Standard',
+      'Salesforce Platform User' => 'StandardAul',
+      'Standard Platform User' => 'StandardAul',
+      'Contract Manager' => 'ContractManager',
+      'Marketing User' => 'MarketingProfile',
+      'Read Only' => 'ReadOnly',
+      'Solution Manager' => 'SolutionManager'
+    };
+    String mapped = KNOWN.get(displayName);
+    if (String.isNotBlank(mapped)) {
+      return mapped;
+    }
+    // Custom profiles: replace non-alphanumeric chars with underscore
+    String safe = displayName.replaceAll('[^a-zA-Z0-9]+', '_')
+      .removeStart('_')
+      .removeEnd('_');
+    return String.isNotBlank(safe) ? safe : 'Admin';
+  }
+
+  // Builds <fieldPermissions> XML blocks for one profile.
+  // Pass existing profile XML to skip already-present fields,
+  // or empty string when creating a brand-new profile file.
+  private static List<String> buildFLSBlocks(
+    Map<String, List<String>> editableByObj,
+    Map<String, List<String>> readOnlyByObj,
+    String existingXml
+  ) {
+    List<String> blocks = new List<String>();
+    for (String objName : editableByObj.keySet()) {
+      for (String fn : editableByObj.get(objName)) {
+        String qf = objName + '.' + fn;
+        if (
+          String.isNotBlank(existingXml) &&
+          existingXml.contains('<field>' + qf + '</field>')
+        ) {
+          continue;
+        }
+        blocks.add(
+          '    <fieldPermissions>\n' +
+            '        <editable>true</editable>\n' +
+            '        <field>' +
+            qf +
+            '</field>\n' +
+            '        <readable>true</readable>\n' +
+            '    </fieldPermissions>'
+        );
+      }
+    }
+    for (String objName : readOnlyByObj.keySet()) {
+      for (String fn : readOnlyByObj.get(objName)) {
+        String qf = objName + '.' + fn;
+        if (
+          String.isNotBlank(existingXml) &&
+          existingXml.contains('<field>' + qf + '</field>')
+        ) {
+          continue;
+        }
+        blocks.add(
+          '    <fieldPermissions>\n' +
+            '        <editable>false</editable>\n' +
+            '        <field>' +
+            qf +
+            '</field>\n' +
+            '        <readable>true</readable>\n' +
+            '    </fieldPermissions>'
+        );
+      }
+    }
+    return blocks;
   }
 
   public static String escapeXmlValue(String val) {

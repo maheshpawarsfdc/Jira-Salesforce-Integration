@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Auth Provider</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == AUTH PROVIDER XML FORMAT ==
 File path: authproviders/DeveloperName.authprovider
 metadataType: AuthProvider
@@ -18,12 +24,14 @@ CRITICAL — ELEMENT ORDER: elements MUST appear in STRICT ALPHABETICAL ORDER.
 Salesforce rejects AuthProvider XML with wrong element order.
 Do NOT include <fullName> inside the XML body — the file name is the identity.
 
-ALL PROVIDERS share these optional trailing elements (include only if needed):
-  <customErrorUrl>   — Custom Error URL (optional)
-  <customLogoutUrl>  — Custom Logout URL (optional)
-  <iconUrl>          — Icon URL (optional)
-  <registrationHandler>ApexClassName</registrationHandler> (optional — Apex class name only, no quotes)
-  <requireMfa>false</requireMfa> — defaults to false; set true only when ticket requests Salesforce MFA
+ALL PROVIDERS share these optional elements (include only when ticket specifies):
+  <defaultScopes>   — OAuth scopes (space-separated)
+  <errorUrl>        — Custom Error URL
+  <iconUrl>         — Icon URL
+  <logoutUrl>       — Custom Logout URL
+  <portal>          — Experience Cloud portal name
+  <registrationHandler>ApexOrFlowApiName</registrationHandler> — Apex class OR Flow API name
+  <requireMfa>false</requireMfa> — set true only when ticket requests Salesforce MFA
 
 CONSUMER SECRET RULE:
   consumerSecret is NEVER returned by any Salesforce API (stored encrypted).
@@ -71,6 +79,7 @@ Required from ticket: consumerKey (Client ID), consumerSecret (Client Secret)
 -- PROVIDER TYPE: Microsoft --
 Use when: ticket says "Microsoft OAuth", "Azure AD", "Microsoft Entra", "Microsoft SSO", "Azure OAuth"
 Required from ticket: consumerKey (Application/Client ID), consumerSecret (Client Secret)
+Optional: if ticket provides a tenant-specific Token Issuer URL, add <tokenIssuer>FROM_TICKET</tokenIssuer> between sendSecretInApis and tokenUrl (alphabetical order)
 <?xml version="1.0" encoding="UTF-8"?>
 <AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
     <authorizeUrl>https://login.microsoftonline.com/common/oauth2/v2.0/authorize</authorizeUrl>
@@ -82,14 +91,14 @@ Required from ticket: consumerKey (Application/Client ID), consumerSecret (Clien
     <providerType>Microsoft</providerType>
     <requireMfa>false</requireMfa>
     <sendSecretInApis>true</sendSecretInApis>
-    <!-- Include tokenIssuer ONLY when ticket provides a tenant-specific issuer -->
-    <!-- <tokenIssuer>https://login.microsoftonline.com/{tenantId}/v2.0</tokenIssuer> -->
     <tokenUrl>https://login.microsoftonline.com/common/oauth2/v2.0/token</tokenUrl>
     <userInfoUrl>https://graph.microsoft.com/oidc/userinfo</userInfoUrl>
 </AuthProvider>
 
 -- PROVIDER TYPE: OpenIdConnect --
 Use when: ticket says "Open ID Connect", "OpenID Connect", "OIDC", "Custom OAuth 2.0"
+Required from ticket: authorizeUrl, tokenUrl, consumerKey, consumerSecret
+Optional: if ticket provides userInfoUrl add it after tokenUrl; if tokenIssuer add between sendSecretInApis and tokenUrl
 <?xml version="1.0" encoding="UTF-8"?>
 <AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
     <authorizeUrl>FROM_TICKET</authorizeUrl>
@@ -107,6 +116,7 @@ Use when: ticket says "Open ID Connect", "OpenID Connect", "OIDC", "Custom OAuth
 </AuthProvider>
 
 -- PROVIDER TYPE: Facebook --
+Required from ticket: consumerKey (App ID), consumerSecret (App Secret)
 <?xml version="1.0" encoding="UTF-8"?>
 <AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
     <authorizeUrl>https://www.facebook.com/dialog/oauth</authorizeUrl>
@@ -123,6 +133,9 @@ Use when: ticket says "Open ID Connect", "OpenID Connect", "OIDC", "Custom OAuth
 </AuthProvider>
 
 -- PROVIDER TYPE: GitHub --
+Required from ticket: consumerKey (Client ID), consumerSecret (Client Secret)
+IMPORTANT: Salesforce REJECTS isPkceEnabled=true for GitHub — do NOT include isPkceEnabled in this template.
+Note: GitHub also does not support userInfoUrl in Salesforce metadata.
 <?xml version="1.0" encoding="UTF-8"?>
 <AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
     <authorizeUrl>https://github.com/login/oauth/authorize</authorizeUrl>
@@ -137,7 +150,7 @@ Use when: ticket says "Open ID Connect", "OpenID Connect", "OIDC", "Custom OAuth
 </AuthProvider>
 
 -- PROVIDER TYPE: Twitter --
-Note: Twitter uses OAuth 1.0a — no authorizeUrl/tokenUrl needed in XML
+Note: Twitter uses OAuth 1.0a — no URL fields in XML; consumerKey and consumerSecret are REQUIRED
 <?xml version="1.0" encoding="UTF-8"?>
 <AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
     <consumerKey>FROM_TICKET</consumerKey>
@@ -149,19 +162,151 @@ Note: Twitter uses OAuth 1.0a — no authorizeUrl/tokenUrl needed in XML
 </AuthProvider>
 
 -- PROVIDER TYPE: Apple --
-Required from ticket: teamId, servicesId, keyId
-Note: The private key file must be uploaded manually after deployment.
+IMPORTANT: Apple Auth Provider has SEVERE metadata API limitations.
+The following fields CANNOT be set via metadata XML — they do NOT exist in the schema:
+  - Team ID (teamId)
+  - Services ID (servicesId)
+  - Key ID (keyId)
+  - Key file (.p8 private key)
+  - Consumer Key / Consumer Secret (Apple does not use OAuth consumer credentials)
+Deploy this minimal XML to create the record, then ALL Apple-specific fields MUST be set manually
+via Setup > Auth Providers > [Name] > Edit after deployment.
+Required from ticket: friendlyName only (all other Apple fields are manual-only)
 <?xml version="1.0" encoding="UTF-8"?>
 <AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
     <friendlyName>FROM_TICKET</friendlyName>
-    <keyId>FROM_TICKET</keyId>
     <providerType>Apple</providerType>
     <requireMfa>false</requireMfa>
-    <servicesId>FROM_TICKET</servicesId>
-    <teamId>FROM_TICKET</teamId>
 </AuthProvider>
 After deploying Apple AuthProvider XML, the summary MUST include:
-"Apple private key file must be manually uploaded via Setup > Auth Providers > [Name] > Edit > Key."
+"Apple Auth Provider created. The following fields MUST be set manually via Setup > Auth Providers > [Name] > Edit: Team ID, Services ID, Key ID, and the private key (.p8) file."
+
+-- PROVIDER TYPE: Bitbucket --
+Use when: ticket says "Bitbucket OAuth", "Bitbucket Auth Provider", "Atlassian Bitbucket"
+Required from ticket: consumerKey (OAuth Key), consumerSecret (OAuth Secret)
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>https://bitbucket.org/site/oauth2/authorize</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>account email</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>true</isPkceEnabled>
+    <providerType>Bitbucket</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>https://bitbucket.org/site/oauth2/access_token</tokenUrl>
+    <userInfoUrl>https://api.bitbucket.org/2.0/user</userInfoUrl>
+</AuthProvider>
+
+-- PROVIDER TYPE: Confluence3LO --
+Use when: ticket says "Confluence OAuth", "Atlassian OAuth 2.0", "Jira Cloud OAuth", "Atlassian Cloud SSO"
+Required from ticket: consumerKey (Client ID), consumerSecret (Client Secret)
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>https://auth.atlassian.com/authorize</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>read:me offline_access</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>true</isPkceEnabled>
+    <providerType>Confluence3LO</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>https://auth.atlassian.com/oauth/token</tokenUrl>
+    <userInfoUrl>https://api.atlassian.com/me</userInfoUrl>
+</AuthProvider>
+
+-- PROVIDER TYPE: Janrain --
+Use when: ticket says "Janrain", "Akamai Identity Cloud", "Janrain Auth Provider"
+Required from ticket: authorizeUrl, tokenUrl, userInfoUrl (all tenant-specific), consumerKey, consumerSecret
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>FROM_TICKET</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>openid email</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>false</isPkceEnabled>
+    <providerType>Janrain</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>FROM_TICKET</tokenUrl>
+    <userInfoUrl>FROM_TICKET</userInfoUrl>
+</AuthProvider>
+
+-- PROVIDER TYPE: LinkedIn --
+Use when: ticket says "LinkedIn OAuth", "LinkedIn Auth Provider", "LinkedIn SSO"
+Required from ticket: consumerKey (Client ID), consumerSecret (Client Secret)
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>https://www.linkedin.com/oauth/v2/authorization</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>openid email profile</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>true</isPkceEnabled>
+    <providerType>LinkedIn</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>https://www.linkedin.com/oauth/v2/accessToken</tokenUrl>
+    <userInfoUrl>https://api.linkedin.com/v2/me</userInfoUrl>
+</AuthProvider>
+
+-- PROVIDER TYPE: MicrosoftACS --
+Use when: ticket explicitly says "ADFS", "Active Directory Federation Services", "MicrosoftACS", or "Azure AD v1.0"
+NOTE: Use Microsoft type for Azure AD v2.0 / Microsoft Entra. Use MicrosoftACS ONLY for v1.0/ADFS endpoints.
+Required from ticket: consumerKey, consumerSecret, authorizeUrl, tokenUrl (all tenant-specific ADFS/AAD v1 endpoints)
+Optional: if ticket provides tokenIssuer, add between sendSecretInApis and tokenUrl (alphabetical order)
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>FROM_TICKET</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>openid email profile</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>false</isPkceEnabled>
+    <providerType>MicrosoftACS</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>FROM_TICKET</tokenUrl>
+</AuthProvider>
+
+-- PROVIDER TYPE: MuleSoft --
+Use when: ticket says "MuleSoft", "Anypoint Platform OAuth", "MuleSoft Auth Provider"
+Required from ticket: consumerKey (Client ID), consumerSecret (Client Secret)
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>https://anypoint.mulesoft.com/accounts/oauth2/authorize</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>openid</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>true</isPkceEnabled>
+    <providerType>MuleSoft</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>https://anypoint.mulesoft.com/accounts/oauth2/token</tokenUrl>
+    <userInfoUrl>https://anypoint.mulesoft.com/accounts/api/me</userInfoUrl>
+</AuthProvider>
+
+-- PROVIDER TYPE: Slack --
+Use when: ticket says "Slack OAuth", "Slack Auth Provider", "Slack SSO"
+Required from ticket: consumerKey (Client ID), consumerSecret (Client Secret)
+<?xml version="1.0" encoding="UTF-8"?>
+<AuthProvider xmlns="http://soap.sforce.com/2006/04/metadata">
+    <authorizeUrl>https://slack.com/oauth/v2/authorize</authorizeUrl>
+    <consumerKey>FROM_TICKET</consumerKey>
+    <consumerSecret>FROM_TICKET</consumerSecret>
+    <defaultScopes>openid email profile</defaultScopes>
+    <friendlyName>FROM_TICKET</friendlyName>
+    <isPkceEnabled>true</isPkceEnabled>
+    <providerType>Slack</providerType>
+    <requireMfa>false</requireMfa>
+    <sendSecretInApis>true</sendSecretInApis>
+    <tokenUrl>https://slack.com/api/oauth.v2.access</tokenUrl>
+    <userInfoUrl>https://slack.com/api/users.identity</userInfoUrl>
+</AuthProvider>
 
 == AUTH PROVIDER RULES ==
 
@@ -172,11 +317,15 @@ When the ticket provides a "URL Suffix" field:
   - NEVER use the Name/friendlyName value as the memberName
 
 -- ELEMENT ORDER --
-Elements MUST be in STRICT ALPHABETICAL ORDER.
-  Salesforce: authorizeUrl, consumerKey, consumerSecret, defaultScopes, friendlyName,
-              includeOrgIdInIdentifier, isPkceEnabled, providerType, requireMfa,
-              sendAccessTokenInHeader, sendClientCredentialsInHeader, sendSecretInApis, tokenUrl
-  Microsoft/OpenIdConnect: same as Google but may include tokenIssuer (between sendSecretInApis and tokenUrl)
+Elements MUST be in STRICT ALPHABETICAL ORDER within every AuthProvider XML block.
+Key ordering reference:
+  authorizeUrl → consumerKey → consumerSecret → defaultScopes → errorUrl → friendlyName →
+  iconUrl → includeOrgIdInIdentifier (Salesforce only) → isPkceEnabled → keyId (Apple only) →
+  logoutUrl → portal → providerType → requireMfa → sendAccessTokenInHeader →
+  sendClientCredentialsInHeader → sendSecretInApis →
+  servicesId (Apple only) → teamId (Apple only) →
+  tokenIssuer (Microsoft/OpenIdConnect/MicrosoftACS when present) →
+  tokenUrl → userInfoUrl
 
 -- CREATE --
 1. Identify the correct providerType from the ticket
@@ -210,7 +359,13 @@ Priority rule: TICKET VALUE always wins over orgState. orgState only used when t
 - Never use <authorizeEndpointUrl> — the correct element is <authorizeUrl>
 - Never use <scope> — the correct element is <defaultScopes>
 - Never use <name> — the correct element for the display name is <friendlyName>
+- Never use <customErrorUrl> — the correct element is <errorUrl>
+- Never use <customLogoutUrl> — the correct element is <logoutUrl>
 - Never use the "Name" field value as the memberName — URL Suffix IS the DeveloperName
+- Never use <tokenIssuer> — this element is not valid in AuthProvider metadata XML; Token Issuer must be set manually via Setup > Auth Providers after deployment
+- Never set <isPkceEnabled>true</isPkceEnabled> for GitHub, Twitter, Apple, Janrain, or MicrosoftACS — Salesforce rejects PKCE for these types
+- Never include <keyId>, <servicesId>, or <teamId> in Apple AuthProvider XML — these elements do not exist in the metadata schema; set them manually via Setup after deployment
+- Never include <consumerKey> or <consumerSecret> for Apple type — Apple does not use OAuth consumer credentials
 - Never include <urlSuffix> — this element does not exist in AuthProvider metadata]]></value>
     </values>
     <values>
@@ -227,10 +382,12 @@ Priority rule: TICKET VALUE always wins over orgState. orgState only used when t
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Auth Provider XML for Salesforce, Google, Microsoft, Facebook, GitHub, Twitter, Apple etc.</value>
+        <value
+      xsi:type="xsd:string"
+    >Auth Provider XML for all 15 types: Salesforce, Google, Microsoft, OpenIdConnect, Facebook, GitHub, Twitter, Apple, Bitbucket, Confluence3LO, Janrain, LinkedIn, MicrosoftACS, MuleSoft, Slack</value>
     </values>
 </CustomMetadata>
