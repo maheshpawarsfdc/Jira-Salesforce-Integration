@@ -547,14 +547,12 @@ public class LLMLayoutHelper {
     xml += '</Layout>';
 
     // Fix Name field behavior per object's nameField type before returning
-    // (AutoNumber → Readonly, Text → Edit; NEVER Required)
+    // (AutoNumber → Readonly, Text → Required)
     String fullName = (String) layoutStructure.get('fullName');
     if (String.isNotBlank(fullName) && fullName.contains('-')) {
       try {
         String parentObj = fullName.substringBefore('-');
-        String nameFieldType = LLMOrgStateService.getObjectNameFieldType(
-          parentObj
-        );
+        String nameFieldType = resolveNameFieldType(parentObj);
         xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(xml, nameFieldType);
       } catch (Exception ex) {
         System.debug(
@@ -599,7 +597,7 @@ public class LLMLayoutHelper {
         );
         nameBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
           ? 'Readonly'
-          : 'Edit';
+          : 'Required';
       } catch (Exception ex) {
         System.debug(
           '[DEPLOY-TRACE] buildDefaultLayoutXml: could not determine Name behavior: ' +
@@ -859,5 +857,39 @@ public class LLMLayoutHelper {
       }
     }
     return fields;
+  }
+  // ─────────────────────────────────────────────────────────────
+  // RESOLVE NAME FIELD TYPE
+  // Checks ZipBuilder first (for new objects in same deploy),
+  // then falls back to org query (for existing objects).
+  // ─────────────────────────────────────────────────────────────
+  public static String resolveNameFieldType(String objectApiName) {
+    if (String.isBlank(objectApiName)) {
+      return 'Text';
+    }
+    // 1. New object being created in this same deploy — read from ZIP
+    String objectFilePath = 'objects/' + objectApiName + '.object';
+    String objectXml = ZipBuilder.files.get(objectFilePath);
+    if (String.isNotBlank(objectXml) && objectXml.contains('<nameField>')) {
+      Integer nfStart = objectXml.indexOf('<nameField>');
+      Integer nfEnd = objectXml.indexOf('</nameField>');
+      if (nfStart >= 0 && nfEnd > nfStart) {
+        String nameFieldBlock = objectXml.substring(nfStart, nfEnd);
+        Integer tStart = nameFieldBlock.indexOf('<type>') + '<type>'.length();
+        Integer tEnd = nameFieldBlock.indexOf('</type>');
+        if (tStart >= '<type>'.length() && tEnd > tStart) {
+          String type = nameFieldBlock.substring(tStart, tEnd).trim();
+          System.debug(
+            '[DEPLOY-TRACE] resolveNameFieldType: [' +
+              objectApiName +
+              '] read from ZIP type=' +
+              type
+          );
+          return type;
+        }
+      }
+    }
+    // 2. Existing object — query org
+    return LLMOrgStateService.getObjectNameFieldType(objectApiName);
   }
 }
