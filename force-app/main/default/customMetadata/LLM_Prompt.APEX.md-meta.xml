@@ -87,7 +87,7 @@ NEVER CREATE classes/XxxTrigger.cls FOR A TRIGGER NAMED XxxTrigger]]></value>
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string">APEX_BEST_PRACTICES,APEX_TEST</value>
+        <value xsi:type="xsd:string">APEX_BEST_PRACTICES</value>
     </values>
     <values>
         <field>Description__c</field>
