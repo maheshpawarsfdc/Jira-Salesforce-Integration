@@ -112,7 +112,8 @@ public class LLMResponseProcessor {
     Map<String, Object> response = LLMGroqClient.callGroq(
       messages,
       new List<Map<String, Object>>(),
-      null
+      null,
+      8096
     );
     List<Object> choices = (List<Object>) response.get('choices');
     Map<String, Object> choice = (Map<String, Object>) choices[0];
@@ -808,6 +809,25 @@ public class LLMResponseProcessor {
           );
         }
 
+        // ── VALIDATE APEX CODE before deployment ──────────────────────
+        if (isApexCode || metadataType == 'ApexTrigger') {
+          try {
+            ApexCodeValidator.validate(filePath, xmlContent);
+          } catch (ApexCodeValidator.ValidationException e) {
+            System.debug(
+              'processXmlGenerationResponse: Apex validation FAILED for [' +
+                filePath +
+                ']: ' +
+                e.getMessage()
+            );
+            FunctionHelper.hadError = true;
+            return 'Error: Code quality check failed for ' +
+              filePath +
+              ': ' +
+              e.getMessage();
+          }
+        }
+
         ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
 
         if (metadataType == 'CustomObject') {
@@ -840,20 +860,16 @@ public class LLMResponseProcessor {
       }
     }
 
-    // ── Stage Apex test context if classes detected ──────────────
+    // ── Stage Apex context if classes detected ──────────────
     pendingApexClassNames = null;
     pendingApexClassContents = null;
     pendingTestClassNames = null;
     pendingTestClassContents = null;
     if (!detectedApexNames.isEmpty()) {
-      if (detectedTestNames.isEmpty()) {
-        System.debug(
-          '[APEX-TEST] WARNING — Apex class(es) detected but no test class(es) generated: ' +
-          detectedApexNames
-        );
-      } else {
-        pendingApexClassNames = detectedApexNames;
-        pendingApexClassContents = detectedApexContents;
+      pendingApexClassNames = detectedApexNames;
+      pendingApexClassContents = detectedApexContents;
+      // Test classes are optional; only stage if detected
+      if (!detectedTestNames.isEmpty()) {
         pendingTestClassNames = detectedTestNames;
         pendingTestClassContents = detectedTestContents;
         System.debug(
@@ -861,7 +877,13 @@ public class LLMResponseProcessor {
             detectedApexNames.size() +
             ' class(es), ' +
             detectedTestNames.size() +
-            ' test class(es) for validation'
+            ' test class(es)'
+        );
+      } else {
+        System.debug(
+          '[APEX-TEST] Staged: ' +
+            detectedApexNames.size() +
+            ' class(es), no test class(es) (optional)'
         );
       }
     }

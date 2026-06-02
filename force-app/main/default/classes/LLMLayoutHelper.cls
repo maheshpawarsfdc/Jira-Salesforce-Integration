@@ -327,9 +327,7 @@ public class LLMLayoutHelper {
       if (String.isBlank(metadataType) || String.isBlank(memberName)) {
         continue;
       }
-      Boolean isCustomObj =
-        memberName != null &&
-        (memberName.endsWith('__c') || memberName.endsWith('__mdt'));
+      Boolean isCustomObj = memberName != null && (memberName.endsWith('__c'));
       if (
         metadataType == 'CustomObject' &&
         isCustomObj &&
@@ -371,7 +369,9 @@ public class LLMLayoutHelper {
       );
       String objLabel = objApi.endsWith('__c')
         ? objApi.removeEnd('__c').replace('_', ' ')
-        : objApi;
+        : objApi.endsWith('__mdt')
+            ? objApi.removeEnd('__mdt').replace('_', ' ')
+            : objApi;
       String layoutMember = objApi + '-' + objLabel + ' Layout';
       String layoutPath = 'layouts/' + layoutMember + '.layout';
       String layoutXml = buildDefaultLayoutXml(fieldInfos, objApi);
