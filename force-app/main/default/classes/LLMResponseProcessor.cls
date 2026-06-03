@@ -125,6 +125,43 @@ public class LLMResponseProcessor {
     System.debug('=== RAW LLM XML RESPONSE END ===');
     System.debug('── STAGE 2 raw LLM response: ' + content);
 
+    if (hasInvalidApexSource(content)) {
+      System.debug(
+        '[DEPLOY-TRACE] Blank or placeholder Apex source detected in LLM response; requesting one repair attempt.'
+      );
+      messages.add(
+        new Map<String, Object>{ 'role' => 'assistant', 'content' => content }
+      );
+      messages.add(
+        new Map<String, Object>{
+          'role' => 'user',
+          'content' => 'The previous JSON is invalid because one or more ApexClass or ApexTrigger files ' +
+          'have blank source or placeholder comments instead of real logic. Return the COMPLETE corrected JSON again. ' +
+          'For ApexTrigger .trigger files, xmlContent must start with "trigger ". ' +
+          'For ApexClass .cls files, xmlContent must contain the full public class source. ' +
+          'Do not leave any Apex source blank. Do not include TODO, placeholder, or "logic here" comments. ' +
+          'Implement the exact business logic from the Jira ticket. Return ONLY valid JSON.'
+        }
+      );
+
+      Map<String, Object> retryResponse = LLMGroqClient.callGroq(
+        messages,
+        new List<Map<String, Object>>(),
+        null,
+        8096
+      );
+      List<Object> retryChoices = (List<Object>) retryResponse.get('choices');
+      Map<String, Object> retryChoice = (Map<String, Object>) retryChoices[0];
+      Map<String, Object> retryMessage = (Map<String, Object>) retryChoice.get(
+        'message'
+      );
+      content = (String) retryMessage.get('content');
+
+      System.debug('=== RAW LLM XML REPAIR RESPONSE START ===');
+      System.debug(content);
+      System.debug('=== RAW LLM XML REPAIR RESPONSE END ===');
+    }
+
     return processXmlGenerationResponse(content, issueKey, orgState);
   }
 
@@ -1019,6 +1056,55 @@ public class LLMResponseProcessor {
   // ─────────────────────────────────────────────────────────────
   // EXTRACT RECORD TYPE NAMES FROM OBJECT XML
   // ─────────────────────────────────────────────────────────────
+  private static Boolean hasInvalidApexSource(String llmResponse) {
+    if (String.isBlank(llmResponse)) {
+      return false;
+    }
+
+    try {
+      String cleaned = LLMGroqClient.cleanJsonResponse(llmResponse);
+      Map<String, Object> parsed = (Map<String, Object>) JSON.deserializeUntyped(
+        cleaned
+      );
+      List<Object> files = (List<Object>) parsed.get('files');
+      if (files == null || files.isEmpty()) {
+        return false;
+      }
+
+      for (Object rawFile : files) {
+        Map<String, Object> file = (Map<String, Object>) rawFile;
+        String metadataType = (String) file.get('metadataType');
+        if (metadataType != 'ApexClass' && metadataType != 'ApexTrigger') {
+          continue;
+        }
+
+        String xmlContent = (String) file.get('xmlContent');
+        if (String.isBlank(xmlContent)) {
+          return true;
+        }
+
+        String upperContent = xmlContent.toUpperCase();
+        if (
+          upperContent.contains('LOGIC HERE') ||
+          upperContent.contains('PLACEHOLDER') ||
+          upperContent.contains('IMPLEMENTATION HERE') ||
+          upperContent.contains('ADD LOGIC') ||
+          upperContent.contains('TODO') ||
+          upperContent.contains('FIXME')
+        ) {
+          return true;
+        }
+      }
+    } catch (Exception e) {
+      System.debug(
+        'hasInvalidApexSource: skipped preflight due to parse error: ' +
+        e.getMessage()
+      );
+    }
+
+    return false;
+  }
+
   public static List<String> extractRecordTypeNamesFromObjectXml(
     String xmlContent
   ) {

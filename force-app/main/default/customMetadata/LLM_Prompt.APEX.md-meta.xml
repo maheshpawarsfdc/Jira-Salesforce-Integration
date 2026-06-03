@@ -29,6 +29,8 @@ CRITICAL MAPPING — NEVER MIX THESE UP:
   ApexTriggerMeta → .trigger-meta.xml → xmlContent = <?xml ...><ApexTrigger>... (XML only)
 NEVER put <?xml into a .cls or .trigger file.
 NEVER put public class / trigger keywords into a -meta.xml file.
+NEVER set xmlContent to an empty string for ApexClass or ApexTrigger.
+If you emit an ApexClass or ApexTrigger entry, xmlContent MUST contain complete deployable Apex source.
 
 Meta file XML format:
 <?xml version="1.0" encoding="UTF-8"?>

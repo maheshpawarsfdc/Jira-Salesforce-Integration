@@ -267,9 +267,9 @@ public class LLMOrgStateService {
           .toLowerCase()
           .trim();
         if (
-          !ticketText.contains(objShortName) &&
-          !ticketText.contains(apiName.toLowerCase()) &&
-          !ticketText.contains(objSpacedName)
+          !containsNameReference(ticketText, objShortName) &&
+          !containsNameReference(ticketText, apiName) &&
+          !containsNameReference(ticketText, objSpacedName)
         ) {
           continue;
         }
@@ -328,12 +328,13 @@ public class LLMOrgStateService {
         'ContentDocument',
         'ContentVersion',
         'Attachment',
-        'Note'
+        'Note',
+        'Invoice'
       };
 
       String ticketTextStd = (summary + ' ' + description).toLowerCase();
       for (String stdObjName : standardObjectNames) {
-        if (!ticketTextStd.contains(stdObjName.toLowerCase())) {
+        if (!containsNameReference(ticketTextStd, stdObjName)) {
           continue;
         }
         try {
@@ -599,11 +600,12 @@ public class LLMOrgStateService {
           'Asset',
           'Solution',
           'Product2',
-          'Pricebook2'
+          'Pricebook2',
+          'Invoice'
         };
         List<String> matchedStdObjects = new List<String>();
         for (String stdObj : stdObjects) {
-          if (ticketTextLower.contains(stdObj.toLowerCase())) {
+          if (containsNameReference(ticketTextLower, stdObj)) {
             matchedStdObjects.add(stdObj);
           }
         }
@@ -740,10 +742,11 @@ public class LLMOrgStateService {
             'Asset',
             'Product2',
             'Quote',
-            'Pricebook2'
+            'Pricebook2',
+            'Invoice'
           };
           for (String stdObj : stdTriggerObjects) {
-            if (ticketTextLower.contains(stdObj.toLowerCase())) {
+            if (containsNameReference(ticketTextLower, stdObj)) {
               candidateObjects.add(stdObj);
             }
           }
@@ -757,8 +760,8 @@ public class LLMOrgStateService {
                 .replace('_', ' ')
                 .toLowerCase();
               if (
-                ticketTextLower.contains(shortName) ||
-                ticketTextLower.contains(objName.toLowerCase())
+                containsNameReference(ticketTextLower, shortName) ||
+                containsNameReference(ticketTextLower, objName)
               ) {
                 candidateObjects.add(objName);
               }
@@ -766,7 +769,10 @@ public class LLMOrgStateService {
           }
 
           if (!candidateObjects.isEmpty()) {
-            String targetObject = candidateObjects[0];
+            String targetObject = chooseTriggerTargetObject(
+              ticketTextLower,
+              candidateObjects
+            );
             System.debug(
               'runOrgCheck: checking apex trigger on object [' +
                 targetObject +
@@ -1993,5 +1999,68 @@ public class LLMOrgStateService {
       );
     }
     return 'Text';
+  }
+
+  private static Boolean containsNameReference(String text, String name) {
+    if (String.isBlank(text) || String.isBlank(name)) {
+      return false;
+    }
+
+    String normalizedText =
+      ' ' +
+      text.toLowerCase().replace('_', ' ').replaceAll('[^a-z0-9]+', ' ') +
+      ' ';
+    String normalizedName = normalizeReferenceName(name);
+
+    if (String.isBlank(normalizedName)) {
+      return false;
+    }
+
+    if (normalizedText.contains(' ' + normalizedName + ' ')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private static String chooseTriggerTargetObject(
+    String ticketText,
+    List<String> candidateObjects
+  ) {
+    if (candidateObjects == null || candidateObjects.isEmpty()) {
+      return null;
+    }
+
+    String normalizedText =
+      ' ' +
+      ticketText.toLowerCase().replace('_', ' ').replaceAll('[^a-z0-9]+', ' ') +
+      ' ';
+
+    for (String candidate : candidateObjects) {
+      String normalizedName = normalizeReferenceName(candidate);
+      if (
+        normalizedText.contains(' trigger on ' + normalizedName + ' ') ||
+        normalizedText.contains(' trigger for ' + normalizedName + ' ') ||
+        normalizedText.contains(' trigger of ' + normalizedName + ' ')
+      ) {
+        return candidate;
+      }
+    }
+
+    return candidateObjects[0];
+  }
+
+  private static String normalizeReferenceName(String name) {
+    if (String.isBlank(name)) {
+      return '';
+    }
+
+    return name.toLowerCase()
+      .replace('__c', '')
+      .replace('__mdt', '')
+      .replace('_', ' ')
+      .replaceAll('[^a-z0-9]+', ' ')
+      .replaceAll('\\s+', ' ')
+      .trim();
   }
 }

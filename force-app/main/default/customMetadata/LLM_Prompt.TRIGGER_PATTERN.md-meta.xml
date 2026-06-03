@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Trigger Pattern</label>
     <protected>false</protected>
     <values>
@@ -8,34 +12,37 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 -- TRIGGER HANDLER PATTERN --
 ALWAYS use the thin-trigger + handler-class pattern. Never put logic in the trigger body.
 
-Thin trigger (delegates 100% to handler):
-trigger InvoiceTrigger on Invoice__c (before insert, before update, after insert) {
+Thin trigger example only (delegates 100% to handler):
+trigger InvoiceTrigger on Invoice (before insert, before update, after insert) {
     InvoiceHandler.dispatch(Trigger.operationType, Trigger.new, Trigger.old, Trigger.newMap, Trigger.oldMap);
 }
 
-Handler class skeleton:
+Handler class shape example only:
 public class InvoiceHandler {
     public static void dispatch(
         System.TriggerOperation op,
-        List<Invoice__c> newList,
-        List<Invoice__c> oldList,
-        Map<Id, Invoice__c> newMap,
-        Map<Id, Invoice__c> oldMap
+        List<Invoice> newList,
+        List<Invoice> oldList,
+        Map<Id, Invoice> newMap,
+        Map<Id, Invoice> oldMap
     ) {
         if (op == System.TriggerOperation.BEFORE_INSERT)  handleBeforeInsert(newList);
         if (op == System.TriggerOperation.BEFORE_UPDATE)  handleBeforeUpdate(newList, oldMap);
         if (op == System.TriggerOperation.AFTER_INSERT)   handleAfterInsert(newList, newMap);
     }
-    private static void handleBeforeInsert(List<Invoice__c> newList) {
-        for (Invoice__c rec : newList) {
-            // logic here — NEVER SOQL inside loops
-        }
-    }
 }
+
+DO NOT copy this example verbatim.
+DO NOT emit empty handler methods.
+DO NOT emit comments like "logic here", "example body omitted", "TODO", or "placeholder".
+Every generated handler method MUST contain the actual business logic requested by the ticket.
+Only generate dispatch branches for trigger events required by the ticket and any existing trigger events being preserved.
 
 Naming convention:
   Trigger name  = {ObjectName}Trigger   (e.g. InvoiceTrigger, CaseTrigger)
@@ -89,6 +96,8 @@ Generate all four files: trigger code, trigger meta, handler code, handler meta.
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Trigger handler pattern, one-trigger-per-object rule, merge vs create mode</value>
+        <value
+      xsi:type="xsd:string"
+    >Trigger handler pattern, one-trigger-per-object rule, merge vs create mode</value>
     </values>
 </CustomMetadata>
