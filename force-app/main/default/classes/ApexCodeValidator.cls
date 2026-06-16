@@ -18,6 +18,7 @@ public class ApexCodeValidator {
     validateDmlInBeforeTrigger(fileName, apexCode);
     validateTodoComments(fileName, apexCode);
     validateNoEmptyHandlerMethods(fileName, apexCode);
+    validateMissingNullChecks(fileName, apexCode);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -178,6 +179,40 @@ public class ApexCodeValidator {
           '] Placeholder or TODO comments found. ' +
           'Code is incomplete and must not be deployed.'
       );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE 6: MISSING NULL CHECKS BEFORE COMPARISON
+  // ─────────────────────────────────────────────────────────────
+  private static void validateMissingNullChecks(
+    String fileName,
+    String apexCode
+  ) {
+    String normalized = removeComments(apexCode);
+
+    // Look for patterns like "if (record.SomeField__c < oldRecord.SomeField__c)"
+    // or "if (record.InvoiceDate < ...)"
+    // And ensure "!= null" is in the same if-statement.
+    Pattern ifPattern = Pattern.compile('(?s)if\\s*\\(([^)]+)\\)');
+    Matcher m = ifPattern.matcher(normalized);
+    while (m.find()) {
+      String condition = m.group(1);
+      // If there's a > or < comparison on an sObject field (word.word)
+      if (condition.contains('<') || condition.contains('>')) {
+        Pattern fieldComp = Pattern.compile('\\b\\w+\\.\\w+\\s*[<>]');
+        Matcher compMatch = fieldComp.matcher(condition);
+        if (compMatch.find()) {
+          if (!condition.contains('!= null')) {
+            throw new ValidationException(
+              '[' +
+                fileName +
+                '] Missing null check before numeric/date comparison (< or >). ' +
+                'ALWAYS add a != null check before comparing sObject fields.'
+            );
+          }
+        }
+      }
     }
   }
 

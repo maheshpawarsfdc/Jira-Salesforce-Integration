@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Apex Best Practices</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 -- APEX BEST PRACTICES (enforced — non-compliant code will fail code review) --
 1. NEVER write SOQL queries inside for loops.
    WRONG:  for (Invoice__c inv : invList) { Account a = [SELECT Id FROM Account WHERE Id = :inv.AccountId__c]; }
@@ -47,7 +53,8 @@
 2. NEVER leave stub methods that return hardcoded values.
    WRONG:  private static Boolean isValidPhone(String phone) { return true; }
    CORRECT: implement the full Pattern.compile() + Matcher implementation
-3. ALWAYS add a null check before comparing a Number field.
+3. ALWAYS add a null check before comparing a Number/Date field.
+   NEVER use < or > on an sObject field without checking != null first. This will cause a NullPointerException.
    WRONG:  if (record.AI_Confidence_Score__c < 0)
    CORRECT: if (record.AI_Confidence_Score__c != null && record.AI_Confidence_Score__c < 0)
 4. NEVER use hardcoded magic values. Use named constants:
@@ -77,10 +84,12 @@
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Apex governor limits, bulkification, regex, validation, null checks best practices</value>
+        <value
+      xsi:type="xsd:string"
+    >Apex governor limits, bulkification, regex, validation, null checks best practices</value>
     </values>
 </CustomMetadata>

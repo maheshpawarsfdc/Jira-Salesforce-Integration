@@ -38,7 +38,7 @@ public class LLMResponseProcessor {
         new Map<String, Object>{ 'role' => 'user', 'content' => userMsg }
       };
 
-      Map<String, Object> routerResponse = LLMGroqClient.callGroq(
+      Map<String, Object> routerResponse = LLMGroqClient.callLLM(
         routerMessages,
         new List<Map<String, Object>>(),
         null
@@ -109,7 +109,7 @@ public class LLMResponseProcessor {
       }
     };
 
-    Map<String, Object> response = LLMGroqClient.callGroq(
+    Map<String, Object> response = LLMGroqClient.callLLM(
       messages,
       new List<Map<String, Object>>(),
       null,
@@ -144,7 +144,7 @@ public class LLMResponseProcessor {
         }
       );
 
-      Map<String, Object> retryResponse = LLMGroqClient.callGroq(
+      Map<String, Object> retryResponse = LLMGroqClient.callLLM(
         messages,
         new List<Map<String, Object>>(),
         null,
@@ -1475,7 +1475,7 @@ public class LLMResponseProcessor {
         fileName +
         ']...'
     );
-    Map<String, Object> llmResponse = LLMGroqClient.callGroq(
+    Map<String, Object> llmResponse = LLMGroqClient.callLLM(
       messages,
       null,
       null,

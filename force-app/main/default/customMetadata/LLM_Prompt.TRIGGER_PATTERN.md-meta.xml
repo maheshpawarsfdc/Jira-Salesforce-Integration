@@ -17,24 +17,27 @@
     ><![CDATA[
 -- TRIGGER HANDLER PATTERN --
 ALWAYS use the thin-trigger + handler-class pattern. Never put logic in the trigger body.
+ONLY pass the specific Trigger context variables (like Trigger.new or Trigger.oldMap) that the handler actually needs. Do NOT create unused variables.
 
 Thin trigger example only (delegates 100% to handler):
-trigger InvoiceTrigger on Invoice (before insert, before update, after insert) {
-    InvoiceHandler.dispatch(Trigger.operationType, Trigger.new, Trigger.old, Trigger.newMap, Trigger.oldMap);
+trigger InvoiceTrigger on Invoice (before insert, before update) {
+    switch on Trigger.operationType {
+        when BEFORE_INSERT {
+            InvoiceHandler.handleBeforeInsert(Trigger.new);
+        }
+        when BEFORE_UPDATE {
+            InvoiceHandler.handleBeforeUpdate(Trigger.new, Trigger.oldMap);
+        }
+    }
 }
 
 Handler class shape example only:
 public class InvoiceHandler {
-    public static void dispatch(
-        System.TriggerOperation op,
-        List<Invoice> newList,
-        List<Invoice> oldList,
-        Map<Id, Invoice> newMap,
-        Map<Id, Invoice> oldMap
-    ) {
-        if (op == System.TriggerOperation.BEFORE_INSERT)  handleBeforeInsert(newList);
-        if (op == System.TriggerOperation.BEFORE_UPDATE)  handleBeforeUpdate(newList, oldMap);
-        if (op == System.TriggerOperation.AFTER_INSERT)   handleAfterInsert(newList, newMap);
+    public static void handleBeforeInsert(List<Invoice> newList) {
+        // Implementation here
+    }
+    public static void handleBeforeUpdate(List<Invoice> newList, Map<Id, Invoice> oldMap) {
+        // Implementation here
     }
 }
 
