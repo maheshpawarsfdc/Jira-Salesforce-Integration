@@ -11,16 +11,44 @@ public class ApexCodeValidator {
   // PUBLIC ENTRY POINT
   // ─────────────────────────────────────────────────────────────
   public static void validate(String fileName, String apexCode) {
+    validateNotBlank(fileName, apexCode);
     validateDmlInLoops(fileName, apexCode);
     validateSoqlInLoops(fileName, apexCode);
     validateUntypedCollections(fileName, apexCode);
     validateDmlInBeforeTrigger(fileName, apexCode);
     validateTodoComments(fileName, apexCode);
+    validateNoEmptyHandlerMethods(fileName, apexCode);
+    validateMissingNullChecks(fileName, apexCode);
   }
 
   // ─────────────────────────────────────────────────────────────
   // RULE 1: DML IN LOOPS (Governor Limit: 150 DML ops/transaction)
   // ─────────────────────────────────────────────────────────────
+  private static void validateNotBlank(String fileName, String apexCode) {
+    if (String.isBlank(apexCode)) {
+      throw new ValidationException(
+        '[' +
+          fileName +
+          '] Apex source is blank. Retry generation; empty .cls/.trigger files must not be deployed.'
+      );
+    }
+
+    String normalized = apexCode.toLowerCase();
+    if (fileName != null && fileName.endsWith('.trigger')) {
+      if (!normalized.contains('trigger ') || !normalized.contains(' on ')) {
+        throw new ValidationException(
+          '[' + fileName + '] Apex trigger source is incomplete.'
+        );
+      }
+    } else if (fileName != null && fileName.endsWith('.cls')) {
+      if (!normalized.contains(' class ')) {
+        throw new ValidationException(
+          '[' + fileName + '] Apex class source is incomplete.'
+        );
+      }
+    }
+  }
+
   private static void validateDmlInLoops(String fileName, String apexCode) {
     String normalized = removeComments(apexCode);
 
@@ -139,20 +167,80 @@ public class ApexCodeValidator {
       upperCode.contains('TODO') ||
       upperCode.contains('FIXME') ||
       upperCode.contains('HACK') ||
-      upperCode.contains('XXX')
+      upperCode.contains('XXX') ||
+      upperCode.contains('LOGIC HERE') ||
+      upperCode.contains('PLACEHOLDER') ||
+      upperCode.contains('IMPLEMENTATION HERE') ||
+      upperCode.contains('ADD LOGIC')
     ) {
       throw new ValidationException(
         '[' +
           fileName +
-          '] TODO/FIXME/HACK/XXX comments found. ' +
+          '] Placeholder or TODO comments found. ' +
           'Code is incomplete and must not be deployed.'
       );
     }
   }
 
   // ─────────────────────────────────────────────────────────────
+  // RULE 6: MISSING NULL CHECKS BEFORE COMPARISON
+  // ─────────────────────────────────────────────────────────────
+  private static void validateMissingNullChecks(
+    String fileName,
+    String apexCode
+  ) {
+    String normalized = removeComments(apexCode);
+
+    // Look for patterns like "if (record.SomeField__c < oldRecord.SomeField__c)"
+    // or "if (record.InvoiceDate < ...)"
+    // And ensure "!= null" is in the same if-statement.
+    Pattern ifPattern = Pattern.compile('(?s)if\\s*\\(([^)]+)\\)');
+    Matcher m = ifPattern.matcher(normalized);
+    while (m.find()) {
+      String condition = m.group(1);
+      // If there's a > or < comparison on an sObject field (word.word)
+      if (condition.contains('<') || condition.contains('>')) {
+        Pattern fieldComp = Pattern.compile('\\b\\w+\\.\\w+\\s*[<>]');
+        Matcher compMatch = fieldComp.matcher(condition);
+        if (compMatch.find()) {
+          if (!condition.contains('!= null')) {
+            throw new ValidationException(
+              '[' +
+                fileName +
+                '] Missing null check before numeric/date comparison (< or >). ' +
+                'ALWAYS add a != null check before comparing sObject fields.'
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // HELPER: Remove comments and string literals
   // ─────────────────────────────────────────────────────────────
+  private static void validateNoEmptyHandlerMethods(
+    String fileName,
+    String apexCode
+  ) {
+    if (fileName == null || !fileName.endsWith('.cls')) {
+      return;
+    }
+
+    String normalized = removeComments(apexCode);
+    Pattern emptyHandlerMethod = Pattern.compile(
+      '(?is)\\bhandle\\w+\\s*\\([^)]*\\)\\s*\\{\\s*\\}'
+    );
+    Matcher matcher = emptyHandlerMethod.matcher(normalized);
+    if (matcher.find()) {
+      throw new ValidationException(
+        '[' +
+          fileName +
+          '] Empty trigger handler method found. Implement the ticket logic before deployment.'
+      );
+    }
+  }
+
   private static String removeComments(String code) {
     String result = code;
     result = result.replaceAll('//[^\n]*', ' ');

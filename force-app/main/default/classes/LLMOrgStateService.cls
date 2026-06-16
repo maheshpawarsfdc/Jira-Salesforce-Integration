@@ -249,15 +249,12 @@ public class LLMOrgStateService {
     List<String> existingObjects = new List<String>();
 
     try {
+      String ticketText = (summary + ' ' + description).toLowerCase();
+
       for (Schema.SObjectType objType : Schema.getGlobalDescribe().values()) {
         Schema.DescribeSObjectResult describe = objType.getDescribe();
-        if (!describe.isCustom()) {
-          continue;
-        }
-
         String apiName = describe.getName();
 
-        String ticketText = (summary + ' ' + description).toLowerCase();
         String objShortName = apiName.replace('__c', '')
           .replace('_', '')
           .toLowerCase();
@@ -266,10 +263,11 @@ public class LLMOrgStateService {
           .replace('_', ' ')
           .toLowerCase()
           .trim();
+
         if (
-          !ticketText.contains(objShortName) &&
-          !ticketText.contains(apiName.toLowerCase()) &&
-          !ticketText.contains(objSpacedName)
+          !containsNameReference(ticketText, objShortName) &&
+          !containsNameReference(ticketText, apiName.toLowerCase()) &&
+          !containsNameReference(ticketText, objSpacedName)
         ) {
           continue;
         }
@@ -299,71 +297,14 @@ public class LLMOrgStateService {
           apiName,
           hasMasterDetail ? 'ControlledByParent' : 'ReadWrite'
         );
-      }
 
-      Set<String> standardObjectNames = new Set<String>{
-        'Account',
-        'Contact',
-        'Lead',
-        'Opportunity',
-        'Case',
-        'Task',
-        'Event',
-        'Campaign',
-        'User',
-        'Product2',
-        'Order',
-        'Contract',
-        'Asset',
-        'Solution',
-        'Pricebook2',
-        'PricebookEntry',
-        'Quote',
-        'QuoteLineItem',
-        'OpportunityLineItem',
-        'CampaignMember',
-        'CaseComment',
-        'EmailMessage',
-        'FeedItem',
-        'ContentDocument',
-        'ContentVersion',
-        'Attachment',
-        'Note'
-      };
-
-      String ticketTextStd = (summary + ' ' + description).toLowerCase();
-      for (String stdObjName : standardObjectNames) {
-        if (!ticketTextStd.contains(stdObjName.toLowerCase())) {
-          continue;
-        }
-        try {
-          Schema.SObjectType stdObjType = Schema.getGlobalDescribe()
-            .get(stdObjName);
-          if (stdObjType == null) {
-            continue;
-          }
-          Schema.DescribeSObjectResult stdDescribe = stdObjType.getDescribe();
-          List<String> stdFieldNames = new List<String>();
-          for (Schema.SObjectField f : stdDescribe.fields.getMap().values()) {
-            stdFieldNames.add(f.getDescribe().getName());
-          }
-          existingFields.put(stdObjName, stdFieldNames);
-          System.debug(
-            'runOrgCheck: standard object [' +
-              stdObjName +
-              '] — ' +
-              stdFieldNames.size() +
-              ' field(s) added to existingFields'
-          );
-        } catch (Exception e) {
-          System.debug(
-            'runOrgCheck: failed to describe standard object [' +
-              stdObjName +
-              '] — ' +
-              e.getMessage()
-          );
-          ErrorLogger.log(e);
-        }
+        System.debug(
+          'runOrgCheck: object [' +
+            apiName +
+            '] — ' +
+            fieldNames.size() +
+            ' field(s) added to existingFields'
+        );
       }
 
       orgState.put('existingObjects', existingObjects);
@@ -599,11 +540,12 @@ public class LLMOrgStateService {
           'Asset',
           'Solution',
           'Product2',
-          'Pricebook2'
+          'Pricebook2',
+          'Invoice'
         };
         List<String> matchedStdObjects = new List<String>();
         for (String stdObj : stdObjects) {
-          if (ticketTextLower.contains(stdObj.toLowerCase())) {
+          if (containsNameReference(ticketTextLower, stdObj)) {
             matchedStdObjects.add(stdObj);
           }
         }
@@ -726,27 +668,6 @@ public class LLMOrgStateService {
       if (ticketTextLower.contains('trigger')) {
         try {
           List<String> candidateObjects = new List<String>();
-          Set<String> stdTriggerObjects = new Set<String>{
-            'Account',
-            'Contact',
-            'Lead',
-            'Opportunity',
-            'Case',
-            'Task',
-            'Event',
-            'Campaign',
-            'Order',
-            'Contract',
-            'Asset',
-            'Product2',
-            'Quote',
-            'Pricebook2'
-          };
-          for (String stdObj : stdTriggerObjects) {
-            if (ticketTextLower.contains(stdObj.toLowerCase())) {
-              candidateObjects.add(stdObj);
-            }
-          }
           List<Object> existingObjs = (List<Object>) orgState.get(
             'existingObjects'
           );
@@ -757,8 +678,8 @@ public class LLMOrgStateService {
                 .replace('_', ' ')
                 .toLowerCase();
               if (
-                ticketTextLower.contains(shortName) ||
-                ticketTextLower.contains(objName.toLowerCase())
+                containsNameReference(ticketTextLower, shortName) ||
+                containsNameReference(ticketTextLower, objName.toLowerCase())
               ) {
                 candidateObjects.add(objName);
               }
@@ -766,7 +687,10 @@ public class LLMOrgStateService {
           }
 
           if (!candidateObjects.isEmpty()) {
-            String targetObject = candidateObjects[0];
+            String targetObject = chooseTriggerTargetObject(
+              ticketTextLower,
+              candidateObjects
+            );
             System.debug(
               'runOrgCheck: checking apex trigger on object [' +
                 targetObject +
@@ -1993,5 +1917,68 @@ public class LLMOrgStateService {
       );
     }
     return 'Text';
+  }
+
+  private static Boolean containsNameReference(String text, String name) {
+    if (String.isBlank(text) || String.isBlank(name)) {
+      return false;
+    }
+
+    String normalizedText =
+      ' ' +
+      text.toLowerCase().replace('_', ' ').replaceAll('[^a-z0-9]+', ' ') +
+      ' ';
+    String normalizedName = normalizeReferenceName(name);
+
+    if (String.isBlank(normalizedName)) {
+      return false;
+    }
+
+    if (normalizedText.contains(' ' + normalizedName + ' ')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private static String chooseTriggerTargetObject(
+    String ticketText,
+    List<String> candidateObjects
+  ) {
+    if (candidateObjects == null || candidateObjects.isEmpty()) {
+      return null;
+    }
+
+    String normalizedText =
+      ' ' +
+      ticketText.toLowerCase().replace('_', ' ').replaceAll('[^a-z0-9]+', ' ') +
+      ' ';
+
+    for (String candidate : candidateObjects) {
+      String normalizedName = normalizeReferenceName(candidate);
+      if (
+        normalizedText.contains(' trigger on ' + normalizedName + ' ') ||
+        normalizedText.contains(' trigger for ' + normalizedName + ' ') ||
+        normalizedText.contains(' trigger of ' + normalizedName + ' ')
+      ) {
+        return candidate;
+      }
+    }
+
+    return candidateObjects[0];
+  }
+
+  private static String normalizeReferenceName(String name) {
+    if (String.isBlank(name)) {
+      return '';
+    }
+
+    return name.toLowerCase()
+      .replace('__c', '')
+      .replace('__mdt', '')
+      .replace('_', ' ')
+      .replaceAll('[^a-z0-9]+', ' ')
+      .replaceAll('\\s+', ' ')
+      .trim();
   }
 }

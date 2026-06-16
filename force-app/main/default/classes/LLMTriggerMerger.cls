@@ -163,12 +163,22 @@ public class LLMTriggerMerger {
         'mergeClassMethods: generated methods = ' + generatedMethods.keySet()
       );
 
+      Map<String, String> replacementMethodBodies = new Map<String, String>();
       List<String> newMethodBodies = new List<String>();
       for (String name : generatedMethods.keySet()) {
         if (name == 'dispatch') {
           continue;
         }
-        if (!existingMethods.containsKey(name)) {
+        if (
+          existingMethods.containsKey(name) &&
+          isPlaceholderOrEmptyMethod(existingMethods.get(name)) &&
+          !isPlaceholderOrEmptyMethod(generatedMethods.get(name))
+        ) {
+          replacementMethodBodies.put(name, generatedMethods.get(name));
+          System.debug(
+            'mergeClassMethods: placeholder method to replace [' + name + ']'
+          );
+        } else if (!existingMethods.containsKey(name)) {
           newMethodBodies.add(generatedMethods.get(name));
           System.debug(
             'mergeClassMethods: new method to inject [' + name + ']'
@@ -187,12 +197,23 @@ public class LLMTriggerMerger {
         );
       }
 
-      if (newMethodBodies.isEmpty() && String.isBlank(newDispatchBlocks)) {
+      if (
+        replacementMethodBodies.isEmpty() &&
+        newMethodBodies.isEmpty() &&
+        String.isBlank(newDispatchBlocks)
+      ) {
         System.debug('mergeClassMethods: nothing new to merge');
         return null;
       }
 
       String result = existingBody;
+
+      for (String name : replacementMethodBodies.keySet()) {
+        result = result.replace(
+          existingMethods.get(name),
+          replacementMethodBodies.get(name)
+        );
+      }
 
       if (String.isNotBlank(newDispatchBlocks) && existingDispatch != null) {
         Integer lastBraceInDispatch = existingDispatch.lastIndexOf('}');
@@ -477,6 +498,36 @@ public class LLMTriggerMerger {
   // Ensures the generated dispatch() method contains all the
   // op == TriggerOperation.XXX branches from the existing one.
   // ─────────────────────────────────────────────────────────────
+  private static Boolean isPlaceholderOrEmptyMethod(String methodBody) {
+    if (String.isBlank(methodBody)) {
+      return true;
+    }
+
+    String upperBody = methodBody.toUpperCase();
+    if (
+      upperBody.contains('LOGIC HERE') ||
+      upperBody.contains('PLACEHOLDER') ||
+      upperBody.contains('IMPLEMENTATION HERE') ||
+      upperBody.contains('ADD LOGIC') ||
+      upperBody.contains('TODO') ||
+      upperBody.contains('FIXME')
+    ) {
+      return true;
+    }
+
+    String noComments = methodBody
+      .replaceAll('//[^\\n]*', ' ')
+      .replaceAll('/\\*.*?\\*/', ' ');
+    Integer openBrace = noComments.indexOf('{');
+    Integer closeBrace = noComments.lastIndexOf('}');
+    if (openBrace < 0 || closeBrace <= openBrace) {
+      return true;
+    }
+
+    String bodyOnly = noComments.substring(openBrace + 1, closeBrace).trim();
+    return String.isBlank(bodyOnly);
+  }
+
   public static String mergeDispatchCalls(
     String existingDispatch,
     String generatedDispatch

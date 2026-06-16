@@ -113,6 +113,40 @@ public class LLMGroqClient {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // PROVIDER ROUTER — reads LLM_Provider__c and dispatches
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, Object> callLLM(
+    List<Map<String, Object>> messages,
+    List<Map<String, Object>> tools,
+    String toolChoice
+  ) {
+    return callLLM(messages, tools, toolChoice, 4096);
+  }
+
+  public static Map<String, Object> callLLM(
+    List<Map<String, Object>> messages,
+    List<Map<String, Object>> tools,
+    String toolChoice,
+    Integer maxTokens
+  ) {
+    String provider = App_Config__c.getOrgDefaults().LLM_Provider__c;
+    System.debug(
+      '══ LLM PROVIDER SELECTED: [' +
+        (String.isBlank(provider) ? 'GROQ (default)' : provider.toUpperCase()) +
+        '] ══'
+    );
+    if ('AWS_BEDROCK'.equalsIgnoreCase(provider)) {
+      return LLMBedrockClient.callBedrock(
+        messages,
+        tools,
+        toolChoice,
+        maxTokens
+      );
+    }
+    return callGroq(messages, tools, toolChoice, maxTokens);
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // SYSTEM PROMPT (content moved to LLM_Prompt__mdt CMT records)
   // ─────────────────────────────────────────────────────────────
   public static String buildXmlGenerationSystemPrompt() {
