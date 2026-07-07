@@ -12,6 +12,8 @@ public class ApexCodeValidator {
   // ─────────────────────────────────────────────────────────────
   public static void validate(String fileName, String apexCode) {
     validateNotBlank(fileName, apexCode);
+    validateBalancedBraces(fileName, apexCode);
+    validateAndOrOperators(fileName, apexCode);
     validateDmlInLoops(fileName, apexCode);
     validateSoqlInLoops(fileName, apexCode);
     validateUntypedCollections(fileName, apexCode);
@@ -49,6 +51,64 @@ public class ApexCodeValidator {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // RULE: BALANCED BRACES (catches <EOF> compile error)
+  // ─────────────────────────────────────────────────────────────
+  private static void validateBalancedBraces(String fileName, String apexCode) {
+    String cleaned = removeComments(apexCode);
+    // Strip string literals so braces inside strings are ignored
+    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'');
+    Integer open = 0;
+    Integer close = 0;
+    for (Integer i = 0; i < cleaned.length(); i++) {
+      String ch = cleaned.substring(i, i + 1);
+      if (ch == '{') {
+        open++;
+      } else if (ch == '}') {
+        close++;
+      }
+    }
+    if (open != close) {
+      throw new ValidationException(
+        '[' +
+          fileName +
+          '] Unbalanced braces: ' +
+          open +
+          ' opening { but ' +
+          close +
+          ' closing }. The Apex source is incomplete and will cause unexpected token: <EOF>. ' +
+          'Return the COMPLETE class with every opening brace matched by a closing brace.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: AND/OR AS APEX LOGICAL OPERATORS
+  // catches: Extra 'IDENTIFIER', at 'AND' / Unexpected token 'AND'
+  // ─────────────────────────────────────────────────────────────
+  private static void validateAndOrOperators(String fileName, String apexCode) {
+    // Remove SOQL blocks so [SELECT ... WHERE a = 1 AND b = 2] does not false-positive
+    String noSoql = apexCode.replaceAll('(?s)\\[[^\\]]*SELECT[^\\]]*\\]', ' ');
+    String cleaned = removeComments(noSoql);
+    // Strip string literals so words like AND/OR inside ordinary text
+    // (e.g. 'Please read AND accept') do not false-positive
+    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'').toUpperCase();
+    // Look for ' AND ' or ' OR ' used as stand-alone tokens in Apex logic
+    if (cleaned.contains(' AND ') || cleaned.contains(' OR ')) {
+      throw new ValidationException(
+        '[' +
+          fileName +
+          '] Apex code uses AND/OR as logical operators outside a SOQL query. ' +
+          'In Apex, use && for logical AND and || for logical OR. ' +
+          'AND and OR are ONLY valid inside SOQL WHERE clauses. ' +
+          'Example fix: if (a == \'x\' && b == \'y\')'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE 1: DML IN LOOPS (Governor Limit: 150 DML ops/transaction)
+  // ─────────────────────────────────────────────────────────────
   private static void validateDmlInLoops(String fileName, String apexCode) {
     String normalized = removeComments(apexCode);
 

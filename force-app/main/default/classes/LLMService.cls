@@ -39,6 +39,40 @@ public class LLMService {
       '── Org check complete. orgState: ' + JSON.serialize(orgState)
     );
 
+    // ── STAGE 1.6: Existence gate — skip if everything already exists ──
+    System.debug('── STAGE 1.6: Checking existence gate...');
+    Map<String, Object> gateResult = LLMResponseProcessor.runExistenceGateStage(
+      summary,
+      description,
+      orgState
+    );
+    if (gateResult != null && gateResult.get('allSatisfied') == true) {
+      String skipMsg = (String) gateResult.get('summary');
+      System.debug(
+        '── STAGE 1.6: All requested metadata already exists — skipping deploy. ' +
+        skipMsg
+      );
+      try {
+        JiraCallbackService.storeDeploymentStatus(
+          issueKey,
+          'skipped',
+          skipMsg,
+          null
+        );
+      } catch (Exception e) {
+        System.debug(
+          'LLMService: storeDeploymentStatus (skipped) FAILED — ' +
+          e.getMessage()
+        );
+        ErrorLogger.log(e);
+      }
+      FunctionHelper.deferErrorLogDml = false;
+      LLMGroqClient.logTokenSummary();
+      LLMGroqClient.resetTokenCounters();
+      return 'Skipped: ' + skipMsg;
+    }
+    System.debug('── STAGE 1.6 complete. ' + gateResult.get('summary'));
+
     // ── STAGE 1.5: Route — select relevant prompt sections ──
     System.debug('── STAGE 1.5: Routing prompt sections...');
     String systemPrompt = LLMResponseProcessor.runRouterStage(
