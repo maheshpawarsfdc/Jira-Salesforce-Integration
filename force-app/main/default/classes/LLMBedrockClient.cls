@@ -8,29 +8,39 @@ public class LLMBedrockClient {
     String modelId = App_Config__c.getOrgDefaults().Bedrock_Model_Id__c;
     String encodedModelId = EncodingUtil.urlEncode(modelId, 'UTF-8');
 
-    // Bedrock Anthropic models require system prompt as a top-level field,
-    // not as a message with role "system" like OpenAI/Groq format
+    // Converse API requires the system prompt as a top-level array field,
+    // and each message's content as an array of {"text": ...} blocks
+    // (not a bare string like the old Anthropic Invoke format used).
     String systemPrompt = '';
     List<Map<String, Object>> conversationMessages = new List<Map<String, Object>>();
     for (Map<String, Object> msg : messages) {
       if ('system'.equals(msg.get('role'))) {
         systemPrompt = (String) msg.get('content');
       } else {
-        conversationMessages.add(msg);
+        conversationMessages.add(
+          new Map<String, Object>{
+            'role' => msg.get('role'),
+            'content' => new List<Object>{
+              new Map<String, Object>{ 'text' => msg.get('content') }
+            }
+          }
+        );
       }
     }
 
     Map<String, Object> body = new Map<String, Object>{
-      'anthropic_version' => 'bedrock-2023-05-31',
-      'max_tokens' => maxTokens,
-      'messages' => conversationMessages
+      'messages' => conversationMessages,
+      'inferenceConfig' => new Map<String, Object>{ 'maxTokens' => maxTokens }
     };
     if (String.isNotBlank(systemPrompt)) {
-      body.put('system', systemPrompt);
+      body.put(
+        'system',
+        new List<Object>{ new Map<String, Object>{ 'text' => systemPrompt } }
+      );
     }
 
     HttpRequest req = new HttpRequest();
-    req.setEndpoint('callout:Bedrock/model/' + encodedModelId + '/invoke');
+    req.setEndpoint('callout:Bedrock/model/' + encodedModelId + '/converse');
     req.setMethod('POST');
     req.setHeader('Content-Type', 'application/json');
     req.setHeader('Accept', 'application/json');
@@ -42,7 +52,7 @@ public class LLMBedrockClient {
     System.debug('── BEDROCK API CALL #' + LLMGroqClient.apiCallCount);
     System.debug('   Model ID   : ' + modelId);
     System.debug(
-      '   Endpoint   : callout:Bedrock/model/' + encodedModelId + '/invoke'
+      '   Endpoint   : callout:Bedrock/model/' + encodedModelId + '/converse'
     );
     System.debug('   Max Tokens : ' + maxTokens);
     System.debug(
@@ -54,13 +64,27 @@ public class LLMBedrockClient {
     );
     System.debug('════════════════════════════════════════════════');
 
-    HttpResponse res = new Http().send(req);
-    System.debug('── BEDROCK RESPONSE STATUS: ' + res.getStatusCode());
-
-    if (res.getStatusCode() != 200) {
-      System.debug('── BEDROCK ERROR BODY: ' + res.getBody());
-      throw new LLMService.LLMException(
-        'Bedrock API error ' + res.getStatusCode() + ': ' + res.getBody()
+    HttpResponse res;
+    Integer MAX_RETRIES = 2;
+    for (Integer retry = 0; retry <= MAX_RETRIES; retry++) {
+      res = new Http().send(req);
+      System.debug(
+        '── BEDROCK RESPONSE STATUS: ' +
+          res.getStatusCode() +
+          (retry > 0 ? ' (retry ' + retry + ')' : '')
+      );
+      if (res.getStatusCode() == 200) {
+        break; // success — fall through to response processing below
+      }
+      if (res.getStatusCode() != 429 || retry == MAX_RETRIES) {
+        System.debug('── BEDROCK ERROR BODY: ' + res.getBody());
+        throw new LLMService.LLMException(
+          'Bedrock API error ' + res.getStatusCode() + ': ' + res.getBody()
+        );
+      }
+      // 429 and retries remain — log and loop (callout overhead is ~100-300ms)
+      System.debug(
+        'Bedrock 429 rate-limit — retrying (' + retry + '/' + MAX_RETRIES + ')'
       );
     }
 
@@ -75,8 +99,8 @@ public class LLMBedrockClient {
     Integer inputTok = 0;
     Integer outputTok = 0;
     if (usage != null) {
-      inputTok = (Integer) usage.get('input_tokens');
-      outputTok = (Integer) usage.get('output_tokens');
+      inputTok = (Integer) usage.get('inputTokens');
+      outputTok = (Integer) usage.get('outputTokens');
       LLMGroqClient.totalPromptTokens += inputTok;
       LLMGroqClient.totalCompletionTokens += outputTok;
       LLMGroqClient.totalTokens += (inputTok + outputTok);
@@ -94,15 +118,26 @@ public class LLMBedrockClient {
       );
     }
 
-    // Normalize Bedrock response → Groq-shaped Map so LLMResponseProcessor needs no changes.
-    // Bedrock returns: { "content": [{"type":"text","text":"..."}], "stop_reason": "end_turn", ... }
-    // Groq returns:   { "choices": [{"message":{"role":"assistant","content":"..."}}], ... }
-    List<Object> contentBlocks = (List<Object>) bedrockResp.get('content');
+    // Normalize Bedrock Converse response → Groq-shaped Map so LLMResponseProcessor needs no changes.
+    // Bedrock Converse returns: { "output": {"message": {"content": [{"text":"..."}, {"reasoningContent":{...}}]}}, "stopReason": "end_turn", ... }
+    // Groq returns:            { "choices": [{"message":{"role":"assistant","content":"..."}}], ... }
+    Map<String, Object> output = (Map<String, Object>) bedrockResp.get(
+      'output'
+    );
+    Map<String, Object> outputMessage = output != null
+      ? (Map<String, Object>) output.get('message')
+      : null;
+    List<Object> contentBlocks = outputMessage != null
+      ? (List<Object>) outputMessage.get('content')
+      : null;
     String textContent = '';
     if (contentBlocks != null && !contentBlocks.isEmpty()) {
-      Map<String, Object> firstBlock = (Map<String, Object>) contentBlocks[0];
-      if ('text'.equals(firstBlock.get('type'))) {
-        textContent = (String) firstBlock.get('text');
+      for (Object rawBlock : contentBlocks) {
+        Map<String, Object> block = (Map<String, Object>) rawBlock;
+        if (block.get('text') != null) {
+          textContent = (String) block.get('text');
+          break;
+        }
       }
     }
 
@@ -112,7 +147,7 @@ public class LLMBedrockClient {
     };
     Map<String, Object> choice = new Map<String, Object>{
       'message' => message,
-      'finish_reason' => bedrockResp.get('stop_reason')
+      'finish_reason' => bedrockResp.get('stopReason')
     };
     Map<String, Object> normalizedUsage = new Map<String, Object>{
       'prompt_tokens' => inputTok,

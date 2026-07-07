@@ -235,6 +235,204 @@ public class LLMOrgStateService {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // ALWAYS-ON EXISTENCE LISTS
+  // Cheap, single-query lookups used by the existence gate (and
+  // available to the generation prompt) regardless of ticket
+  // keywords — unlike the name-detection blocks below, which only
+  // fetch one specific item when the ticket text mentions it.
+  // ─────────────────────────────────────────────────────────────
+  public static List<String> getAllApexClassNames() {
+    List<String> result = new List<String>();
+    try {
+      Map<String, Object> classResult = MetadataHelper.runToolingApiQuery(
+        'SELECT Name FROM ApexClass WHERE NamespacePrefix = null ORDER BY Name'
+      );
+      List<Object> records = (List<Object>) classResult.get('records');
+      if (records != null) {
+        for (Object raw : records) {
+          result.add((String) ((Map<String, Object>) raw).get('Name'));
+        }
+      }
+    } catch (Exception e) {
+      System.debug('getAllApexClassNames failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  public static List<String> getAllApexTriggerNames() {
+    List<String> result = new List<String>();
+    try {
+      Map<String, Object> triggerResult = MetadataHelper.runToolingApiQuery(
+        'SELECT Name FROM ApexTrigger WHERE NamespacePrefix = null ORDER BY Name'
+      );
+      List<Object> records = (List<Object>) triggerResult.get('records');
+      if (records != null) {
+        for (Object raw : records) {
+          result.add((String) ((Map<String, Object>) raw).get('Name'));
+        }
+      }
+    } catch (Exception e) {
+      System.debug('getAllApexTriggerNames failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  public static List<String> getAllLwcComponentNames() {
+    List<String> result = new List<String>();
+    try {
+      Map<String, Object> bundleResult = MetadataHelper.runToolingApiQuery(
+        'SELECT DeveloperName FROM LightningComponentBundle WHERE NamespacePrefix = null ORDER BY DeveloperName'
+      );
+      List<Object> records = (List<Object>) bundleResult.get('records');
+      if (records != null) {
+        for (Object raw : records) {
+          result.add((String) ((Map<String, Object>) raw).get('DeveloperName'));
+        }
+      }
+    } catch (Exception e) {
+      System.debug('getAllLwcComponentNames failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  public static List<String> getAllPermissionSetNames() {
+    List<String> result = new List<String>();
+    try {
+      for (PermissionSet ps : [
+        SELECT Name
+        FROM PermissionSet
+        WHERE NamespacePrefix = NULL AND IsOwnedByProfile = FALSE
+      ]) {
+        result.add(ps.Name);
+      }
+    } catch (Exception e) {
+      System.debug('getAllPermissionSetNames failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  public static List<String> getAllProfileNames() {
+    List<String> result = new List<String>();
+    try {
+      for (Profile p : [SELECT Name FROM Profile]) {
+        result.add(p.Name);
+      }
+    } catch (Exception e) {
+      System.debug('getAllProfileNames failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  public static List<String> getAllStaticResourceNames() {
+    List<String> result = new List<String>();
+    try {
+      for (StaticResource sr : [
+        SELECT Name
+        FROM StaticResource
+        WHERE NamespacePrefix = NULL
+      ]) {
+        result.add(sr.Name);
+      }
+    } catch (Exception e) {
+      System.debug('getAllStaticResourceNames failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  // Custom tabs are keyed by the sObject they expose (matches the
+  // 'memberName' convention used for CustomTab files elsewhere in
+  // this codebase) — read via Schema.describeTabs(), no callout needed.
+  public static List<String> getExistingCustomTabSobjectNames() {
+    Set<String> result = new Set<String>();
+    try {
+      for (Schema.DescribeTabSetResult tsr : Schema.describeTabs()) {
+        for (Schema.DescribeTabResult dtr : tsr.getTabs()) {
+          if (dtr.isCustom() && String.isNotBlank(dtr.getSobjectName())) {
+            result.add(dtr.getSobjectName());
+          }
+        }
+      }
+    } catch (Exception e) {
+      System.debug(
+        'getExistingCustomTabSobjectNames failed: ' + e.getMessage()
+      );
+    }
+    return new List<String>(result);
+  }
+
+  // Deployed translation languages — listMetadata is the only way to
+  // enumerate Translations components (they aren't SOQL/Tooling queryable).
+  public static List<String> getExistingTranslationLanguages() {
+    List<String> result = new List<String>();
+    try {
+      MetadataService.ListMetadataQuery query = new MetadataService.ListMetadataQuery();
+      query.type_x = 'Translations';
+      Double asOfVersion = 61.0;
+      MetadataService.FileProperties[] props = metaPort.listMetadata(
+        new List<MetadataService.ListMetadataQuery>{ query },
+        asOfVersion
+      );
+      if (props != null) {
+        for (MetadataService.FileProperties fp : props) {
+          if (fp != null && String.isNotBlank(fp.fullName)) {
+            result.add(fp.fullName);
+          }
+        }
+      }
+    } catch (Exception e) {
+      System.debug('getExistingTranslationLanguages failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  // Validation rules, scoped to the objects already known to be
+  // relevant to this ticket (same pattern as batchFetchLayoutNames).
+  public static Map<String, List<String>> getValidationRulesForObjects(
+    List<String> objectNames
+  ) {
+    Map<String, List<String>> result = new Map<String, List<String>>();
+    if (objectNames == null || objectNames.isEmpty()) {
+      return result;
+    }
+    try {
+      List<String> quoted = new List<String>();
+      for (String n : objectNames) {
+        quoted.add('\'' + String.escapeSingleQuotes(n) + '\'');
+      }
+      String soql =
+        'SELECT ValidationName, EntityDefinition.QualifiedApiName FROM ValidationRule' +
+        ' WHERE EntityDefinition.QualifiedApiName IN (' +
+        String.join(quoted, ',') +
+        ')' +
+        ' ORDER BY EntityDefinition.QualifiedApiName, ValidationName';
+      Map<String, Object> vrResult = MetadataHelper.runToolingApiQuery(soql);
+      List<Object> records = (List<Object>) vrResult.get('records');
+      if (records != null) {
+        for (Object raw : records) {
+          Map<String, Object> rec = (Map<String, Object>) raw;
+          String ruleName = (String) rec.get('ValidationName');
+          Map<String, Object> entityDef = (Map<String, Object>) rec.get(
+            'EntityDefinition'
+          );
+          String objName = entityDef != null
+            ? (String) entityDef.get('QualifiedApiName')
+            : null;
+          if (String.isBlank(objName)) {
+            continue;
+          }
+          if (!result.containsKey(objName)) {
+            result.put(objName, new List<String>());
+          }
+          result.get(objName).add(ruleName);
+        }
+      }
+    } catch (Exception e) {
+      System.debug('getValidationRulesForObjects failed: ' + e.getMessage());
+    }
+    return result;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // LIGHTWEIGHT ORG CHECK
   // Reads existing fields, layouts, queues, labels, triggers, LWC
   // so XML generation stage knows what already exists in the org.
@@ -332,6 +530,85 @@ public class LLMOrgStateService {
         }
       }
 
+      // ── Always-on existence lists for the existence gate (cheap, one query each) ──
+      try {
+        orgState.put('existingApexClassNames', getAllApexClassNames());
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: apex class names fetch failed — ' + e.getMessage()
+        );
+      }
+      try {
+        orgState.put('existingApexTriggerNames', getAllApexTriggerNames());
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: apex trigger names fetch failed — ' + e.getMessage()
+        );
+      }
+      try {
+        orgState.put('existingLwcComponentNames', getAllLwcComponentNames());
+      } catch (Exception e) {
+        System.debug('runOrgCheck: LWC names fetch failed — ' + e.getMessage());
+      }
+      try {
+        orgState.put('existingPermissionSetNames', getAllPermissionSetNames());
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: permission set names fetch failed — ' + e.getMessage()
+        );
+      }
+      try {
+        orgState.put('existingProfileNames', getAllProfileNames());
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: profile names fetch failed — ' + e.getMessage()
+        );
+      }
+      try {
+        orgState.put(
+          'existingCustomTabSobjectNames',
+          getExistingCustomTabSobjectNames()
+        );
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: custom tab names fetch failed — ' + e.getMessage()
+        );
+      }
+      try {
+        orgState.put(
+          'existingStaticResourceNames',
+          getAllStaticResourceNames()
+        );
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: static resource names fetch failed — ' + e.getMessage()
+        );
+      }
+      try {
+        orgState.put(
+          'existingTranslationLanguages',
+          getExistingTranslationLanguages()
+        );
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: translation languages fetch failed — ' + e.getMessage()
+        );
+      }
+      if (!existingObjects.isEmpty()) {
+        try {
+          Map<String, List<String>> vrByObject = getValidationRulesForObjects(
+            existingObjects
+          );
+          if (!vrByObject.isEmpty()) {
+            orgState.put('existingValidationRules', vrByObject);
+          }
+        } catch (Exception e) {
+          System.debug(
+            'runOrgCheck: validation rules fetch failed — ' + e.getMessage()
+          );
+        }
+      }
+
       if (!StaticResourceHelper.currentAttachments.isEmpty()) {
         List<Map<String, Object>> csvSummaries = new List<Map<String, Object>>();
         for (
@@ -374,155 +651,146 @@ public class LLMOrgStateService {
 
       String ticketTextLower = (summary + ' ' + description).toLowerCase();
 
-      if (ticketTextLower.contains('queue')) {
-        try {
-          List<Map<String, Object>> queueList = new List<Map<String, Object>>();
-          for (Group g : [
-            SELECT Id, Name, DeveloperName, Email, DoesSendEmailToMembers
-            FROM Group
-            WHERE Type = 'Queue'
-            ORDER BY Name
+      // Queues and Public Groups — always fetched (cheap, small result sets)
+      // so the existence gate has real ground truth regardless of whether
+      // the ticket text happens to say "queue"/"public group".
+      try {
+        List<Map<String, Object>> queueList = new List<Map<String, Object>>();
+        for (Group g : [
+          SELECT Id, Name, DeveloperName, Email, DoesSendEmailToMembers
+          FROM Group
+          WHERE Type = 'Queue'
+          ORDER BY Name
+        ]) {
+          List<String> sobjectTypes = new List<String>();
+          for (QueueSobject qs : [
+            SELECT SobjectType
+            FROM QueueSobject
+            WHERE QueueId = :g.Id
           ]) {
-            List<String> sobjectTypes = new List<String>();
-            for (QueueSobject qs : [
-              SELECT SobjectType
-              FROM QueueSobject
-              WHERE QueueId = :g.Id
-            ]) {
-              sobjectTypes.add(qs.SobjectType);
-            }
-            List<String> members = new List<String>();
-            for (GroupMember gm : [
-              SELECT UserOrGroup.Name
-              FROM GroupMember
-              WHERE GroupId = :g.Id
-            ]) {
-              members.add((String) gm.getSObject('UserOrGroup').get('Name'));
-            }
-            queueList.add(
-              new Map<String, Object>{
-                'developerName' => g.DeveloperName,
-                'name' => g.Name,
-                'email' => g.Email,
-                'doesSendEmailToMembers' => g.DoesSendEmailToMembers,
-                'sobjectTypes' => sobjectTypes,
-                'members' => members
-              }
-            );
+            sobjectTypes.add(qs.SobjectType);
           }
-          if (!queueList.isEmpty()) {
-            orgState.put('existingQueues', queueList);
-            System.debug(
-              'runOrgCheck: fetched ' + queueList.size() + ' queue(s)'
-            );
-          }
-        } catch (Exception e) {
-          System.debug('runOrgCheck: queue fetch failed — ' + e.getMessage());
-          ErrorLogger.log(e);
-        }
-      }
-
-      if (ticketTextLower.contains('public group')) {
-        try {
-          List<Map<String, Object>> groupList = new List<Map<String, Object>>();
-          for (Group g : [
-            SELECT
-              Id,
-              Name,
-              DeveloperName,
-              DoesIncludeBosses,
-              DoesSendEmailToMembers
-            FROM Group
-            WHERE Type = 'Regular'
-            ORDER BY Name
+          List<String> members = new List<String>();
+          for (GroupMember gm : [
+            SELECT UserOrGroup.Name
+            FROM GroupMember
+            WHERE GroupId = :g.Id
           ]) {
-            List<String> members = new List<String>();
-            for (GroupMember gm : [
-              SELECT UserOrGroup.Name
-              FROM GroupMember
-              WHERE GroupId = :g.Id
-            ]) {
-              members.add((String) gm.getSObject('UserOrGroup').get('Name'));
+            members.add((String) gm.getSObject('UserOrGroup').get('Name'));
+          }
+          queueList.add(
+            new Map<String, Object>{
+              'developerName' => g.DeveloperName,
+              'name' => g.Name,
+              'email' => g.Email,
+              'doesSendEmailToMembers' => g.DoesSendEmailToMembers,
+              'sobjectTypes' => sobjectTypes,
+              'members' => members
             }
-            groupList.add(
-              new Map<String, Object>{
-                'developerName' => g.DeveloperName,
-                'name' => g.Name,
-                'doesIncludeBosses' => g.DoesIncludeBosses,
-                'doesSendEmailToMembers' => g.DoesSendEmailToMembers,
-                'members' => members
-              }
-            );
-          }
-          if (!groupList.isEmpty()) {
-            orgState.put('existingGroups', groupList);
-            System.debug(
-              'runOrgCheck: fetched ' + groupList.size() + ' public group(s)'
-            );
-          }
-        } catch (Exception e) {
-          System.debug(
-            'runOrgCheck: public group fetch failed — ' + e.getMessage()
           );
-          ErrorLogger.log(e);
         }
+        if (!queueList.isEmpty()) {
+          orgState.put('existingQueues', queueList);
+          System.debug(
+            'runOrgCheck: fetched ' + queueList.size() + ' queue(s)'
+          );
+        }
+      } catch (Exception e) {
+        System.debug('runOrgCheck: queue fetch failed — ' + e.getMessage());
+        ErrorLogger.log(e);
       }
 
-      if (ticketTextLower.contains('assignment rule')) {
-        try {
-          List<Map<String, Object>> assignmentRulesState = new List<Map<String, Object>>();
-          for (String objType : new List<String>{ 'Lead', 'Case' }) {
-            Map<String, Object> state = getAssignmentRulesState(objType);
-            if (state != null) {
-              assignmentRulesState.add(state);
+      try {
+        List<Map<String, Object>> groupList = new List<Map<String, Object>>();
+        for (Group g : [
+          SELECT
+            Id,
+            Name,
+            DeveloperName,
+            DoesIncludeBosses,
+            DoesSendEmailToMembers
+          FROM Group
+          WHERE Type = 'Regular'
+          ORDER BY Name
+        ]) {
+          List<String> members = new List<String>();
+          for (GroupMember gm : [
+            SELECT UserOrGroup.Name
+            FROM GroupMember
+            WHERE GroupId = :g.Id
+          ]) {
+            members.add((String) gm.getSObject('UserOrGroup').get('Name'));
+          }
+          groupList.add(
+            new Map<String, Object>{
+              'developerName' => g.DeveloperName,
+              'name' => g.Name,
+              'doesIncludeBosses' => g.DoesIncludeBosses,
+              'doesSendEmailToMembers' => g.DoesSendEmailToMembers,
+              'members' => members
             }
-          }
-          if (!assignmentRulesState.isEmpty()) {
-            orgState.put('existingAssignmentRules', assignmentRulesState);
-            System.debug('runOrgCheck: fetched assignment rules state');
-          }
-        } catch (Exception e) {
-          System.debug(
-            'runOrgCheck: assignment rules fetch failed — ' + e.getMessage()
           );
-          ErrorLogger.log(e);
         }
+        if (!groupList.isEmpty()) {
+          orgState.put('existingGroups', groupList);
+          System.debug(
+            'runOrgCheck: fetched ' + groupList.size() + ' public group(s)'
+          );
+        }
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: public group fetch failed — ' + e.getMessage()
+        );
+        ErrorLogger.log(e);
       }
 
-      if (ticketTextLower.contains('named credential')) {
-        try {
-          List<Map<String, Object>> ncState = getNamedCredentialsState();
-          if (ncState != null && !ncState.isEmpty()) {
-            orgState.put('existingNamedCredentials', ncState);
-            System.debug(
-              'runOrgCheck: fetched ' + ncState.size() + ' named credential(s)'
-            );
+      // Assignment Rules, Named Credentials, Auth Providers — always
+      // fetched (same reasoning as Queues/Public Groups above).
+      try {
+        List<Map<String, Object>> assignmentRulesState = new List<Map<String, Object>>();
+        for (String objType : new List<String>{ 'Lead', 'Case' }) {
+          Map<String, Object> state = getAssignmentRulesState(objType);
+          if (state != null) {
+            assignmentRulesState.add(state);
           }
-        } catch (Exception e) {
-          System.debug(
-            'runOrgCheck: named credentials fetch failed — ' + e.getMessage()
-          );
         }
+        if (!assignmentRulesState.isEmpty()) {
+          orgState.put('existingAssignmentRules', assignmentRulesState);
+          System.debug('runOrgCheck: fetched assignment rules state');
+        }
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: assignment rules fetch failed — ' + e.getMessage()
+        );
+        ErrorLogger.log(e);
       }
 
-      if (
-        ticketTextLower.contains('auth provider') ||
-        ticketTextLower.contains('authentication provider') ||
-        ticketTextLower.contains('authprovider')
-      ) {
-        try {
-          List<Map<String, Object>> apState = getAuthProvidersState();
-          if (apState != null && !apState.isEmpty()) {
-            orgState.put('existingAuthProviders', apState);
-            System.debug(
-              'runOrgCheck: fetched ' + apState.size() + ' auth provider(s)'
-            );
-          }
-        } catch (Exception e) {
+      try {
+        List<Map<String, Object>> ncState = getNamedCredentialsState();
+        if (ncState != null && !ncState.isEmpty()) {
+          orgState.put('existingNamedCredentials', ncState);
           System.debug(
-            'runOrgCheck: auth providers fetch failed — ' + e.getMessage()
+            'runOrgCheck: fetched ' + ncState.size() + ' named credential(s)'
           );
         }
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: named credentials fetch failed — ' + e.getMessage()
+        );
+      }
+
+      try {
+        List<Map<String, Object>> apState = getAuthProvidersState();
+        if (apState != null && !apState.isEmpty()) {
+          orgState.put('existingAuthProviders', apState);
+          System.debug(
+            'runOrgCheck: fetched ' + apState.size() + ' auth provider(s)'
+          );
+        }
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: auth providers fetch failed — ' + e.getMessage()
+        );
       }
 
       if (ticketTextLower.contains('record type')) {

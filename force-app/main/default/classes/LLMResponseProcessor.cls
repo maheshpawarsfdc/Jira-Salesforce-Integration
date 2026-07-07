@@ -8,6 +8,405 @@ public class LLMResponseProcessor {
   public static List<String> pendingTestClassContents;
 
   // ─────────────────────────────────────────────────────────────
+  // STAGE 1.6 — EXISTENCE GATE
+  // Calls LLM to compare ticket requirements against org state and
+  // determine whether EVERY requested component already exists —
+  // i.e. this ticket is a pure duplicate/re-run with nothing new to do.
+  // Any error, missing CMT record, or uncertainty falls back to
+  // allSatisfied=false so the normal generation pipeline still runs.
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, Object> runExistenceGateStage(
+    String summary,
+    String description,
+    Map<String, Object> orgState
+  ) {
+    try {
+      String gateSystemPrompt = PromptService.getPromptByKey('EXISTENCE_GATE');
+      if (String.isBlank(gateSystemPrompt)) {
+        System.debug(
+          '[EXISTENCE-GATE] EXISTENCE_GATE prompt not found — skipping gate, proceeding normally.'
+        );
+        return new Map<String, Object>{ 'allSatisfied' => false };
+      }
+
+      String userMsg =
+        'Ticket Summary: ' +
+        summary +
+        '\nTicket Description: ' +
+        (String.isBlank(description) ? '(none)' : description) +
+        '\n\nCurrent org state (JSON):\n' +
+        JSON.serialize(orgState);
+
+      List<Map<String, Object>> gateMessages = new List<Map<String, Object>>{
+        new Map<String, Object>{
+          'role' => 'system',
+          'content' => gateSystemPrompt
+        },
+        new Map<String, Object>{ 'role' => 'user', 'content' => userMsg }
+      };
+
+      System.debug('[EXISTENCE-GATE] Calling LLM for existence check...');
+
+      Map<String, Object> gateResponse = LLMGroqClient.callLLM(
+        gateMessages,
+        new List<Map<String, Object>>(),
+        null
+      );
+
+      if (gateResponse == null || !gateResponse.containsKey('choices')) {
+        System.debug(
+          '[EXISTENCE-GATE] ERROR — response missing choices. Response: ' +
+          gateResponse
+        );
+        return new Map<String, Object>{ 'allSatisfied' => false };
+      }
+
+      List<Object> gateChoices = (List<Object>) gateResponse.get('choices');
+      Map<String, Object> gateChoice = (Map<String, Object>) gateChoices[0];
+      Map<String, Object> gateMessage = (Map<String, Object>) gateChoice.get(
+        'message'
+      );
+      String content = LLMGroqClient.cleanJsonResponse(
+        (String) gateMessage.get('content')
+      );
+
+      System.debug('[EXISTENCE-GATE] Raw response: ' + content);
+
+      Map<String, Object> parsed = (Map<String, Object>) JSON.deserializeUntyped(
+        content
+      );
+      List<Object> items = (List<Object>) parsed.get('items');
+
+      // Hard cross-check — never trust the LLM's existsAlready claim
+      // blindly for any metadata type we have real org-state data for;
+      // verify programmatically so a hallucinated "already exists"
+      // (like the Reservation_Access PermissionSet incident) can't
+      // wrongly cause a skip.
+      Boolean allSatisfied = (items != null && !items.isEmpty());
+      List<Map<String, Object>> verifiedItems = new List<Map<String, Object>>();
+
+      if (items != null) {
+        for (Object rawItem : items) {
+          Map<String, Object> item = (Map<String, Object>) rawItem;
+          String itype = (String) item.get('type');
+          String iname = (String) item.get('name');
+          Boolean claimedExists = item.get('existsAlready') == true;
+          Boolean verifiedExists = verifyItemExists(
+            itype,
+            iname,
+            orgState,
+            claimedExists
+          );
+
+          if (!verifiedExists) {
+            allSatisfied = false;
+          }
+          verifiedItems.add(
+            new Map<String, Object>{
+              'type' => itype,
+              'name' => iname,
+              'existsAlready' => verifiedExists
+            }
+          );
+        }
+      }
+
+      String gateSummary = (String) parsed.get('summary');
+      if (String.isBlank(gateSummary)) {
+        gateSummary = allSatisfied
+          ? 'All requested metadata already exists in the org — nothing to deploy.'
+          : 'Some requested metadata is new — proceeding with deployment.';
+      }
+
+      System.debug(
+        '[EXISTENCE-GATE] allSatisfied=' +
+          allSatisfied +
+          ' items=' +
+          verifiedItems
+      );
+
+      return new Map<String, Object>{
+        'allSatisfied' => allSatisfied,
+        'summary' => gateSummary,
+        'items' => verifiedItems
+      };
+    } catch (Exception ex) {
+      System.debug(
+        '[EXISTENCE-GATE] ERROR — ' + ex.getTypeName() + ': ' + ex.getMessage()
+      );
+      System.debug('[EXISTENCE-GATE] Stack trace: ' + ex.getStackTraceString());
+      ErrorLogger.log(ex);
+      // Fail-safe: any error in the gate must NOT block real work.
+      return new Map<String, Object>{ 'allSatisfied' => false };
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // EXISTENCE GATE — PER-TYPE VERIFICATION
+  // Dispatches to the right orgState list/map for each metadata
+  // type this tool supports. Falls back to trusting the LLM's own
+  // claim only for types we have no ground truth for.
+  // ─────────────────────────────────────────────────────────────
+  private static Boolean verifyItemExists(
+    String itype,
+    String iname,
+    Map<String, Object> orgState,
+    Boolean claimedExists
+  ) {
+    if (String.isBlank(itype) || String.isBlank(iname)) {
+      return claimedExists;
+    }
+
+    // CustomSetting and CustomMetadataType are both just CustomObject
+    // variants under the hood (__c / __mdt suffix) — Schema.getGlobalDescribe()
+    // doesn't distinguish them from regular custom objects, so they already
+    // live in existingObjects/existingFields. Route them to the same check
+    // regardless of which label the LLM used.
+    if (
+      'CustomObject'.equalsIgnoreCase(itype) ||
+      'CustomSetting'.equalsIgnoreCase(itype) ||
+      'CustomMetadataType'.equalsIgnoreCase(itype)
+    ) {
+      return listContainsIgnoreCase(orgState.get('existingObjects'), iname);
+    }
+
+    if (
+      ('CustomField'.equalsIgnoreCase(itype) ||
+      'CustomSettingField'.equalsIgnoreCase(itype) ||
+      'CustomMetadataField'.equalsIgnoreCase(itype)) && iname.contains('.')
+    ) {
+      String parentObj = iname.substringBefore('.');
+      String fieldName = iname.substringAfter('.');
+      Object fieldsMap = orgState.get('existingFields');
+      Object fieldsForObj = fieldsMap instanceof Map<String, Object>
+        ? ((Map<String, Object>) fieldsMap).get(parentObj)
+        : null;
+      return listContainsIgnoreCase(fieldsForObj, fieldName);
+    }
+
+    if ('ApexClass'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingApexClassNames'),
+        iname
+      );
+    }
+
+    if ('ApexTrigger'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingApexTriggerNames'),
+        iname
+      );
+    }
+
+    if ('LWC'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingLwcComponentNames'),
+        iname
+      );
+    }
+
+    if ('PermissionSet'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingPermissionSetNames'),
+        iname
+      );
+    }
+
+    if ('Profile'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingProfileNames'),
+        iname
+      );
+    }
+
+    if ('CustomTab'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingCustomTabSobjectNames'),
+        iname
+      );
+    }
+
+    if ('StaticResource'.equalsIgnoreCase(itype)) {
+      return listContainsIgnoreCase(
+        orgState.get('existingStaticResourceNames'),
+        iname
+      );
+    }
+
+    if ('Layout'.equalsIgnoreCase(itype) && iname.contains('-')) {
+      String parentObj = iname.substringBefore('-');
+      Object layoutsMap = orgState.get('existingLayouts');
+      Object layoutsForObj = layoutsMap instanceof Map<String, Object>
+        ? ((Map<String, Object>) layoutsMap).get(parentObj)
+        : null;
+      if (layoutsForObj instanceof List<Object>) {
+        for (Object raw : (List<Object>) layoutsForObj) {
+          Map<String, Object> l = (Map<String, Object>) raw;
+          if (iname.equalsIgnoreCase((String) l.get('fullName'))) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    if ('RecordType'.equalsIgnoreCase(itype)) {
+      Object rtList = orgState.get('existingRecordTypes');
+      if (rtList instanceof List<Object>) {
+        for (Object raw : (List<Object>) rtList) {
+          Map<String, Object> rt = (Map<String, Object>) raw;
+          String rtName = (String) rt.get('developerName');
+          String rtObj = (String) rt.get('sobjectType');
+          if (
+            iname.equalsIgnoreCase(rtObj + '.' + rtName) ||
+            iname.equalsIgnoreCase(rtName)
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    if (
+      'CustomLabel'.equalsIgnoreCase(itype) ||
+      'CustomLabels'.equalsIgnoreCase(itype)
+    ) {
+      Object labelList = orgState.get('existingCustomLabels');
+      if (labelList instanceof List<Object>) {
+        for (Object raw : (List<Object>) labelList) {
+          Map<String, Object> lbl = (Map<String, Object>) raw;
+          if (iname.equalsIgnoreCase((String) lbl.get('name'))) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    if (
+      'Translations'.equalsIgnoreCase(itype) ||
+      'Translation'.equalsIgnoreCase(itype)
+    ) {
+      String normalizedLang = LLMXmlSanitizer.normalizeTranslationLanguageCode(
+        iname
+      );
+      return listContainsIgnoreCase(
+        orgState.get('existingTranslationLanguages'),
+        normalizedLang
+      );
+    }
+
+    if ('ValidationRule'.equalsIgnoreCase(itype) && iname.contains('.')) {
+      String parentObj = iname.substringBefore('.');
+      String ruleName = iname.substringAfter('.');
+      Object vrMap = orgState.get('existingValidationRules');
+      Object rulesForObj = vrMap instanceof Map<String, Object>
+        ? ((Map<String, Object>) vrMap).get(parentObj)
+        : null;
+      return listContainsIgnoreCase(rulesForObj, ruleName);
+    }
+
+    if ('Queue'.equalsIgnoreCase(itype)) {
+      return matchesMapListByKeys(
+        orgState.get('existingQueues'),
+        iname,
+        new List<String>{ 'developerName', 'name' }
+      );
+    }
+
+    if ('PublicGroup'.equalsIgnoreCase(itype)) {
+      return matchesMapListByKeys(
+        orgState.get('existingGroups'),
+        iname,
+        new List<String>{ 'developerName', 'name' }
+      );
+    }
+
+    if ('NamedCredential'.equalsIgnoreCase(itype)) {
+      return matchesMapListByKeys(
+        orgState.get('existingNamedCredentials'),
+        iname,
+        new List<String>{ 'apiName' }
+      );
+    }
+
+    if ('AuthProvider'.equalsIgnoreCase(itype)) {
+      return matchesMapListByKeys(
+        orgState.get('existingAuthProviders'),
+        iname,
+        new List<String>{ 'developerName' }
+      );
+    }
+
+    if (
+      'AssignmentRules'.equalsIgnoreCase(itype) ||
+      'AssignmentRule'.equalsIgnoreCase(itype)
+    ) {
+      Object arList = orgState.get('existingAssignmentRules');
+      if (arList instanceof List<Object>) {
+        for (Object raw : (List<Object>) arList) {
+          Map<String, Object> ar = (Map<String, Object>) raw;
+          String objType = (String) ar.get('objectType');
+          Object rules = ar.get('rules');
+          if (rules instanceof List<Object>) {
+            for (Object rRaw : (List<Object>) rules) {
+              Map<String, Object> rule = (Map<String, Object>) rRaw;
+              String ruleName = (String) rule.get('fullName');
+              if (
+                iname.equalsIgnoreCase(objType + '.' + ruleName) ||
+                iname.equalsIgnoreCase(ruleName)
+              ) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+      return false;
+    }
+
+    // Unknown/unmapped type — no dedicated ground truth available;
+    // trust the LLM's own claim rather than block it.
+    return claimedExists;
+  }
+
+  private static Boolean listContainsIgnoreCase(Object rawList, String target) {
+    if (!(rawList instanceof List<Object>) || String.isBlank(target)) {
+      return false;
+    }
+    for (Object o : (List<Object>) rawList) {
+      if (target.equalsIgnoreCase(String.valueOf(o))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static Boolean matchesMapListByKeys(
+    Object rawList,
+    String target,
+    List<String> keys
+  ) {
+    if (!(rawList instanceof List<Object>) || String.isBlank(target)) {
+      return false;
+    }
+    for (Object raw : (List<Object>) rawList) {
+      if (!(raw instanceof Map<String, Object>)) {
+        continue;
+      }
+      Map<String, Object> m = (Map<String, Object>) raw;
+      for (String k : keys) {
+        Object v = m.get(k);
+        if (v != null && target.equalsIgnoreCase(String.valueOf(v))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // STAGE 1.5 — PROMPT ROUTER
   // Calls LLM to classify ticket and pick prompt sections,
   // then assembles the XML-generation system prompt from CMT records.
@@ -162,7 +561,56 @@ public class LLMResponseProcessor {
       System.debug('=== RAW LLM XML REPAIR RESPONSE END ===');
     }
 
-    return processXmlGenerationResponse(content, issueKey, orgState);
+    try {
+      return processXmlGenerationResponse(content, issueKey, orgState);
+    } catch (ApexCodeValidator.ValidationException ve) {
+      System.debug(
+        '[APEX-VALIDATOR] Caught ValidationException — requesting targeted repair: ' +
+        ve.getMessage()
+      );
+      messages.add(
+        new Map<String, Object>{ 'role' => 'assistant', 'content' => content }
+      );
+      messages.add(
+        new Map<String, Object>{
+          'role' => 'user',
+          'content' => 'The generated Apex code failed static analysis with this error:\n' +
+          ve.getMessage() +
+          '\n\nReturn the COMPLETE corrected JSON. Fix ONLY the identified issue — do not change other files. ' +
+          'Key rules to remember:\n' +
+          '- Use && for logical AND and || for logical OR in Apex (not AND/OR — those are SOQL-only).\n' +
+          '- Every opening brace { must have a matching closing brace }.\n' +
+          'Return ONLY valid JSON with no markdown fences.'
+        }
+      );
+      Map<String, Object> repairResponse = LLMGroqClient.callLLM(
+        messages,
+        new List<Map<String, Object>>(),
+        null,
+        8096
+      );
+      List<Object> repairChoices = (List<Object>) repairResponse.get('choices');
+      Map<String, Object> repairChoice = (Map<String, Object>) repairChoices[0];
+      Map<String, Object> repairMsg = (Map<String, Object>) repairChoice.get(
+        'message'
+      );
+      content = (String) repairMsg.get('content');
+      FunctionHelper.hadError = false;
+      System.debug(
+        '[APEX-VALIDATOR] Repair response received — re-processing.'
+      );
+      try {
+        return processXmlGenerationResponse(content, issueKey, orgState);
+      } catch (ApexCodeValidator.ValidationException ve2) {
+        System.debug(
+          '[APEX-VALIDATOR] Repair attempt still failed validation: ' +
+          ve2.getMessage()
+        );
+        FunctionHelper.hadError = true;
+        return 'Error: Apex code failed static validation after repair attempt: ' +
+          ve2.getMessage();
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -857,11 +1305,7 @@ public class LLMResponseProcessor {
                 ']: ' +
                 e.getMessage()
             );
-            FunctionHelper.hadError = true;
-            return 'Error: Code quality check failed for ' +
-              filePath +
-              ': ' +
-              e.getMessage();
+            throw e; // re-throw so runXmlGenerationStage() retry can catch, repair, and re-process
           }
         }
 

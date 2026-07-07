@@ -68,7 +68,19 @@
            if (!m.matches()) { record.addError('...'); }
 - NEVER generate CustomField XML for any field that already exists in orgState.existingFields.
 - BEFORE writing any CustomObject XML, scan orgState.existingFields for the object.
-  If ANY field has type containing "MasterDetail" → sharingModel MUST be ControlledByParent.]]></value>
+  If ANY field has type containing "MasterDetail" → sharingModel MUST be ControlledByParent.
+16. NEVER use AND, OR, NOT as logical operators in Apex code outside of SOQL queries.
+    In Apex use: && (logical AND), || (logical OR), ! (logical NOT).
+    AND / OR are ONLY valid inside a SOQL WHERE clause.
+    WRONG:  if (lead.Status == 'Open' AND lead.Rating == 'Hot')
+    CORRECT: if (lead.Status == 'Open' && lead.Rating == 'Hot')
+    WRONG:  if (acc.Type == 'Partner' OR acc.Type == 'Customer')
+    CORRECT: if (acc.Type == 'Partner' || acc.Type == 'Customer')
+17. Every class, method, if-block, for-loop, and while-loop MUST have a matching closing brace.
+    Count your { and } before emitting — the totals must be equal.
+    An unclosed class or method causes: unexpected token: '<EOF>' at compile time.
+    WRONG:  public class Foo { public static void bar() { if (x) { doThing(); }
+    CORRECT: public class Foo { public static void bar() { if (x) { doThing(); } } }]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>

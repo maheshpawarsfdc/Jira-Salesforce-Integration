@@ -1,19 +1,14 @@
 public class LLMGroqClient {
-  private static final String GROQ_BASE_URL = App_Config__c.getOrgDefaults()
-    .Groq_Base_URL__c;
-  private static final String GROQ_API_KEY = App_Config__c.getOrgDefaults()
-    .Groq_API_Key__c;
-  private static final String GROQ_MODEL = App_Config__c.getOrgDefaults()
-    .Groq_Model__c;
-
-  // ── TOKEN TRACKING ─────────────────────────────────────────────
+  // ── TOKEN TRACKING (shared across all LLM calls, any provider) ─
   public static Integer apiCallCount = 0;
   public static Integer totalPromptTokens = 0;
   public static Integer totalCompletionTokens = 0;
   public static Integer totalTokens = 0;
 
   // ─────────────────────────────────────────────────────────────
-  // CALL GROQ API
+  // CALL LLM — delegates to LLMBedrockClient.
+  // Kept as a distinct method (rather than removed) because
+  // ApexTestRunQueueable calls this entry point directly.
   // ─────────────────────────────────────────────────────────────
   public static Map<String, Object> callGroq(
     List<Map<String, Object>> messages,
@@ -29,91 +24,11 @@ public class LLMGroqClient {
     String toolChoice,
     Integer maxTokens
   ) {
-    HttpRequest req = new HttpRequest();
-
-    apiCallCount++;
-    System.debug(
-      '── GROQ API CALL #' + apiCallCount + ' (max_tokens=' + maxTokens + ')'
-    );
-
-    req.setEndpoint(GROQ_BASE_URL + '/chat/completions');
-    req.setMethod('POST');
-    req.setHeader('Authorization', 'Bearer ' + GROQ_API_KEY);
-    req.setHeader('Content-Type', 'application/json');
-    req.setTimeout(120000);
-
-    Map<String, Object> body = new Map<String, Object>{
-      'model' => GROQ_MODEL,
-      'messages' => messages,
-      'max_tokens' => maxTokens
-    };
-
-    if (tools != null && !tools.isEmpty()) {
-      body.put('tools', tools);
-      body.put(
-        'tool_choice',
-        String.isNotBlank(toolChoice) ? toolChoice : 'auto'
-      );
-    }
-
-    req.setBody(JSON.serialize(body));
-
-    HttpResponse res;
-    Integer MAX_RETRIES = 2;
-    for (Integer retry = 0; retry <= MAX_RETRIES; retry++) {
-      res = new Http().send(req);
-      System.debug(
-        'Groq HTTP Status: ' +
-          res.getStatusCode() +
-          (retry > 0 ? ' (retry ' + retry + ')' : '')
-      );
-      if (res.getStatusCode() == 200) {
-        break; // success — fall through to response processing below
-      }
-      if (res.getStatusCode() != 429 || retry == MAX_RETRIES) {
-        System.debug('Groq API Error: ' + res.getBody());
-        throw new LLMService.LLMException(
-          'Groq API error ' + res.getStatusCode() + ': ' + res.getBody()
-        );
-      }
-      // 429 and retries remain — log and loop (callout overhead is ~100-300ms)
-      System.debug(
-        'Groq 429 rate-limit — retrying (' + retry + '/' + MAX_RETRIES + ')'
-      );
-    }
-
-    Map<String, Object> response = (Map<String, Object>) JSON.deserializeUntyped(
-      res.getBody()
-    );
-
-    Map<String, Object> usage = (Map<String, Object>) response.get('usage');
-    if (usage != null) {
-      Integer prompt = (Integer) usage.get('prompt_tokens');
-      Integer completion = (Integer) usage.get('completion_tokens');
-      Integer total = (Integer) usage.get('total_tokens');
-
-      totalPromptTokens += prompt;
-      totalCompletionTokens += completion;
-      totalTokens += total;
-
-      System.debug(
-        'TOKENS [call #' +
-          apiCallCount +
-          '] >> ' +
-          'prompt=' +
-          prompt +
-          ' completion=' +
-          completion +
-          ' total=' +
-          total
-      );
-    }
-
-    return response;
+    return LLMBedrockClient.callBedrock(messages, tools, toolChoice, maxTokens);
   }
 
   // ─────────────────────────────────────────────────────────────
-  // PROVIDER ROUTER — reads LLM_Provider__c and dispatches
+  // CALL LLM — single entry point used by the rest of the pipeline.
   // ─────────────────────────────────────────────────────────────
   public static Map<String, Object> callLLM(
     List<Map<String, Object>> messages,
@@ -129,21 +44,7 @@ public class LLMGroqClient {
     String toolChoice,
     Integer maxTokens
   ) {
-    String provider = App_Config__c.getOrgDefaults().LLM_Provider__c;
-    System.debug(
-      '══ LLM PROVIDER SELECTED: [' +
-        (String.isBlank(provider) ? 'GROQ (default)' : provider.toUpperCase()) +
-        '] ══'
-    );
-    if ('AWS_BEDROCK'.equalsIgnoreCase(provider)) {
-      return LLMBedrockClient.callBedrock(
-        messages,
-        tools,
-        toolChoice,
-        maxTokens
-      );
-    }
-    return callGroq(messages, tools, toolChoice, maxTokens);
+    return LLMBedrockClient.callBedrock(messages, tools, toolChoice, maxTokens);
   }
 
   // ─────────────────────────────────────────────────────────────
