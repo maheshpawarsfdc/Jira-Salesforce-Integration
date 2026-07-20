@@ -79,9 +79,43 @@ public class LLMService {
       summary,
       description
     );
-    System.debug(
-      '── STAGE 1.5 complete. System prompt length: ' + systemPrompt.length()
-    );
+    StoryAnalysis analysis;
+    MetadataContext metadata;
+    ExistingCodeContext existingCode;
+    String finalPrompt;
+
+    try {
+      analysis = StoryAnalyzer.analyze(summary, description);
+
+      metadata = MetadataContextService.buildContext(analysis);
+
+      // Future enhancement:
+      // ExistingCodeService.build(analysis, orgState)
+      existingCode = ExistingCodeService.build(analysis);
+
+      GenerationContext context = new GenerationContext();
+
+      context.summary = summary;
+      context.description = description;
+      context.systemPrompt = systemPrompt;
+      context.story = analysis;
+      context.metadata = metadata;
+      context.existingCode = existingCode;
+      context.orgState = orgState;
+
+      finalPrompt = PromptBuilder.build(context);
+
+      System.debug('========== STORY ANALYSIS ==========');
+      System.debug(JSON.serializePretty(analysis));
+
+      System.debug('========== METADATA CONTEXT ==========');
+      System.debug(JSON.serializePretty(metadata));
+
+      System.debug('========== EXISTING CODE CONTEXT ==========');
+      System.debug(JSON.serializePretty(existingCode));
+    } catch (Exception ex) {
+      throw new LLMException('Prompt preparation failed: ' + ex.getMessage());
+    }
 
     // ── STAGE 2: Generate XML files ────────────────────────
     System.debug('── STAGE 2: Generating XML...');
@@ -90,9 +124,69 @@ public class LLMService {
       summary,
       description,
       orgState,
-      systemPrompt
+      finalPrompt
     );
     System.debug('── STAGE 2 complete.');
+    System.debug('========== XML GENERATION RESULT ==========');
+    System.debug('XML GENERATION RESULT==' + result);
+    System.debug('===========================================');
+    /*
+   List<AIFile> generatedFiles =
+    LLMResponseProcessor.getGeneratedFiles();
+    System.debug('========== GENERATED FILES ==========');
+System.debug(JSON.serializePretty(generatedFiles));
+
+AIValidationResult validation =
+    ResponseValidator.validate(
+        generatedFiles
+    );
+    System.debug('========== VALIDATION RESULT ==========');
+System.debug(JSON.serializePretty(validation));
+
+if(!validation.success){
+
+    throw new LLMException(
+        String.join(
+            validation.errors,
+            '\n'
+        )
+    );
+
+} 
+// ── STAGE 3: AI Code Review ─────────────────────────────
+CodeReviewRequest reviewRequest =
+    new CodeReviewRequest();
+
+reviewRequest.issueKey =
+    issueKey;
+
+reviewRequest.storySummary =
+    summary;
+
+reviewRequest.storyDescription =
+    description;
+
+CodeReviewResult review =
+    AICodeReviewService.review(
+        reviewRequest
+    );
+System.debug('========== AI REVIEW RESULT ==========');
+System.debug(JSON.serializePretty(review));
+
+if(!review.approved){
+
+    throw new LLMException(
+
+        'AI Review Failed\n' +
+
+        String.join(
+            review.issues,
+            '\n'
+        )
+
+    );
+
+} */
 
     // ── ZIP DEPLOY (async) ─────────────────────────────────────────
     // Flush DML first — enqueue follows immediately, no callout after
