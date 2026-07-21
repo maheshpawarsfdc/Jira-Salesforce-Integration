@@ -24,6 +24,8 @@ public class LLMService {
     FunctionHelper.deferErrorLogDml = true;
     LLMGroqClient.resetTokenCounters();
 
+    Long t0 = Datetime.now().getTime();
+
     System.debug('JIRA AI ASSISTANT — NEW REQUEST');
     System.debug('► Issue Key  : ' + issueKey);
     System.debug('► Summary    : ' + summary);
@@ -38,6 +40,9 @@ public class LLMService {
     System.debug(
       '── Org check complete. orgState: ' + JSON.serialize(orgState)
     );
+    System.debug(
+      '[LLM-TRACE] org-check | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
 
     // ── STAGE 1.6: Existence gate — skip if everything already exists ──
     System.debug('── STAGE 1.6: Checking existence gate...');
@@ -51,6 +56,11 @@ public class LLMService {
       System.debug(
         '── STAGE 1.6: All requested metadata already exists — skipping deploy. ' +
         skipMsg
+      );
+      System.debug(
+        '[LLM-TRACE] gate-skip-exit | +' +
+          (Datetime.now().getTime() - t0) +
+          'ms'
       );
       try {
         JiraCallbackService.storeDeploymentStatus(
@@ -72,12 +82,18 @@ public class LLMService {
       return 'Skipped: ' + skipMsg;
     }
     System.debug('── STAGE 1.6 complete. ' + gateResult.get('summary'));
+    System.debug(
+      '[LLM-TRACE] gate | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
 
     // ── STAGE 1.5: Route — select relevant prompt sections ──
     System.debug('── STAGE 1.5: Routing prompt sections...');
     String systemPrompt = LLMResponseProcessor.runRouterStage(
       summary,
       description
+    );
+    System.debug(
+      '[LLM-TRACE] router | +' + (Datetime.now().getTime() - t0) + 'ms'
     );
     StoryAnalysis analysis;
     MetadataContext metadata;
@@ -116,6 +132,9 @@ public class LLMService {
     } catch (Exception ex) {
       throw new LLMException('Prompt preparation failed: ' + ex.getMessage());
     }
+    System.debug(
+      '[LLM-TRACE] context-build | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
 
     // ── STAGE 2: Generate XML files ────────────────────────
     System.debug('── STAGE 2: Generating XML...');
@@ -127,6 +146,9 @@ public class LLMService {
       finalPrompt
     );
     System.debug('── STAGE 2 complete.');
+    System.debug(
+      '[LLM-TRACE] xml-generation | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
     System.debug('========== XML GENERATION RESULT ==========');
     System.debug('XML GENERATION RESULT==' + result);
     System.debug('===========================================');
@@ -198,6 +220,12 @@ if(!review.approved){
       List<String> apxCont = LLMResponseProcessor.pendingApexClassContents;
       List<String> tstNames = LLMResponseProcessor.pendingTestClassNames;
       List<String> tstCont = LLMResponseProcessor.pendingTestClassContents;
+
+      System.debug(
+        '[LLM-TRACE] deploy-handoff | +' +
+          (Datetime.now().getTime() - t0) +
+          'ms'
+      );
 
       if (
         apxNames != null &&

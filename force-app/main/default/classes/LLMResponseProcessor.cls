@@ -46,11 +46,17 @@ public class LLMResponseProcessor {
       };
 
       System.debug('[EXISTENCE-GATE] Calling LLM for existence check...');
+      Long gateCallStart = Datetime.now().getTime();
 
       Map<String, Object> gateResponse = LLMGroqClient.callLLM(
         gateMessages,
         new List<Map<String, Object>>(),
         null
+      );
+      System.debug(
+        '[LLM-TRACE] gate-call | ' +
+          (Datetime.now().getTime() - gateCallStart) +
+          'ms'
       );
 
       if (gateResponse == null || !gateResponse.containsKey('choices')) {
@@ -437,10 +443,16 @@ public class LLMResponseProcessor {
         new Map<String, Object>{ 'role' => 'user', 'content' => userMsg }
       };
 
+      Long routerCallStart = Datetime.now().getTime();
       Map<String, Object> routerResponse = LLMGroqClient.callLLM(
         routerMessages,
         new List<Map<String, Object>>(),
         null
+      );
+      System.debug(
+        '[LLM-TRACE] router-call | ' +
+          (Datetime.now().getTime() - routerCallStart) +
+          'ms'
       );
 
       if (routerResponse == null || !routerResponse.containsKey('choices')) {
@@ -508,11 +520,17 @@ public class LLMResponseProcessor {
       }
     };
 
+    Long generateCallStart = Datetime.now().getTime();
     Map<String, Object> response = LLMGroqClient.callLLM(
       messages,
       new List<Map<String, Object>>(),
       null,
       8096
+    );
+    System.debug(
+      '[LLM-TRACE] generate-call | ' +
+        (Datetime.now().getTime() - generateCallStart) +
+        'ms'
     );
     List<Object> choices = (List<Object>) response.get('choices');
     Map<String, Object> choice = (Map<String, Object>) choices[0];
@@ -543,11 +561,17 @@ public class LLMResponseProcessor {
         }
       );
 
+      Long repair1CallStart = Datetime.now().getTime();
       Map<String, Object> retryResponse = LLMGroqClient.callLLM(
         messages,
         new List<Map<String, Object>>(),
         null,
         8096
+      );
+      System.debug(
+        '[LLM-TRACE] generate-repair-1 | ' +
+          (Datetime.now().getTime() - repair1CallStart) +
+          'ms'
       );
       List<Object> retryChoices = (List<Object>) retryResponse.get('choices');
       Map<String, Object> retryChoice = (Map<String, Object>) retryChoices[0];
@@ -583,11 +607,17 @@ public class LLMResponseProcessor {
           'Return ONLY valid JSON with no markdown fences.'
         }
       );
+      Long repair2CallStart = Datetime.now().getTime();
       Map<String, Object> repairResponse = LLMGroqClient.callLLM(
         messages,
         new List<Map<String, Object>>(),
         null,
         8096
+      );
+      System.debug(
+        '[LLM-TRACE] generate-repair-2 | ' +
+          (Datetime.now().getTime() - repair2CallStart) +
+          'ms'
       );
       List<Object> repairChoices = (List<Object>) repairResponse.get('choices');
       Map<String, Object> repairChoice = (Map<String, Object>) repairChoices[0];
@@ -696,52 +726,23 @@ public class LLMResponseProcessor {
         JSON.serialize(deploymentPlan)
     );
 
+    // ── FORCE SINGLE-DEPLOY ────────────────────────────────────
+    // A new CustomObject + its Layout previously deployed in two chained
+    // rounds (ZIP1 = object/tab/profiles, then — only after ZIP1 fully
+    // succeeds — ZIP2 = layout). That second Metadata API deploy + poll
+    // cycle added ~15-20s of wall-clock time to every object-creation
+    // ticket. Salesforce resolves intra-deployment dependencies, so the
+    // object, its fields, and the layout that references them can all
+    // deploy together in ONE round. Forcing 'single' routes every file
+    // into ZIP1 via the normal ZipBuilder path; the existing single-deploy
+    // promotion block (further below) folds in any backstop-generated
+    // layouts, and no ZIP2 is ever staged.
     if (deployScenario == 'chained') {
-      Boolean hasNewCustomObject = false;
-      Set<String> existingObjs = new Set<String>();
-      if (
-        orgState != null &&
-        orgState.get('existingObjects') instanceof List<Object>
-      ) {
-        for (Object o : (List<Object>) orgState.get('existingObjects')) {
-          existingObjs.add(String.valueOf(o));
-        }
-      }
-      List<Object> filesCheck = (List<Object>) parsed.get('files');
-      if (filesCheck != null) {
-        for (Object rawFile : filesCheck) {
-          Map<String, Object> f = (Map<String, Object>) rawFile;
-          String mt = (String) f.get('metadataType');
-          String mn = (String) f.get('memberName');
-          if (mt == 'CustomObject' && !existingObjs.contains(mn)) {
-            hasNewCustomObject = true;
-            break;
-          }
-          // CustomField files can also signal a new object when the LLM
-          // uses standalone field files instead of a CustomObject wrapper.
-          if (mt == 'CustomField' && mn != null && mn.contains('.')) {
-            String fieldParent = mn.substringBefore('.');
-            if (
-              fieldParent.endsWith('__c') && !existingObjs.contains(fieldParent)
-            ) {
-              hasNewCustomObject = true;
-              System.debug(
-                '[DEPLOY-TRACE] hasNewCustomObject=true via CustomField parent [' +
-                  fieldParent +
-                  '] not in existingObjs'
-              );
-              break;
-            }
-          }
-        }
-      }
-      if (!hasNewCustomObject) {
-        System.debug(
-          '[DEPLOY-TRACE] *** SCENARIO OVERRIDE *** LLM chose chained but no new CustomObject — forcing single'
-        );
-        deployScenario = 'single';
-        zip2FilePaths.clear();
-      }
+      System.debug(
+        '[DEPLOY-TRACE] *** FORCE SINGLE *** merging chained ZIP1+ZIP2 into one deploy'
+      );
+      deployScenario = 'single';
+      zip2FilePaths.clear();
     }
 
     Map<String, String> zip2Files = new Map<String, String>();

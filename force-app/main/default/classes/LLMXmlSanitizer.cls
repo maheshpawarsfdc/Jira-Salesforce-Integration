@@ -1243,6 +1243,13 @@ public class LLMXmlSanitizer {
     apexCode = apexCode.replace('\\s', '[ \\t\\n\\r]');
     apexCode = apexCode.replace('\\w', '[a-zA-Z0-9_]');
     apexCode = apexCode.replace('\\.', '[.]');
+    // '\[' and '\]' are not valid Apex string-literal escapes — the model
+    // sometimes writes them when hand-building a character class (e.g.
+    // '\[ \t\n\r]+' instead of '[ \t\n\r]+'), which fails to compile with
+    // "Illegal character sequence \[' in string literal". [ and ] never
+    // need escaping in an Apex string literal, so just drop the backslash.
+    apexCode = apexCode.replace('\\[', '[');
+    apexCode = apexCode.replace('\\]', ']');
 
     Pattern pmPat = Pattern.compile(
       'Pattern[.]matches[(]([^,]+),\\s*([^)]+)[)]'
