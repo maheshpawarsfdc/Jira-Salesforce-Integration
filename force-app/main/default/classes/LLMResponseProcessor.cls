@@ -1222,6 +1222,46 @@ public class LLMResponseProcessor {
           );
         }
 
+        // Trust the file extension over the LLM's self-reported metadataType
+        // for the ApexClass/ApexTrigger distinction. A mismatch here (e.g. a
+        // trigger's meta file mislabeled ApexClassMeta) registers the member
+        // in package.xml under the wrong type with no matching zipped file,
+        // causing "named in package.xml but not found in zipped directory".
+        // No-op when the LLM already got it right.
+        if (
+          filePath != null &&
+          (effectiveType == 'ApexClass' ||
+          effectiveType == 'ApexTrigger')
+        ) {
+          String lowerPath = filePath.toLowerCase();
+          if (
+            (lowerPath.endsWith('.trigger') ||
+            lowerPath.endsWith('.trigger-meta.xml')) &&
+            effectiveType != 'ApexTrigger'
+          ) {
+            System.debug(
+              '[DEPLOY-TRACE] TYPE CORRECTION — [' +
+                filePath +
+                '] declared as [' +
+                effectiveType +
+                '] but extension indicates ApexTrigger. Correcting.'
+            );
+            effectiveType = 'ApexTrigger';
+          } else if (
+            (lowerPath.endsWith('.cls') ||
+            lowerPath.endsWith('.cls-meta.xml')) && effectiveType != 'ApexClass'
+          ) {
+            System.debug(
+              '[DEPLOY-TRACE] TYPE CORRECTION — [' +
+                filePath +
+                '] declared as [' +
+                effectiveType +
+                '] but extension indicates ApexClass. Correcting.'
+            );
+            effectiveType = 'ApexClass';
+          }
+        }
+
         if (isLwcFile) {
           effectiveType = 'LightningComponentBundle';
           System.debug(

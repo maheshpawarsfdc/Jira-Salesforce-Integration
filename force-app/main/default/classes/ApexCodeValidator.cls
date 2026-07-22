@@ -14,6 +14,8 @@ public class ApexCodeValidator {
     validateNotBlank(fileName, apexCode);
     validateBalancedBraces(fileName, apexCode);
     validateAndOrOperators(fileName, apexCode);
+    validateSecurityEnforcedPlacement(fileName, apexCode);
+    validateApexOperatorsInSoql(fileName, apexCode);
     validateDmlInLoops(fileName, apexCode);
     validateSoqlInLoops(fileName, apexCode);
     validateUntypedCollections(fileName, apexCode);
@@ -102,6 +104,72 @@ public class ApexCodeValidator {
           fileName +
           '] Invalid logical operator detected. ' +
           'Use && and || in Apex. AND/OR are only allowed inside SOQL.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: && / || INSIDE SOQL
+  // catches: Unexpected token '|' or '&' / Missing ';' inside a query,
+  // and the cascade of downstream errors that follow (undeclared query
+  // variables, unrelated tokens like WITH/SECURITY_ENFORCED flagged as
+  // errors, etc.) once the query itself fails to parse.
+  // Mirror image of validateAndOrOperators: SOQL requires the AND / OR
+  // keywords — Apex's && and || operators are invalid inside [SELECT ...].
+  // ─────────────────────────────────────────────────────────────
+  private static void validateApexOperatorsInSoql(
+    String fileName,
+    String apexCode
+  ) {
+    Pattern soqlPat = Pattern.compile('(?s)\\[[^\\]]*SELECT[^\\]]*\\]');
+    Matcher soqlMatcher = soqlPat.matcher(removeComments(apexCode));
+
+    while (soqlMatcher.find()) {
+      String soqlBlock = soqlMatcher.group();
+      if (soqlBlock.contains('&&') || soqlBlock.contains('||')) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] Found && or || inside a SOQL query: ' +
+            soqlBlock.abbreviate(150) +
+            '. SOQL requires the AND / OR keywords, not Apex\'s && / || operators. ' +
+            'Replace && with AND and || with OR inside [SELECT ...] queries.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: WITH SECURITY_ENFORCED OUTSIDE SOQL
+  // catches: Unexpected token 'WITH' / Extra 'IDENTIFIER', at 'WITH'
+  // WITH SECURITY_ENFORCED is a SOQL-only clause — it must appear inside
+  // [SELECT ...] query brackets, and cannot be passed as an argument to
+  // Security.stripInaccessible() or used anywhere else in Apex.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateSecurityEnforcedPlacement(
+    String fileName,
+    String apexCode
+  ) {
+    String noSoql = apexCode.replaceAll('(?s)\\[[^\\]]*SELECT[^\\]]*\\]', ' ');
+
+    String cleaned = removeComments(noSoql);
+    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'');
+
+    Pattern p = Pattern.compile('(?i)\\bWITH\\s+SECURITY_ENFORCED\\b');
+    Matcher m = p.matcher(cleaned);
+
+    if (m.find()) {
+      throw new ValidationException(
+        '[' +
+          fileName +
+          '] "WITH SECURITY_ENFORCED" found outside a SOQL query. ' +
+          'It is only valid inside [SELECT ...] query brackets, e.g. ' +
+          '[SELECT Id FROM Account WHERE Id = :accId WITH SECURITY_ENFORCED]. ' +
+          'To enforce object/field security on records outside a query (e.g. before DML), ' +
+          'use Security.stripInaccessible(AccessType.READABLE, records) instead — it takes ' +
+          'an AccessType enum (not AccessLevel) and a List<SObject>, and returns an ' +
+          'SObjectAccessDecision (call .getRecords() on it). It never takes WITH SECURITY_ENFORCED ' +
+          'as an argument and does not return void.'
       );
     }
   }

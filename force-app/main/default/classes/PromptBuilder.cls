@@ -208,7 +208,9 @@ public with sharing class PromptBuilder {
       text += 'SECURITY\n';
       text += '- Use WITH SECURITY_ENFORCED for read operations whenever appropriate.\n';
       text += '- Use Security.stripInaccessible() before DML when records come from user input.\n';
-      text += '- Respect CRUD and Field Level Security.\n\n';
+      text += '- Respect CRUD and Field Level Security.\n';
+      text += '- WITH SECURITY_ENFORCED is a SOQL-only clause: it must appear inside the query brackets, e.g. [SELECT Id FROM Account WHERE Id = :accId WITH SECURITY_ENFORCED]. Never pass it as an argument to a method or use it outside a [SELECT ...] query.\n';
+      text += '- Security.stripInaccessible(AccessType, records) is a separate, unrelated Apex method — it takes an AccessType enum (e.g. AccessType.READABLE or AccessType.CREATABLE, not AccessLevel) and a List<SObject>, and it RETURNS an SObjectAccessDecision (call .getRecords() on it) — it does not return void and never takes WITH SECURITY_ENFORCED as an argument.\n\n';
     }
 
     if (needsTrigger) {
@@ -307,7 +309,10 @@ public with sharing class PromptBuilder {
       text += '- Avoid duplicate SOQL queries.\n';
       text += '- Use relationship queries where appropriate.\n';
       text += '- Use AggregateResult instead of iterating large datasets when possible.\n';
-      text += '- Use LIMIT only when business requirement requires it.\n\n';
+      text += '- Use LIMIT only when business requirement requires it.\n';
+      text += '- Inside a [SELECT ...] query, combine conditions with the SOQL keywords AND / OR — never with Apex\'s && or || operators, which are invalid inside query brackets and will break query parsing entirely.\n';
+      text += '- SOQL text/string field comparisons with = are CASE-INSENSITIVE by default (e.g. WHERE Email = :email already matches regardless of case). Never invent a helper field (e.g. EmailLowerCase__c) or call .toLowerCase() to achieve case-insensitive matching — compare the real field directly.\n';
+      text += '- Correct pattern for a duplicate-check query combining an OR condition with a nested AND condition: List<Lead> dupes = [SELECT Id, Email, Company, Phone FROM Lead WHERE Email = :leadEmail OR (Company = :leadCompany AND Phone = :leadPhone) WITH SECURITY_ENFORCED]; — note OR/AND are SOQL keywords, WITH SECURITY_ENFORCED sits inside the brackets immediately before the closing ], and the whole condition stays inside one single query.\n\n';
 
       text += '===== DML BEST PRACTICES =====\n';
       text += '- Batch DML operations.\n';
