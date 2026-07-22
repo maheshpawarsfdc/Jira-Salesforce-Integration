@@ -30,7 +30,14 @@ public class LLMBedrockClient {
 
     Map<String, Object> body = new Map<String, Object>{
       'messages' => conversationMessages,
-      'inferenceConfig' => new Map<String, Object>{ 'maxTokens' => maxTokens }
+      'inferenceConfig' => new Map<String, Object>{
+        'maxTokens' => maxTokens,
+        // Low, non-zero temperature: favors the model's most likely/consistent
+        // completion (reduces run-to-run generation variance for the same
+        // ticket) while leaving enough room to avoid degenerate/repetitive
+        // output across the range of ticket types this pipeline handles.
+        'temperature' => 0.15
+      }
     };
     if (String.isNotBlank(systemPrompt)) {
       body.put(

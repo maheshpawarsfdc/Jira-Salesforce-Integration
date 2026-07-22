@@ -243,7 +243,9 @@ public with sharing class PromptBuilder {
       text += '- Handle loading state.\n';
       text += '- Handle errors gracefully.\n';
       text += '- Do not use unnecessary @track.\n';
-      text += '- Keep components reusable.\n\n';
+      text += '- Keep components reusable.\n';
+      text += '- When an imperative Apex call fails, reset the data property (e.g. this.records = undefined) inside the .catch() block, same as you already do in the .then() block. Error and data states must be mutually exclusive — never leave a previous successful result rendered underneath an error message.\n';
+      text += '- Initialize list/array tracked properties as undefined, not [] — an empty array is truthy in JavaScript, so initializing to [] breaks any if:true={list}-style conditional rendering (it stays true even with zero items or after an error).\n\n';
     }
 
     if (needsTestClass) {
@@ -276,7 +278,11 @@ public with sharing class PromptBuilder {
       text += '- Use Lightning Data Service whenever possible.\n';
       text += '- Use cacheable=true for read-only Apex methods.\n';
       text += '- Do not hardcode record Ids or object names.\n';
-      text += '- Follow Salesforce Lightning Design System best practices.\n\n';
+      text += '- Follow Salesforce Lightning Design System best practices.\n';
+      text += '- In the template, never gate a data-table/list block with if:true={listProperty} — a non-null array is always truthy even when empty. Check the list\'s length explicitly (e.g. a getter like get hasData() { return this.records && this.records.length > 0; }), and make sure the loading, error, data, and no-results blocks are mutually exclusive so only one can ever render at a time.\n';
+      text += '- A template binding {expression} may ONLY be a single property or getter reference (e.g. {isLoading}, {contact.name}, {isPreviousDisabled}) — it can NEVER contain an inline JavaScript expression, operator, comparison, or FUNCTION CALL (no ||, &&, ===, +, ternaries, and no calling a helper like {formatCurrency(opp.Amount)} either — function calls with arguments are just as invalid as operators). If an attribute value needs to be computed, combined, or formatted, either expose it as a no-argument getter in the JS class and bind to that getter, or pre-compute it once when the data is loaded (e.g. map each record to add a field like formattedAmount) and bind to that plain property — never write a function call or expression directly in the HTML.\n';
+      text += '- For displaying formatted values (currency, percent, date) inside a lightning-datatable column, use the column definition\'s built-in type (type: \'currency\', type: \'percent\', type: \'date\', etc.) instead of writing any custom formatting function — this is the only correct way to format per-row values in a datatable and avoids the invalid-binding mistake entirely.\n';
+      text += '- Never use HTML entities (like &#124; for | or &amp; for &) inside JavaScript or Apex source code. Entities only apply to literal text rendered in HTML markup, and even there should be avoided — write operators and characters literally (||, &&, etc.) in .js and .cls/.trigger files.\n\n';
     }
 
     if (needsApex) {

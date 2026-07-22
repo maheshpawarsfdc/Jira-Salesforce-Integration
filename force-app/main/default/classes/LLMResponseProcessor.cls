@@ -1350,6 +1350,21 @@ public class LLMResponseProcessor {
           }
         }
 
+        // ── VALIDATE LWC SOURCE before deployment ──────────────────────
+        if (isLwcHtml || isLwcJs) {
+          try {
+            LwcCodeValidator.validate(filePath, xmlContent);
+          } catch (ApexCodeValidator.ValidationException e) {
+            System.debug(
+              'processXmlGenerationResponse: LWC validation FAILED for [' +
+                filePath +
+                ']: ' +
+                e.getMessage()
+            );
+            throw e; // re-throw so runXmlGenerationStage() retry can catch, repair, and re-process
+          }
+        }
+
         ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
 
         if (metadataType == 'CustomObject') {
