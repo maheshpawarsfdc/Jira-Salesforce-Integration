@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Jira → AI → Salesforce Pipeline — Architecture</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <style>
+      :root {
+        --ground: #eef0f2;
+        --surface: #ffffff;
+        --surface-2: #e4e7ea;
+        --ink: #1b1d22;
+        --ink-soft: #40444c;
+        --muted: #5b606b;
+        --line: #d3d7dc;
+        --signal: #b5721e;
+        --signal-soft: #f3e2c8;
+        --verify: #1f7a6e;
+        --verify-soft: #dceeeb;
+        --forge: #2c5fe0;
+        --deploy: #6d3fc4;
+        --code-bg: #e7e9ec;
+        --shadow:
+          0 1px 2px rgba(27, 29, 34, 0.04), 0 8px 24px rgba(27, 29, 34, 0.05);
+        --font-display: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+        --font-body: -apple-system, "Segoe UI", system-ui, sans-serif;
+        --font-mono:
+          ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --ground: #15171c;
+          --surface: #1d2028;
+          --surface-2: #262a33;
+          --ink: #e8e9ed;
+          --ink-soft: #c4c7ce;
+          --muted: #8a8f9c;
+          --line: #323642;
+          --signal: #e8a33d;
+          --signal-soft: #3a2e17;
+          --verify: #4fb3a9;
+          --verify-soft: #16302c;
+          --forge: #6e93f0;
+          --deploy: #a98ce8;
+          --code-bg: #262a33;
+          --shadow:
+            0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+        }
+      }
+      :root[data-theme="dark"] {
+        --ground: #15171c;
+        --surface: #1d2028;
+        --surface-2: #262a33;
+        --ink: #e8e9ed;
+        --ink-soft: #c4c7ce;
+        --muted: #8a8f9c;
+        --line: #323642;
+        --signal: #e8a33d;
+        --signal-soft: #3a2e17;
+        --verify: #4fb3a9;
+        --verify-soft: #16302c;
+        --forge: #6e93f0;
+        --deploy: #a98ce8;
+        --code-bg: #262a33;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+      }
+      :root[data-theme="light"] {
+        --ground: #eef0f2;
+        --surface: #ffffff;
+        --surface-2: #e4e7ea;
+        --ink: #1b1d22;
+        --ink-soft: #40444c;
+        --muted: #5b606b;
+        --line: #d3d7dc;
+        --signal: #b5721e;
+        --signal-soft: #f3e2c8;
+        --verify: #1f7a6e;
+        --verify-soft: #dceeeb;
+        --forge: #2c5fe0;
+        --deploy: #6d3fc4;
+        --code-bg: #e7e9ec;
+        --shadow:
+          0 1px 2px rgba(27, 29, 34, 0.04), 0 8px 24px rgba(27, 29, 34, 0.05);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--ground);
+        color: var(--ink);
+        font-family: var(--font-body);
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .doc {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 4rem 1.75rem 6rem;
+      }
+
+      .title-block {
+        margin-bottom: 3.5rem;
+      }
+      .eyebrow {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--signal);
+        margin: 0 0 0.9rem;
+        font-weight: 600;
+      }
+      h1 {
+        font-family: var(--font-display);
+        font-size: clamp(2rem, 5vw, 2.85rem);
+        line-height: 1.12;
+        margin: 0 0 1rem;
+        text-wrap: balance;
+        letter-spacing: -0.01em;
+      }
+      .dek {
+        font-size: 1.1rem;
+        color: var(--ink-soft);
+        max-width: 62ch;
+        margin: 0;
+      }
+
+      h2 {
+        font-family: var(--font-display);
+        font-size: 1.5rem;
+        margin: 0 0 1.5rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .diagram-section {
+        margin-bottom: 4rem;
+      }
+      .diagram-frame {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+        padding: 1.5rem;
+        overflow-x: auto;
+      }
+      .diagram-frame pre.mermaid {
+        margin: 0;
+        min-width: 640px;
+      }
+      .diagram-frame svg {
+        max-width: none !important;
+      }
+
+      .stages {
+        display: flex;
+        flex-direction: column;
+        gap: 2.25rem;
+      }
+
+      .stage {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 1.75rem 1.85rem;
+        box-shadow: var(--shadow);
+      }
+      .stage-verify {
+        border-color: var(--verify);
+        box-shadow:
+          var(--shadow),
+          0 0 0 1px var(--verify) inset;
+      }
+
+      .stage-head {
+        display: flex;
+        align-items: baseline;
+        gap: 0.85rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.65rem;
+      }
+      .stage-num {
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        color: var(--muted);
+        letter-spacing: 0.05em;
+      }
+      .stage-head h3 {
+        font-family: var(--font-display);
+        font-size: 1.3rem;
+        margin: 0;
+        text-wrap: balance;
+      }
+
+      .tag {
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 0.22rem 0.55rem;
+        border-radius: 999px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .tag-forge {
+        background: color-mix(in srgb, var(--forge) 16%, transparent);
+        color: var(--forge);
+      }
+      .tag-gen {
+        background: var(--signal-soft);
+        color: var(--signal);
+      }
+      .tag-verify {
+        background: var(--verify-soft);
+        color: var(--verify);
+      }
+      .tag-config {
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+
+      .stage-summary {
+        color: var(--ink-soft);
+        max-width: 68ch;
+        margin: 0 0 1.25rem;
+      }
+
+      .class-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+        margin: 0;
+      }
+      .class-list > div {
+        display: grid;
+        grid-template-columns: minmax(180px, 260px) 1fr;
+        gap: 0.4rem 1.25rem;
+        padding-top: 0.9rem;
+        border-top: 1px solid var(--line);
+      }
+      .class-list > div:first-child {
+        padding-top: 0;
+        border-top: none;
+      }
+      .class-list dt {
+        font-weight: 600;
+        color: var(--ink);
+        font-size: 0.94rem;
+      }
+      .class-list dd {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+
+      code {
+        font-family: var(--font-mono);
+        font-size: 0.88em;
+        background: var(--code-bg);
+        color: var(--ink-soft);
+        padding: 0.1em 0.4em;
+        border-radius: 4px;
+      }
+
+      .callout {
+        margin-top: 3rem;
+        padding: 1.4rem 1.6rem;
+        background: var(--surface-2);
+        border-left: 3px solid var(--muted);
+        border-radius: 4px;
+        color: var(--ink-soft);
+        font-size: 0.96rem;
+      }
+      .callout p {
+        margin: 0;
+      }
+
+      @media (max-width: 640px) {
+        .class-list > div {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="doc">
+      <header class="title-block">
+        <p class="eyebrow">System architecture</p>
+        <h1>Jira → AI → Salesforce Pipeline</h1>
+        <p class="dek">
+          A ticket goes in as English. Working Salesforce metadata comes out.
+          This traces every stage the request actually passes through —
+          including the validation layer that catches the AI's mistakes before
+          they ever reach a deploy.
+        </p>
+      </header>
+
+      <section class="diagram-section">
+        <h2>End-to-end flow</h2>
+        <div class="diagram-frame">
+          <pre class="mermaid">
+flowchart TB
+    classDef jira fill:#2C5FE0,stroke:#1E44AA,color:#fff,font-weight:600
+    classDef forge fill:#557FEF,stroke:#2C5FE0,color:#fff,font-weight:600
+    classDef entry fill:#5B606B,stroke:#3A3E47,color:#fff,font-weight:600
+    classDef context fill:#8A8F9C,stroke:#5B606B,color:#15171C,font-weight:600
+    classDef gen fill:#E8A33D,stroke:#B5721E,color:#15171C,font-weight:700
+    classDef verify fill:#4FB3A9,stroke:#1F7A6E,color:#15171C,font-weight:700
+    classDef deploy fill:#8B5CF6,stroke:#6D3FC4,color:#fff,font-weight:600
+    classDef config fill:#3A3E47,stroke:#15171C,color:#fff,font-weight:500,stroke-dasharray: 3 3
+
+    J["Jira issue<br/>Send to Agentforce"] --> F1
+    subgraph FORGE["FORGE APP — jira side"]
+        F1["executeTask resolver"] --> F2["sf-dispatch-queue"]
+        F2 --> F3["dispatch-consumer-fn<br/>OAuth + callout"]
+    end
+    F3 -->|"POST /services/apexrest/Agentforce"| E1
+
+    subgraph SF_ENTRY["SALESFORCE ENTRY"]
+        E1["JiraInboundController"]
+    end
+    E1 --> C0
+
+    subgraph CONTEXT["CONTEXT GATHERING"]
+        C0["LLMService.processJiraTicket"] --> C1["LLMOrgStateService<br/>org state"]
+        C1 --> C2["StoryAnalyzer<br/>ticket intent"]
+        C2 --> C3["MetadataContextService<br/>live field/type schema"]
+        C3 --> C4["ExistingCodeService<br/>existing Apex detection"]
+    end
+
+    C4 --> G1
+    subgraph GENERATION["AI GENERATION"]
+        G1["Existence gate<br/>Bedrock call"]:::gen
+        G1 -->|"not fully satisfied"| G2["Router stage<br/>Bedrock call"]:::gen
+        G2 --> G3["PromptBuilder + LLM_Prompt__mdt<br/>final prompt assembly"]:::gen
+        G3 --> G4["LLMBedrockClient<br/>Bedrock — generation call"]:::gen
+    end
+
+    G4 --> V0
+    subgraph VALIDATE["VALIDATION SAFETY-NET"]
+        V0["LLMResponseProcessor"] --> V1["ApexCodeValidator<br/>11 syntax checks"]:::verify
+        V0 --> V2["LwcCodeValidator<br/>template + JS checks"]:::verify
+        V0 --> V3["SchemaFieldValidator<br/>live-schema field/type check"]:::verify
+        V0 --> V4["LLMXmlSanitizer<br/>targeted XML fixes"]:::verify
+        V1 & V2 & V3 & V4 -->|"ValidationException"| RETRY{{"Auto-repair<br/>retry, ×1-2"}}:::verify
+        RETRY -->|"corrected"| G4
+    end
+
+    V0 -->|"clean"| D1
+    subgraph DEPLOY["DEPLOY PIPELINE"]
+        D1["ZipBuilder"] --> D2["ZipDeployQueueable"]
+        D2 --> D3["DeployService +<br/>MetadataService.cls"]
+        D3 -->|"SOAP"| D4["Salesforce<br/>Metadata API"]:::deploy
+        D4 --> D5["Deploypoller<br/>async status poll"]:::deploy
+    end
+
+    D5 --> B1["JiraCallbackService"]
+    B1 -->|"issue property"| F4["getDeploymentStatus<br/>polling"]
+    F4 --> J2["Jira issue<br/>result posted"]
+
+    CFG["App_Config__c<br/>model ID · Jira creds"]:::config -.-> G4
+    CFG -.-> B1
+
+    class J,J2 jira
+    class F1,F2,F3,F4 forge
+    class E1 entry
+    class C0,C1,C2,C3,C4 context
+</pre>
+        </div>
+      </section>
+
+      <section class="stages">
+        <h2>Stage by stage</h2>
+
+        <article class="stage" id="s1">
+          <div class="stage-head">
+            <span class="stage-num">01</span>
+            <h3>Jira &amp; the Forge app</h3>
+            <span class="tag tag-forge">not in this repo</span>
+          </div>
+          <p class="stage-summary">
+            Clicking <em>Send to Agentforce</em> never blocks on Salesforce — it
+            drops onto a queue and returns immediately, so the UI stays
+            responsive no matter how long generation takes.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt>index.js — <code>executeTask</code></dt>
+              <dd>
+                Reads the user's stored Salesforce connection, pushes the ticket
+                onto <code>sf-dispatch-queue</code>, returns "accepted"
+                immediately.
+              </dd>
+            </div>
+            <div>
+              <dt>consumer.js — <code>dispatch-consumer-fn</code></dt>
+              <dd>
+                Fetches the Jira issue body + attachments, resolves an OAuth
+                token, calls Salesforce's REST endpoint.
+              </dd>
+            </div>
+            <div>
+              <dt>sfClient.js</dt>
+              <dd>
+                Token cache, refresh-on-401, the actual <code>fetch</code> to
+                <code>/services/apexrest/Agentforce</code>.
+              </dd>
+            </div>
+            <div>
+              <dt>index.js — <code>getDeploymentStatus</code></dt>
+              <dd>
+                Reads the <code>agentforce-deploy-status</code> Jira issue
+                property. Polled by <code>index.jsx</code> every 3s, with a
+                bounded timeout.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s2">
+          <div class="stage-head">
+            <span class="stage-num">02</span>
+            <h3>Salesforce entry point</h3>
+          </div>
+          <p class="stage-summary">
+            The REST resource Forge calls. Parses and validates the payload,
+            then hands off to the orchestrator.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>JiraInboundController.cls</code></dt>
+              <dd>
+                <code>@RestResource(urlMapping='/Agentforce')</code>. Parses the
+                JSON body, decodes attachments, validates required fields, calls
+                <code>LLMService.processJiraTicket</code>.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s3">
+          <div class="stage-head">
+            <span class="stage-num">03</span>
+            <h3>Context gathering</h3>
+          </div>
+          <p class="stage-summary">
+            Before anything is generated, the pipeline reads what's actually
+            true about the org — this is the data the validation layer later
+            checks generated output against.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>LLMOrgStateService.runOrgCheck</code></dt>
+              <dd>
+                Existing objects, fields, layouts, labels, queues, assignment
+                rules — a snapshot of relevant org state.
+              </dd>
+            </div>
+            <div>
+              <dt><code>StoryAnalyzer.analyze</code></dt>
+              <dd>
+                Ticket text → structured intent: <code>needTrigger</code>,
+                <code>needLwc</code>, <code>needTestClass</code>,
+                <code>needHandler</code>, detected object/fields.
+              </dd>
+            </div>
+            <div>
+              <dt><code>MetadataContextService.buildContext</code></dt>
+              <dd>
+                Live <code>Schema.describe()</code> read — real field API names
+                and real field <em>types</em>, not what a ticket or an earlier
+                ticket assumed.
+              </dd>
+            </div>
+            <div>
+              <dt><code>ExistingCodeService.build</code></dt>
+              <dd>
+                Detects existing trigger/handler/service/selector classes so
+                generation can extend rather than duplicate.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s4">
+          <div class="stage-head">
+            <span class="stage-num">04</span>
+            <h3>Prompt assembly</h3>
+          </div>
+          <p class="stage-summary">
+            Two systems combine into one final prompt — one lives in Apex and
+            needs a deploy to change, the other lives in org data and doesn't.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>PromptService</code> + <code>LLM_Prompt__mdt</code></dt>
+              <dd>
+                Custom-metadata prompt fragments (<code>VALIDATION_RULE</code>,
+                <code>APEX</code>, <code>LWC</code>, etc.), some
+                always-included, most router-selected. Editable as org data — no
+                code deploy required.
+              </dd>
+            </div>
+            <div>
+              <dt><code>PromptBuilder.build</code></dt>
+              <dd>
+                Apex-hardcoded implementation rules, conditionally assembled
+                from the <code>StoryAnalysis</code> flags — only pulls in
+                Apex/LWC/trigger-specific guidance when the ticket actually
+                needs it.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s5">
+          <div class="stage-head">
+            <span class="stage-num">05</span>
+            <h3>AI generation</h3>
+            <span class="tag tag-gen">Bedrock</span>
+          </div>
+          <p class="stage-summary">
+            Up to three model calls per ticket: does this already exist, which
+            prompt sections are relevant, then the real generation — plus up to
+            two automatic repair calls if validation rejects the output.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>runExistenceGateStage</code></dt>
+              <dd>
+                One call: "is everything requested already satisfied?" — lets a
+                duplicate ticket skip deploy entirely.
+              </dd>
+            </div>
+            <div>
+              <dt><code>runRouterStage</code></dt>
+              <dd>
+                One call: classifies which prompt sections apply, keeping the
+                final prompt smaller and cheaper.
+              </dd>
+            </div>
+            <div>
+              <dt>
+                <code>LLMGroqClient</code> →
+                <code>LLMBedrockClient.callBedrock</code>
+              </dt>
+              <dd>
+                The actual model call — <code>deepseek.v3.2</code> via
+                <code>App_Config__c.Bedrock_Model_Id__c</code>,
+                <code>temperature: 0.15</code> for run-to-run consistency.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage stage-verify" id="s6">
+          <div class="stage-head">
+            <span class="stage-num">06</span>
+            <h3>Validation safety-net</h3>
+            <span class="tag tag-verify">catches mistakes before deploy</span>
+          </div>
+          <p class="stage-summary">
+            Every generated file is mechanically checked against real rules and
+            real org schema — not just trusted. A failure here triggers one
+            automatic repair call with the specific, factual problem stated,
+            before anything reaches a live deploy.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>ApexCodeValidator</code></dt>
+              <dd>
+                11 checks: unbalanced braces, <code>AND</code>/<code>OR</code>
+                outside SOQL, <code>&amp;&amp;</code>/<code>||</code> inside
+                SOQL, <code>WITH SECURITY_ENFORCED</code> misplacement,
+                DML/SOQL-in-loops, untyped collections, TODO/placeholder text,
+                empty handlers, missing null checks.
+              </dd>
+            </div>
+            <div>
+              <dt><code>LwcCodeValidator</code></dt>
+              <dd>
+                Template bindings restricted to simple property/getter
+                references (no inline operators or function calls), no HTML
+                entities inside <code>.js</code> source, blank/placeholder
+                detection.
+              </dd>
+            </div>
+            <div>
+              <dt><code>SchemaFieldValidator</code></dt>
+              <dd>
+                Cross-checks field/object references against <em>live</em>
+                <code>Schema.describe()</code> data — validation-rule
+                <code>TODAY()</code>/<code>NOW()</code> correctness against the
+                field's real type, SOQL field existence, LWC
+                <code>@salesforce/schema</code> imports. Tracks fields newly
+                created in the same generation pass so it doesn't reject its own
+                output.
+              </dd>
+            </div>
+            <div>
+              <dt><code>LLMXmlSanitizer</code></dt>
+              <dd>
+                Targeted, mechanical fixes: Profile
+                <code>layoutAssignments</code> dedup, invalid regex escapes in
+                Apex strings, Layout Name-field behavior, CustomObject defaults,
+                ApexClass/ApexTrigger package.xml type correction by file
+                extension.
+              </dd>
+            </div>
+            <div>
+              <dt>
+                <code>LLMLayoutHelper</code>, <code>LLMTriggerMerger</code>
+              </dt>
+              <dd>
+                Layout backstops for new fields, trigger-merge enforcement so
+                multiple tickets don't create duplicate triggers on one object.
+              </dd>
+            </div>
+            <div>
+              <dt>
+                <code>AICodeReviewService</code>, <code>ResponseValidator</code>
+              </dt>
+              <dd>
+                A second, LLM-adjacent review stage — present in the codebase
+                but currently dead code (the calling block in
+                <code>LLMService</code> is commented out and references a method
+                that no longer exists). Not part of the live path today.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s7">
+          <div class="stage-head">
+            <span class="stage-num">07</span>
+            <h3>Packaging &amp; deploy</h3>
+          </div>
+          <p class="stage-summary">
+            Validated files get zipped and sent through the Metadata API, with
+            an async poller that respects Salesforce's own governor limits.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>ZipBuilder</code></dt>
+              <dd>
+                Stages files into a deployable package over a pure-Apex
+                ZIP/DEFLATE implementation
+                (<code>Zippex</code>/<code>Puff</code>/<code>HexUtil</code>);
+                deploy scenario forced to <code>single</code> — object, fields,
+                and layout deploy together in one round rather than two chained
+                ones.
+              </dd>
+            </div>
+            <div>
+              <dt>
+                <code>ZipDeployQueueable</code> → <code>DeployService</code> →
+                <code>MetadataService.cls</code>
+              </dt>
+              <dd>
+                WSDL2Apex SOAP bindings to the Metadata API (including a
+                hand-patched <code>ProfileFlowAccess</code> field the generator
+                was originally missing).
+              </dd>
+            </div>
+            <div>
+              <dt><code>Deploypoller</code></dt>
+              <dd>
+                Polls deploy status asynchronously — fast
+                <code>System.enqueueJob</code> hops kept under the platform's
+                queueable chain-depth ceiling, falling back to
+                <code>Deploypollerscheduler</code>
+                (<code>System.schedule</code>) only when needed.
+              </dd>
+            </div>
+            <div>
+              <dt>
+                <code>ApexTestRunQueueable</code> +
+                <code>ApexTestPollScheduler</code>
+              </dt>
+              <dd>
+                A second repair loop, after deploy: for Apex-first tickets, runs
+                the generated tests asynchronously, enforces a 75% coverage
+                floor, and on failure re-invokes the LLM with the held-back
+                second package to fix the code — not just a status poller.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s8">
+          <div class="stage-head">
+            <span class="stage-num">08</span>
+            <h3>Feedback loop</h3>
+          </div>
+          <p class="stage-summary">
+            The only thing Jira ever sees: a single property write, independent
+            of however long deployment actually took.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>JiraCallbackService.storeDeploymentStatus</code></dt>
+              <dd>
+                Writes success/error/skipped + message to the
+                <code>agentforce-deploy-status</code> Jira issue property via
+                the Jira REST API.
+              </dd>
+            </div>
+            <div>
+              <dt>Forge — <code>getDeploymentStatus</code></dt>
+              <dd>
+                Polled by the frontend until a fresh (non-stale) result appears,
+                or the window elapses.
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="stage" id="s9">
+          <div class="stage-head">
+            <span class="stage-num">09</span>
+            <h3>Configuration</h3>
+            <span class="tag tag-config">org data, not code</span>
+          </div>
+          <p class="stage-summary">
+            Everything environment-specific lives in one custom setting — which
+            is exactly where a mismatch hides if it's copied carelessly between
+            orgs.
+          </p>
+          <dl class="class-list">
+            <div>
+              <dt><code>App_Config__c</code></dt>
+              <dd>
+                Hierarchy custom setting: Bedrock model ID, Jira base URL, Jira
+                user email, Jira API token. The token is tied to the specific
+                Atlassian account it was generated for — pairing one user's
+                token with a different user's email fails Jira auth silently.
+              </dd>
+            </div>
+            <div>
+              <dt><code>Bedrock</code> named credential</dt>
+              <dd>
+                AWS SigV4 to <code>bedrock-runtime</code> — the only live model
+                provider.
+                <code>Groq_API_Key__c</code>/<code>Groq_Base_URL__c</code>/<code
+                  >Groq_Model__c</code
+                >
+                still exist on <code>App_Config__c</code> and a
+                <code>Groq_API</code> named credential still exists too —
+                vestiges of a prior provider; <code>LLMGroqClient</code> now
+                just delegates straight to Bedrock regardless.
+              </dd>
+            </div>
+            <div>
+              <dt>Jira auth</dt>
+              <dd>
+                No named credential — <code>JiraCallbackService</code> builds
+                Basic Auth manually from the three
+                <code>App_Config__c</code> fields above.
+              </dd>
+            </div>
+          </dl>
+        </article>
+      </section>
+
+      <aside class="callout">
+        <p>
+          <strong>Not part of the pipeline:</strong> the LWCs and Apex classes
+          the pipeline <em>generates</em> for test tickets —
+          <code>Reservation__c</code>, <code>contactDirectory</code>,
+          <code>accountWorkspace</code>, and so on — are output, not
+          infrastructure. They live in the same org but carry none of the
+          guarantees above once deployed; they're just ordinary Salesforce
+          metadata from that point on.
+        </p>
+      </aside>
+    </div>
+    <script>
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "default"
+      });
+    </script>
+  </body>
+</html>

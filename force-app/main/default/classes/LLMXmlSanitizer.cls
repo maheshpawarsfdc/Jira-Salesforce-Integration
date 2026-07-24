@@ -1663,4 +1663,183 @@ public class LLMXmlSanitizer {
       .replace('"', '&quot;')
       .replace('\'', '&apos;');
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // VALIDATION RULE FIELD/TYPE CHECK
+  // Mechanically verifies (via SchemaFieldValidator, not the LLM's word)
+  // that every field referenced in a TODAY()/NOW() date comparison inside
+  // a validation rule's errorConditionFormula actually exists on the
+  // object, and that the comparison matches the field's REAL type —
+  // catches "Incorrect parameter type for operator... Expected Date/Time,
+  // received Date" (or the reverse) before it ever reaches a real deploy.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateValidationRuleFieldTypes(
+    String objectApiName,
+    String xmlContent
+  ) {
+    if (
+      String.isBlank(xmlContent) || !xmlContent.contains('<validationRules>')
+    ) {
+      return;
+    }
+
+    Pattern rulePat = Pattern.compile(
+      '(?s)<errorConditionFormula>(.*?)</errorConditionFormula>'
+    );
+    Matcher ruleMatcher = rulePat.matcher(xmlContent);
+
+    Pattern cmpPat = Pattern.compile(
+      '([A-Za-z_][A-Za-z0-9_]*__c)\\s*[<>]=?\\s*(TODAY|NOW)\\s*\\(\\s*\\)' +
+      '|(TODAY|NOW)\\s*\\(\\s*\\)\\s*[<>]=?\\s*([A-Za-z_][A-Za-z0-9_]*__c)'
+    );
+
+    while (ruleMatcher.find()) {
+      String formula = ruleMatcher.group(1)
+        .replace('&lt;', '<')
+        .replace('&gt;', '>')
+        .replace('&amp;', '&');
+
+      Matcher cmpMatcher = cmpPat.matcher(formula);
+
+      while (cmpMatcher.find()) {
+        String fieldName = cmpMatcher.group(1) != null
+          ? cmpMatcher.group(1)
+          : cmpMatcher.group(4);
+        String func = cmpMatcher.group(2) != null
+          ? cmpMatcher.group(2)
+          : cmpMatcher.group(3);
+
+        String realType = SchemaFieldValidator.getFieldType(
+          objectApiName,
+          fieldName
+        );
+
+        if (realType == null) {
+          throw new ApexCodeValidator.ValidationException(
+            '[' +
+              objectApiName +
+              '] Validation rule formula references field "' +
+              fieldName +
+              '" which does not exist on this object. Known fields: ' +
+              SchemaFieldValidator.getKnownFieldNames(objectApiName)
+          );
+        }
+
+        Boolean isDateTime = realType == 'DATETIME';
+        if (isDateTime && func == 'TODAY') {
+          throw new ApexCodeValidator.ValidationException(
+            '[' +
+              objectApiName +
+              '] Formula compares "' +
+              fieldName +
+              '" (actual type: Date/Time) with TODAY() (Date). ' +
+              'Use NOW() instead, or wrap the field with DATEVALUE(' +
+              fieldName +
+              ') to compare with TODAY().'
+          );
+        }
+        if (!isDateTime && func == 'NOW' && realType == 'DATE') {
+          throw new ApexCodeValidator.ValidationException(
+            '[' +
+              objectApiName +
+              '] Formula compares "' +
+              fieldName +
+              '" (actual type: Date) with NOW() (Date/Time). ' +
+              'Use TODAY() instead.'
+          );
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // SOQL FIELD EXISTENCE CHECK (Apex/trigger source)
+  // Only checks simple, single-object, non-relationship SOQL field lists —
+  // deliberately skips anything with a subquery, relationship traversal
+  // (Account.Name), or aggregate function, since those can't be parsed
+  // reliably with regex and a false positive here would block a valid
+  // deploy. Under-catching is the safe failure mode; over-catching is not.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateSoqlFieldsExist(String fileName, String apexCode) {
+    if (String.isBlank(apexCode)) {
+      return;
+    }
+
+    Pattern soqlPat = Pattern.compile(
+      '(?is)\\[\\s*SELECT\\s+(.*?)\\s+FROM\\s+([A-Za-z_][A-Za-z0-9_]*)\\b'
+    );
+    Matcher m = soqlPat.matcher(apexCode);
+
+    while (m.find()) {
+      String fieldList = m.group(1);
+      String objectApiName = m.group(2);
+
+      if (fieldList.contains('(')) {
+        continue; // subquery or aggregate function present — skip, too risky to parse
+      }
+
+      for (String rawField : fieldList.split(',')) {
+        String field = rawField.trim();
+        if (
+          String.isBlank(field) ||
+          field.contains('.') || // relationship traversal, e.g. Account.Name — different object context
+          field == '*'
+        ) {
+          continue;
+        }
+        if (!SchemaFieldValidator.fieldExists(objectApiName, field)) {
+          throw new ApexCodeValidator.ValidationException(
+            '[' +
+              fileName +
+              '] SOQL query references field "' +
+              field +
+              '" which does not exist on ' +
+              objectApiName +
+              '. Known fields: ' +
+              SchemaFieldValidator.getKnownFieldNames(objectApiName)
+          );
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // LWC @salesforce/schema IMPORT CHECK
+  // Only checks the explicit, unambiguous @salesforce/schema/Object.Field
+  // import path — deliberately does not attempt to verify datatable column
+  // fieldName values or other JS identifiers, since those are frequently
+  // aliased wrapper/DTO properties rather than real SObject fields, and
+  // checking those would produce false positives.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateLwcSchemaImports(
+    String fileName,
+    String jsContent
+  ) {
+    if (String.isBlank(jsContent)) {
+      return;
+    }
+
+    Pattern importPat = Pattern.compile(
+      'from\\s+[\'"]@salesforce/schema/([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)[\'"]'
+    );
+    Matcher m = importPat.matcher(jsContent);
+
+    while (m.find()) {
+      String objectApiName = m.group(1);
+      String fieldApiName = m.group(2);
+
+      if (!SchemaFieldValidator.fieldExists(objectApiName, fieldApiName)) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] Imports @salesforce/schema/' +
+            objectApiName +
+            '.' +
+            fieldApiName +
+            ' but that field does not exist. Known fields: ' +
+            SchemaFieldValidator.getKnownFieldNames(objectApiName)
+        );
+      }
+    }
+  }
 }

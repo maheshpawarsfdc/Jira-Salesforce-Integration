@@ -756,6 +756,14 @@ public class LLMResponseProcessor {
 
     List<Object> files = (List<Object>) parsed.get('files');
 
+    // ── Schema-aware field validation setup (runs before files loop) ──
+    // Reset per-response so a previous repair attempt's pending fields don't
+    // leak in, then register every field newly declared in this response's
+    // CustomObject files as "pending" — those legitimately don't exist in
+    // the org yet, so field-existence checks below must accept them too.
+    SchemaFieldValidator.reset();
+    SchemaFieldValidator.registerPendingFieldsFromResponse(files);
+
     // ── Trigger merge enforcer (runs before files loop) ────────
     LLMTriggerMerger.enforceTriggerMerge(files, orgState);
 
@@ -839,6 +847,24 @@ public class LLMResponseProcessor {
               filePath +
               ']'
           );
+        }
+
+        // ── VALIDATE VALIDATION RULE FIELD TYPES before deployment ──────
+        if (metadataType == 'CustomObject' && String.isNotBlank(memberName)) {
+          try {
+            LLMXmlSanitizer.validateValidationRuleFieldTypes(
+              memberName,
+              xmlContent
+            );
+          } catch (ApexCodeValidator.ValidationException e) {
+            System.debug(
+              'processXmlGenerationResponse: validation rule field check FAILED for [' +
+                filePath +
+                ']: ' +
+                e.getMessage()
+            );
+            throw e; // re-throw so runXmlGenerationStage() retry can catch, repair, and re-process
+          }
         }
 
         if (metadataType == 'Layout') {
@@ -1350,6 +1376,21 @@ public class LLMResponseProcessor {
           }
         }
 
+        // ── VALIDATE SOQL FIELD EXISTENCE before deployment ────────────
+        if (isApexCode) {
+          try {
+            LLMXmlSanitizer.validateSoqlFieldsExist(filePath, xmlContent);
+          } catch (ApexCodeValidator.ValidationException e) {
+            System.debug(
+              'processXmlGenerationResponse: SOQL field check FAILED for [' +
+                filePath +
+                ']: ' +
+                e.getMessage()
+            );
+            throw e; // re-throw so runXmlGenerationStage() retry can catch, repair, and re-process
+          }
+        }
+
         // ── VALIDATE LWC SOURCE before deployment ──────────────────────
         if (isLwcHtml || isLwcJs) {
           try {
@@ -1357,6 +1398,21 @@ public class LLMResponseProcessor {
           } catch (ApexCodeValidator.ValidationException e) {
             System.debug(
               'processXmlGenerationResponse: LWC validation FAILED for [' +
+                filePath +
+                ']: ' +
+                e.getMessage()
+            );
+            throw e; // re-throw so runXmlGenerationStage() retry can catch, repair, and re-process
+          }
+        }
+
+        // ── VALIDATE LWC SCHEMA IMPORTS before deployment ──────────────
+        if (isLwcJs) {
+          try {
+            LLMXmlSanitizer.validateLwcSchemaImports(filePath, xmlContent);
+          } catch (ApexCodeValidator.ValidationException e) {
+            System.debug(
+              'processXmlGenerationResponse: LWC schema import check FAILED for [' +
                 filePath +
                 ']: ' +
                 e.getMessage()
