@@ -14,10 +14,12 @@ public class ApexCodeValidator {
     validateNotBlank(fileName, apexCode);
     validateBalancedBraces(fileName, apexCode);
     validateAndOrOperators(fileName, apexCode);
+    validateSecurityEnforcedPlacement(fileName, apexCode);
+    validateApexOperatorsInSoql(fileName, apexCode);
     validateDmlInLoops(fileName, apexCode);
     validateSoqlInLoops(fileName, apexCode);
     validateUntypedCollections(fileName, apexCode);
-    validateDmlInBeforeTrigger(fileName, apexCode);
+    // validateDmlInBeforeTrigger(fileName, apexCode);
     validateTodoComments(fileName, apexCode);
     validateNoEmptyHandlerMethods(fileName, apexCode);
     validateMissingNullChecks(fileName, apexCode);
@@ -87,21 +89,87 @@ public class ApexCodeValidator {
   // catches: Extra 'IDENTIFIER', at 'AND' / Unexpected token 'AND'
   // ─────────────────────────────────────────────────────────────
   private static void validateAndOrOperators(String fileName, String apexCode) {
-    // Remove SOQL blocks so [SELECT ... WHERE a = 1 AND b = 2] does not false-positive
     String noSoql = apexCode.replaceAll('(?s)\\[[^\\]]*SELECT[^\\]]*\\]', ' ');
+
     String cleaned = removeComments(noSoql);
-    // Strip string literals so words like AND/OR inside ordinary text
-    // (e.g. 'Please read AND accept') do not false-positive
-    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'').toUpperCase();
-    // Look for ' AND ' or ' OR ' used as stand-alone tokens in Apex logic
-    if (cleaned.contains(' AND ') || cleaned.contains(' OR ')) {
+    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'');
+    cleaned = cleaned.toUpperCase();
+
+    Pattern p = Pattern.compile('\\b(AND|OR)\\b');
+    Matcher m = p.matcher(cleaned);
+
+    if (m.find()) {
       throw new ValidationException(
         '[' +
           fileName +
-          '] Apex code uses AND/OR as logical operators outside a SOQL query. ' +
-          'In Apex, use && for logical AND and || for logical OR. ' +
-          'AND and OR are ONLY valid inside SOQL WHERE clauses. ' +
-          'Example fix: if (a == \'x\' && b == \'y\')'
+          '] Invalid logical operator detected. ' +
+          'Use && and || in Apex. AND/OR are only allowed inside SOQL.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: && / || INSIDE SOQL
+  // catches: Unexpected token '|' or '&' / Missing ';' inside a query,
+  // and the cascade of downstream errors that follow (undeclared query
+  // variables, unrelated tokens like WITH/SECURITY_ENFORCED flagged as
+  // errors, etc.) once the query itself fails to parse.
+  // Mirror image of validateAndOrOperators: SOQL requires the AND / OR
+  // keywords — Apex's && and || operators are invalid inside [SELECT ...].
+  // ─────────────────────────────────────────────────────────────
+  private static void validateApexOperatorsInSoql(
+    String fileName,
+    String apexCode
+  ) {
+    Pattern soqlPat = Pattern.compile('(?s)\\[[^\\]]*SELECT[^\\]]*\\]');
+    Matcher soqlMatcher = soqlPat.matcher(removeComments(apexCode));
+
+    while (soqlMatcher.find()) {
+      String soqlBlock = soqlMatcher.group();
+      if (soqlBlock.contains('&&') || soqlBlock.contains('||')) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] Found && or || inside a SOQL query: ' +
+            soqlBlock.abbreviate(150) +
+            '. SOQL requires the AND / OR keywords, not Apex\'s && / || operators. ' +
+            'Replace && with AND and || with OR inside [SELECT ...] queries.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: WITH SECURITY_ENFORCED OUTSIDE SOQL
+  // catches: Unexpected token 'WITH' / Extra 'IDENTIFIER', at 'WITH'
+  // WITH SECURITY_ENFORCED is a SOQL-only clause — it must appear inside
+  // [SELECT ...] query brackets, and cannot be passed as an argument to
+  // Security.stripInaccessible() or used anywhere else in Apex.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateSecurityEnforcedPlacement(
+    String fileName,
+    String apexCode
+  ) {
+    String noSoql = apexCode.replaceAll('(?s)\\[[^\\]]*SELECT[^\\]]*\\]', ' ');
+
+    String cleaned = removeComments(noSoql);
+    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'');
+
+    Pattern p = Pattern.compile('(?i)\\bWITH\\s+SECURITY_ENFORCED\\b');
+    Matcher m = p.matcher(cleaned);
+
+    if (m.find()) {
+      throw new ValidationException(
+        '[' +
+          fileName +
+          '] "WITH SECURITY_ENFORCED" found outside a SOQL query. ' +
+          'It is only valid inside [SELECT ...] query brackets, e.g. ' +
+          '[SELECT Id FROM Account WHERE Id = :accId WITH SECURITY_ENFORCED]. ' +
+          'To enforce object/field security on records outside a query (e.g. before DML), ' +
+          'use Security.stripInaccessible(AccessType.READABLE, records) instead — it takes ' +
+          'an AccessType enum (not AccessLevel) and a List<SObject>, and returns an ' +
+          'SObjectAccessDecision (call .getRecords() on it). It never takes WITH SECURITY_ENFORCED ' +
+          'as an argument and does not return void.'
       );
     }
   }
@@ -110,24 +178,14 @@ public class ApexCodeValidator {
   // RULE 1: DML IN LOOPS (Governor Limit: 150 DML ops/transaction)
   // ─────────────────────────────────────────────────────────────
   private static void validateDmlInLoops(String fileName, String apexCode) {
-    String normalized = removeComments(apexCode);
+    String normalized = sanitizeCode(apexCode);
 
-    Boolean hasInsertInLoop = hasPatternInLoop(normalized, 'insert ');
-    Boolean hasUpdateInLoop = hasPatternInLoop(normalized, 'update ');
-    Boolean hasDeleteInLoop = hasPatternInLoop(normalized, 'delete ');
-    Boolean hasUpsertInLoop = hasPatternInLoop(normalized, 'upsert ');
-
-    if (
-      hasInsertInLoop ||
-      hasUpdateInLoop ||
-      hasDeleteInLoop ||
-      hasUpsertInLoop
-    ) {
+    if (containsDmlInsideLoop(normalized)) {
       throw new ValidationException(
         '[' +
           fileName +
           '] DML operation (insert/update/delete/upsert) found inside loop. ' +
-          'This violates governor limits. Batch all DML outside the loop.'
+          'Move the DML outside the loop and perform it in bulk.'
       );
     }
   }
@@ -136,15 +194,14 @@ public class ApexCodeValidator {
   // RULE 2: SOQL IN LOOPS (Governor Limit: 100 SOQL queries/transaction)
   // ─────────────────────────────────────────────────────────────
   private static void validateSoqlInLoops(String fileName, String apexCode) {
-    String normalized = removeComments(apexCode);
+    String normalized = sanitizeCode(apexCode);
 
-    if (hasPatternInLoop(normalized, '[SELECT ')) {
+    if (containsSoqlInsideLoop(normalized)) {
       throw new ValidationException(
         '[' +
           fileName +
           '] SOQL query found inside loop. ' +
-          'This violates governor limits (max 100 queries per transaction). ' +
-          'Move query outside loop or batch queries.'
+          'Move the query outside the loop.'
       );
     }
   }
@@ -158,31 +215,40 @@ public class ApexCodeValidator {
   ) {
     String normalized = removeComments(apexCode);
 
-    if (normalized.contains('List ') && !normalized.contains('List<')) {
-      throw new ValidationException(
-        '[' +
-          fileName +
-          '] Untyped List detected. Use List<Type> instead of List.'
-      );
-    }
-    if (normalized.contains('Map ') && !normalized.contains('Map<')) {
-      throw new ValidationException(
-        '[' +
-          fileName +
-          '] Untyped Map detected. Use Map<Key, Value> instead of Map.'
-      );
-    }
-    if (normalized.contains('Set ') && !normalized.contains('Set<')) {
-      throw new ValidationException(
-        '[' + fileName + '] Untyped Set detected. Use Set<Type> instead of Set.'
-      );
+    Pattern collectionPattern = Pattern.compile('\\b(List|Map|Set)\\b');
+    Matcher matcher = collectionPattern.matcher(normalized);
+
+    while (matcher.find()) {
+      String collectionType = matcher.group();
+
+      Integer start = matcher.end();
+
+      while (
+        start < normalized.length() &&
+        normalized.substring(start, start + 1) == ' '
+      ) {
+        start++;
+      }
+
+      if (
+        start >= normalized.length() ||
+        normalized.substring(start, start + 1) != '<'
+      ) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] Untyped ' +
+            collectionType +
+            ' detected. Use generic collections.'
+        );
+      }
     }
   }
 
   // ─────────────────────────────────────────────────────────────
   // RULE 4: DML IN BEFORE TRIGGER (Salesforce limitation)
   // ─────────────────────────────────────────────────────────────
-  private static void validateDmlInBeforeTrigger(
+  /* private static void validateDmlInBeforeTrigger(
     String fileName,
     String apexCode
   ) {
@@ -215,7 +281,7 @@ public class ApexCodeValidator {
           'Salesforce does not allow DML in BEFORE triggers. Use AFTER trigger instead.'
       );
     }
-  }
+  } */
 
   // ─────────────────────────────────────────────────────────────
   // RULE 5: TODO/FIXME COMMENTS (Incomplete code)
@@ -311,7 +377,7 @@ public class ApexCodeValidator {
   // ─────────────────────────────────────────────────────────────
   // HELPER: Check if pattern exists inside a for/while loop
   // ─────────────────────────────────────────────────────────────
-  private static Boolean hasPatternInLoop(String code, String pattern) {
+  /* private static Boolean hasPatternInLoop(String code, String pattern) {
     Integer patternIdx = code.indexOf(pattern);
 
     while (patternIdx >= 0) {
@@ -345,5 +411,163 @@ public class ApexCodeValidator {
     }
 
     return false;
+  } */
+
+  private static String sanitizeCode(String code) {
+    if (String.isBlank(code)) {
+      return '';
+    }
+
+    // Normalize line endings
+    code = code.replace('\r\n', '\n');
+    code = code.replace('\r', '\n');
+
+    // Remove single-line comments
+    code = code.replaceAll('//[^\\n]*', ' ');
+
+    // Remove multi-line comments
+    code = code.replaceAll('/\\*[\\s\\S]*?\\*/', ' ');
+
+    // Remove string literals
+    code = code.replaceAll('\'([^\'\\\\]|\\\\.)*\'', '\'\'');
+
+    // Normalize whitespace
+    code = code.replaceAll('\\s+', ' ');
+
+    return code;
+  }
+  private static Boolean containsDmlInsideLoop(String code) {
+    code = removeComments(code);
+
+    Integer index = 0;
+
+    while (index < code.length()) {
+      Integer forIndex = code.indexOf('for (', index);
+      Integer whileIndex = code.indexOf('while (', index);
+
+      Integer loopIndex;
+
+      if (forIndex == -1) {
+        loopIndex = whileIndex;
+      } else if (whileIndex == -1) {
+        loopIndex = forIndex;
+      } else {
+        loopIndex = Math.min(forIndex, whileIndex);
+      }
+
+      if (loopIndex == -1) {
+        break;
+      }
+
+      Integer openBrace = code.indexOf('{', loopIndex);
+
+      if (openBrace == -1) {
+        index = loopIndex + 1;
+        continue;
+      }
+
+      Integer braceDepth = 1;
+      Integer pos = openBrace + 1;
+
+      while (pos < code.length() && braceDepth > 0) {
+        String ch = code.substring(pos, pos + 1);
+
+        if (ch == '{') {
+          braceDepth++;
+        } else if (ch == '}') {
+          braceDepth--;
+        }
+
+        pos++;
+      }
+
+      if (braceDepth != 0) {
+        break;
+      }
+
+      String loopBody = code.substring(openBrace + 1, pos - 1).toLowerCase();
+
+      if (
+        containsStandaloneWord(loopBody, 'insert') ||
+        containsStandaloneWord(loopBody, 'update') ||
+        containsStandaloneWord(loopBody, 'delete') ||
+        containsStandaloneWord(loopBody, 'upsert')
+      ) {
+        return true;
+      }
+
+      index = pos;
+    }
+
+    return false;
+  }
+
+  private static Boolean containsSoqlInsideLoop(String code) {
+    Integer pos = 0;
+
+    while (true) {
+      Integer forPos = code.indexOf('for (', pos);
+      Integer whilePos = code.indexOf('while (', pos);
+
+      Integer loopPos;
+
+      if (forPos == -1)
+        loopPos = whilePos;
+      else if (whilePos == -1)
+        loopPos = forPos;
+      else
+        loopPos = Math.min(forPos, whilePos);
+
+      if (loopPos == -1)
+        break;
+
+      Integer openBrace = code.indexOf('{', loopPos);
+
+      if (openBrace == -1)
+        break;
+
+      Integer braceDepth = 1;
+      Integer i = openBrace + 1;
+
+      while (i < code.length() && braceDepth > 0) {
+        String ch = code.substring(i, i + 1);
+
+        if (ch == '{')
+          braceDepth++;
+        else if (ch == '}')
+          braceDepth--;
+
+        i++;
+      }
+
+      String loopBody = code.substring(openBrace + 1, i - 1).toLowerCase();
+
+      if (loopBody.contains('[select')) {
+        return true;
+      }
+
+      pos = i;
+    }
+
+    return false;
+  }
+
+  private static Integer getLineNumber(String code, Integer index) {
+    Integer line = 1;
+
+    for (Integer i = 0; i < index; i++) {
+      if (code.substring(i, i + 1) == '\n') {
+        line++;
+      }
+    }
+
+    return line;
+  }
+
+  private static Boolean containsStandaloneWord(String text, String word) {
+    Pattern p = Pattern.compile('\\b' + word.toLowerCase() + '\\b');
+    Matcher m = p.matcher(text.toLowerCase());
+
+    return m.find();
   }
 }

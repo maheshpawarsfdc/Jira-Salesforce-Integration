@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Validation Rule</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == VALIDATION RULE XML FORMAT ==
 Validation Rules are EMBEDDED inside the CustomObject XML, not separate files.
 File path: objects/ObjectName__c.object
@@ -42,6 +48,10 @@ RULES:
 - Formula syntax: use AND(), OR(), NOT() as functions never as keywords
 - Formula syntax: use ISBLANK(field) never = ""
 - Formula syntax: for picklist fields use ISPICKVAL(Field__c, "Value") never = or !=
+- Formula syntax: TODAY() returns a Date, NOW() returns a Date/Time — they are NOT interchangeable, and a field's actual type can differ from what its label/API name implies or from what an earlier ticket originally requested. Before writing ANY comparison (<, >, <=, >=) between a field and TODAY()/NOW(), you MUST check that field's real type in the METADATA section of this prompt (which reflects the field's actual current type in the org) — never assume the type from the field name or the ticket wording.
+  - If the field's real type is Date: compare with TODAY() (e.g. Reserved_Date__c < TODAY()).
+  - If the field's real type is Date/Time: either compare with NOW() directly (e.g. Reserved_Date__c < NOW()), or convert it to a Date first with DATEVALUE() and compare with TODAY() (e.g. DATEVALUE(Reserved_Date__c) < TODAY()).
+  - Mismatching these (e.g. a Date/Time field compared with TODAY(), or a Date field compared with NOW()) fails to deploy with "Incorrect parameter type for operator... Expected Date/Time, received Date" (or the reverse).
 - Multiple validation rules on same object = ONE object XML file with multiple <validationRules> blocks
 - When adding a validation rule to existing object: use sharingModel from org state
 - For DELETING a validation rule, use destructiveFiles with type ValidationRule
@@ -63,10 +73,12 @@ RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Validation Rule XML embedded inside CustomObject</value>
+        <value
+      xsi:type="xsd:string"
+    >Validation Rule XML embedded inside CustomObject</value>
     </values>
 </CustomMetadata>

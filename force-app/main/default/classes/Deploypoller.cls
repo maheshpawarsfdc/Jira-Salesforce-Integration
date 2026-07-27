@@ -18,12 +18,28 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   private static final Integer MAX_ATTEMPTS = 20; // max ~100 seconds total
   private static final String API_VERSION = '61.0';
 
+  // Salesforce caps chained Queueable jobs at 5 deep per transaction lineage.
+  // The initial DeployPoller enqueue already consumes 1 hop (it's called from
+  // inside ZipDeployQueueable.execute()), and a successful deploy may chain one
+  // more hop afterward (ZIP2 or Apex-test run). Confirmed in production: with
+  // FAST_PATH_MAX_HOPS=3, an attempt that succeeds right after using all 3 fast
+  // hops sits at depth 4, and its success-chain hop pushes it to depth 5, which
+  // Salesforce rejects ("Maximum stack depth has been reached") — and the
+  // resulting exception handler's own callout to Jira then ALSO fails
+  // ("uncommitted work pending"), so the deploy succeeds silently with no
+  // notification ever reaching Jira. Capped at 2 fast hops instead, leaving a
+  // guaranteed free hop for the success-path chain. Falls back to
+  // System.schedule beyond that — each System.schedule hop runs in a fresh
+  // transaction and resets this count to 0 (see DeployPollerScheduler.execute()).
+  private static final Integer FAST_PATH_MAX_HOPS = 2;
+
   // Public so DeployService can set them after Type.forName instantiation
   public String jobId;
   public String issueKey;
   public Integer attempt;
   public String pendingZip2DataJson;
   public String apexTestContextJson;
+  public Integer queueableHops = 0;
 
   // ─────────────────────────────────────────────────────────────
   // CONSTRUCTORS
@@ -189,28 +205,50 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         postStatusToJira(issueKey, 'error', timeoutMsg, jobId);
         abortPollerJobsForThisDeploy();
       } else {
-        // ── Not done yet, schedule next poll ──────────────
-        System.debug(
-          '⏱ [6b] Not done, scheduling next poll at: ' + Datetime.now()
-        );
-        System.debug(
-          'DeployPoller: not done yet (status=' +
-            result.status +
-            '). Re-enqueuing...'
-        );
+        // ── Not done yet, re-poll ──────────────────────────
+        Integer nextAttempt = attempt + 1;
+        Integer nextHops = (queueableHops == null ? 0 : queueableHops) + 1;
 
-        // Use System.schedule instead of System.enqueueJob to avoid
-        // Salesforce queueable stack depth limit (max 5 chained queueables).
-        String cronExp = buildCronIn2Seconds();
-        String jobName = 'DeployPoller_' + jobId + '_' + attempt;
-        DeployPollerScheduler sched = new DeployPollerScheduler(
-          jobId,
-          issueKey,
-          attempt + 1,
-          pendingZip2DataJson
-        );
-        sched.apexTestContextJson = apexTestContextJson;
-        System.schedule(jobName, cronExp, sched);
+        if (nextHops <= FAST_PATH_MAX_HOPS) {
+          // Fast path: chain directly via enqueueJob — fires in the same
+          // transaction almost immediately, unlike System.schedule which
+          // can lag 15-25s behind its requested fire time on this platform.
+          System.debug(
+            '[6b] Not done, re-enqueuing via System.enqueueJob (fast path, hop ' +
+              nextHops +
+              '/' +
+              FAST_PATH_MAX_HOPS +
+              ') at: ' +
+              Datetime.now()
+          );
+          Deploypoller nextPoller = new Deploypoller(
+            jobId,
+            issueKey,
+            nextAttempt
+          );
+          nextPoller.pendingZip2DataJson = pendingZip2DataJson;
+          nextPoller.apexTestContextJson = apexTestContextJson;
+          nextPoller.queueableHops = nextHops;
+          System.enqueueJob(nextPoller);
+        } else {
+          // Fallback: exhausted the safe fast-path hop budget for this
+          // transaction lineage — use System.schedule, which runs in a
+          // fresh transaction and resets the hop count back to 0.
+          System.debug(
+            '[6b] Not done, fast-path hops exhausted — falling back to System.schedule at: ' +
+            Datetime.now()
+          );
+          String cronExp = buildCronIn2Seconds();
+          String jobName = 'DeployPoller_' + jobId + '_' + attempt;
+          DeployPollerScheduler sched = new DeployPollerScheduler(
+            jobId,
+            issueKey,
+            nextAttempt,
+            pendingZip2DataJson
+          );
+          sched.apexTestContextJson = apexTestContextJson;
+          System.schedule(jobName, cronExp, sched);
+        }
       }
     } catch (Exception e) {
       System.debug('DeployPoller: ERROR - ' + e.getMessage());

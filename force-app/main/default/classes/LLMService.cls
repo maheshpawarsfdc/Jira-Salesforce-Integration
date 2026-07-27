@@ -24,6 +24,8 @@ public class LLMService {
     FunctionHelper.deferErrorLogDml = true;
     LLMGroqClient.resetTokenCounters();
 
+    Long t0 = Datetime.now().getTime();
+
     System.debug('JIRA AI ASSISTANT — NEW REQUEST');
     System.debug('► Issue Key  : ' + issueKey);
     System.debug('► Summary    : ' + summary);
@@ -38,6 +40,9 @@ public class LLMService {
     System.debug(
       '── Org check complete. orgState: ' + JSON.serialize(orgState)
     );
+    System.debug(
+      '[LLM-TRACE] org-check | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
 
     // ── STAGE 1.6: Existence gate — skip if everything already exists ──
     System.debug('── STAGE 1.6: Checking existence gate...');
@@ -51,6 +56,11 @@ public class LLMService {
       System.debug(
         '── STAGE 1.6: All requested metadata already exists — skipping deploy. ' +
         skipMsg
+      );
+      System.debug(
+        '[LLM-TRACE] gate-skip-exit | +' +
+          (Datetime.now().getTime() - t0) +
+          'ms'
       );
       try {
         JiraCallbackService.storeDeploymentStatus(
@@ -72,6 +82,9 @@ public class LLMService {
       return 'Skipped: ' + skipMsg;
     }
     System.debug('── STAGE 1.6 complete. ' + gateResult.get('summary'));
+    System.debug(
+      '[LLM-TRACE] gate | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
 
     // ── STAGE 1.5: Route — select relevant prompt sections ──
     System.debug('── STAGE 1.5: Routing prompt sections...');
@@ -80,7 +93,47 @@ public class LLMService {
       description
     );
     System.debug(
-      '── STAGE 1.5 complete. System prompt length: ' + systemPrompt.length()
+      '[LLM-TRACE] router | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
+    StoryAnalysis analysis;
+    MetadataContext metadata;
+    ExistingCodeContext existingCode;
+    String finalPrompt;
+
+    try {
+      analysis = StoryAnalyzer.analyze(summary, description);
+
+      metadata = MetadataContextService.buildContext(analysis);
+
+      // Future enhancement:
+      // ExistingCodeService.build(analysis, orgState)
+      existingCode = ExistingCodeService.build(analysis);
+
+      GenerationContext context = new GenerationContext();
+
+      context.summary = summary;
+      context.description = description;
+      context.systemPrompt = systemPrompt;
+      context.story = analysis;
+      context.metadata = metadata;
+      context.existingCode = existingCode;
+      context.orgState = orgState;
+
+      finalPrompt = PromptBuilder.build(context);
+
+      System.debug('========== STORY ANALYSIS ==========');
+      System.debug(JSON.serializePretty(analysis));
+
+      System.debug('========== METADATA CONTEXT ==========');
+      System.debug(JSON.serializePretty(metadata));
+
+      System.debug('========== EXISTING CODE CONTEXT ==========');
+      System.debug(JSON.serializePretty(existingCode));
+    } catch (Exception ex) {
+      throw new LLMException('Prompt preparation failed: ' + ex.getMessage());
+    }
+    System.debug(
+      '[LLM-TRACE] context-build | +' + (Datetime.now().getTime() - t0) + 'ms'
     );
 
     // ── STAGE 2: Generate XML files ────────────────────────
@@ -90,9 +143,72 @@ public class LLMService {
       summary,
       description,
       orgState,
-      systemPrompt
+      finalPrompt
     );
     System.debug('── STAGE 2 complete.');
+    System.debug(
+      '[LLM-TRACE] xml-generation | +' + (Datetime.now().getTime() - t0) + 'ms'
+    );
+    System.debug('========== XML GENERATION RESULT ==========');
+    System.debug('XML GENERATION RESULT==' + result);
+    System.debug('===========================================');
+    /*
+   List<AIFile> generatedFiles =
+    LLMResponseProcessor.getGeneratedFiles();
+    System.debug('========== GENERATED FILES ==========');
+System.debug(JSON.serializePretty(generatedFiles));
+
+AIValidationResult validation =
+    ResponseValidator.validate(
+        generatedFiles
+    );
+    System.debug('========== VALIDATION RESULT ==========');
+System.debug(JSON.serializePretty(validation));
+
+if(!validation.success){
+
+    throw new LLMException(
+        String.join(
+            validation.errors,
+            '\n'
+        )
+    );
+
+} 
+// ── STAGE 3: AI Code Review ─────────────────────────────
+CodeReviewRequest reviewRequest =
+    new CodeReviewRequest();
+
+reviewRequest.issueKey =
+    issueKey;
+
+reviewRequest.storySummary =
+    summary;
+
+reviewRequest.storyDescription =
+    description;
+
+CodeReviewResult review =
+    AICodeReviewService.review(
+        reviewRequest
+    );
+System.debug('========== AI REVIEW RESULT ==========');
+System.debug(JSON.serializePretty(review));
+
+if(!review.approved){
+
+    throw new LLMException(
+
+        'AI Review Failed\n' +
+
+        String.join(
+            review.issues,
+            '\n'
+        )
+
+    );
+
+} */
 
     // ── ZIP DEPLOY (async) ─────────────────────────────────────────
     // Flush DML first — enqueue follows immediately, no callout after
@@ -104,6 +220,12 @@ public class LLMService {
       List<String> apxCont = LLMResponseProcessor.pendingApexClassContents;
       List<String> tstNames = LLMResponseProcessor.pendingTestClassNames;
       List<String> tstCont = LLMResponseProcessor.pendingTestClassContents;
+
+      System.debug(
+        '[LLM-TRACE] deploy-handoff | +' +
+          (Datetime.now().getTime() - t0) +
+          'ms'
+      );
 
       if (
         apxNames != null &&
