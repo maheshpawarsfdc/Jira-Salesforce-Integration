@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Custom Field</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == CUSTOM FIELD XML FORMAT ==
 IMPORTANT: Fields are EMBEDDED inside the CustomObject XML, not separate files.
 When adding fields to an existing object, the file must include the full CustomObject wrapper:
@@ -27,7 +33,12 @@ metadataType: CustomObject
     <!-- fields go here -->
     <fields>...</fields>
     <fields>...</fields>
-</CustomObject>]]></value>
+</CustomObject>
+
+== FIELD HISTORY TRACKING ==
+A <fields> block may include <trackHistory>true</trackHistory>.
+Set <trackHistory>true</trackHistory> ONLY on fields the ticket explicitly names for history/audit tracking (e.g. "Enable field history tracking for: Status__c, Amount__c" means ONLY Status__c and Amount__c get the tag -- do not add it to any other field).
+If you set <trackHistory>true</trackHistory> on ANY field, the parent CustomObject's <enableHistory> element MUST also be true -- Salesforce silently ignores field-level tracking otherwise. See CUSTOM_OBJECT format for <enableHistory>.]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>
@@ -47,6 +58,8 @@ metadataType: CustomObject
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Custom Field XML wrapper format inside CustomObject</value>
+        <value
+      xsi:type="xsd:string"
+    >Custom Field XML wrapper format inside CustomObject</value>
     </values>
 </CustomMetadata>
