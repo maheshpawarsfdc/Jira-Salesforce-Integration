@@ -764,6 +764,13 @@ public class LLMResponseProcessor {
     SchemaFieldValidator.reset();
     SchemaFieldValidator.registerPendingFieldsFromResponse(files);
 
+    // Objects with at least one field declaring trackHistory=true — their
+    // CustomObject file needs enableHistory=true too, or the field-level
+    // setting silently does nothing. See collectObjectsNeedingHistoryTracking().
+    Set<String> objectsNeedingHistoryTracking = LLMXmlSanitizer.collectObjectsNeedingHistoryTracking(
+      files
+    );
+
     // ── Trigger merge enforcer (runs before files loop) ────────
     LLMTriggerMerger.enforceTriggerMerge(files, orgState);
 
@@ -847,6 +854,14 @@ public class LLMResponseProcessor {
               filePath +
               ']'
           );
+          if (objectsNeedingHistoryTracking.contains(memberName)) {
+            xmlContent = LLMXmlSanitizer.forceEnableHistory(xmlContent);
+            System.debug(
+              '[DEPLOY-TRACE] forceEnableHistory applied to [' +
+                filePath +
+                '] — a field on this object declares trackHistory=true'
+            );
+          }
         }
 
         // ── VALIDATE VALIDATION RULE FIELD TYPES before deployment ──────
@@ -1033,6 +1048,9 @@ public class LLMResponseProcessor {
         if (metadataType == 'Profile') {
           xmlContent = LLMXmlSanitizer.sanitizeProfileXml(xmlContent);
           xmlContent = LLMXmlSanitizer.sanitizeProfileStandardObjectTabs(
+            xmlContent
+          );
+          xmlContent = LLMXmlSanitizer.defaultCustomTabVisibilityToOn(
             xmlContent
           );
           xmlContent = LLMXmlSanitizer.sanitizeProfileLayoutAssignments(
@@ -1327,9 +1345,20 @@ public class LLMResponseProcessor {
         }
 
         if (metadataType == 'Profile') {
-          xmlContent = xmlContent.replaceAll(
-            '<tabVisibilities>[\\s\\S]*?</tabVisibilities>',
-            ''
+          // NOTE: custom-object (__c) tabVisibilities are intentionally left
+          // alone here — LLMXmlSanitizer.sanitizeProfileStandardObjectTabs()
+          // already ran above and stripped only the standard-object entries.
+          // Blanket-stripping ALL tabVisibilities here previously left every
+          // newly created custom tab with no visibility on any profile, so
+          // the tab existed (Setup > Tabs) but could never be added to a
+          // Lightning app's navigation — nothing had made it visible.
+          //
+          // Salesforce rejects fieldPermissions entries for required fields
+          // ("You cannot deploy to a required field: Object__c.Field__c") —
+          // required fields get implicit read/edit access already. Same
+          // safeguard PermissionSet files already get below.
+          xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
+            xmlContent
           );
         }
 
@@ -1497,6 +1526,8 @@ public class LLMResponseProcessor {
     // Inject default FLS (fieldPermissions) for all new custom fields
     // into every Profile file already staged in ZipBuilder
     LLMXmlSanitizer.injectDefaultFieldPermissions(files);
+    // Guarantee Admin gets DefaultOn visibility for every new custom tab
+    LLMXmlSanitizer.injectDefaultTabVisibility(files);
 
     // ── Promote backstop layout files into ZIP1 for single deploys ─────────
     // When adding fields to an existing object (deployScenario='single'),
@@ -2117,6 +2148,8 @@ public class LLMResponseProcessor {
 
     // Inject default FLS for all new custom fields into any Profile files staged
     LLMXmlSanitizer.injectDefaultFieldPermissions(files);
+    // Guarantee Admin gets DefaultOn visibility for every new custom tab
+    LLMXmlSanitizer.injectDefaultTabVisibility(files);
 
     System.debug(
       'generateCustomObjectsFromCsvWithLlm: ' +

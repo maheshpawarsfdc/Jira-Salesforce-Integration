@@ -434,24 +434,11 @@ public class PermissionSetHelper {
 
   private static Boolean isRequiredField(String objectName, String fieldName) {
     try {
-      Schema.SObjectType objType = Schema.getGlobalDescribe().get(objectName);
-      if (objType == null) {
-        return false;
-      }
-      Schema.DescribeFieldResult f = objType.getDescribe()
-        .fields.getMap()
-        .get(fieldName)
-        ?.getDescribe();
-      if (f == null) {
-        return false;
-      }
-      // Required in the permission-set sense: not nillable, not auto-populated,
-      // not an auto-number, not a formula, and not the Id field type.
-      return !f.isNillable() &&
-        !f.isDefaultedOnCreate() &&
-        !f.isAutoNumber() &&
-        !f.isCalculated() &&
-        f.getType() != Schema.DisplayType.ID;
+      // Delegates to SchemaFieldValidator so a field being created in this
+      // same deploy (not yet in live schema) is still recognized as
+      // required — its <required> flag was parsed straight from the
+      // generated XML via registerPendingFieldsFromResponse().
+      return SchemaFieldValidator.isFieldRequired(objectName, fieldName);
     } catch (Exception e) {
       System.debug(
         'PermissionSetHelper.isRequiredField(): [' +

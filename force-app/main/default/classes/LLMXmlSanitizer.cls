@@ -37,7 +37,9 @@ public class LLMXmlSanitizer {
       'deploymentStatus' => 'Deployed',
       'sharingModel' => 'ReadWrite',
       'enableBulkApi' => 'true',
-      'enableStreamingApi' => 'true'
+      'enableStreamingApi' => 'true',
+      'enableReports' => 'true',
+      'enableActivities' => 'true'
     }
   };
 
@@ -652,6 +654,60 @@ public class LLMXmlSanitizer {
           toRemove.size() +
           ' standard-object tabVisibilities block(s)'
       );
+    }
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // PROFILE CUSTOM TAB — DEFAULT VISIBILITY TO ON
+  // A tabVisibilities block with no <visibility> (or a blank one) deploys
+  // as hidden by default — a newly created tab then exists (Setup > Tabs)
+  // but can't be added to any Lightning app's navigation until someone
+  // manually flips its visibility. The ticket almost never asks for a new
+  // tab to be hidden, so default to DefaultOn unless the LLM explicitly
+  // declared a different value (DefaultOff / Hidden) — that's left as-is.
+  // Standard-object tabVisibilities are already stripped upstream by
+  // sanitizeProfileStandardObjectTabs(), so only __c tabs reach here.
+  // ─────────────────────────────────────────────────────────────
+  public static String defaultCustomTabVisibilityToOn(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<tabVisibilities>')) {
+      return xml;
+    }
+
+    Pattern tvPat = Pattern.compile(
+      '(?s)<tabVisibilities>\\s*<tab>([^<]+)</tab>(.*?)</tabVisibilities>'
+    );
+    Pattern visPat = Pattern.compile('<visibility>([^<]*)</visibility>');
+    Matcher m = tvPat.matcher(xml);
+
+    Map<String, String> replacements = new Map<String, String>();
+    while (m.find()) {
+      String tabName = m.group(1).trim();
+      if (!tabName.endsWith('__c')) {
+        continue;
+      }
+      Matcher visMatcher = visPat.matcher(m.group(2));
+      if (visMatcher.find() && String.isNotBlank(visMatcher.group(1))) {
+        continue; // explicit value present — leave it alone
+      }
+      replacements.put(
+        m.group(0),
+        '<tabVisibilities>' +
+          '\n        <tab>' +
+          tabName +
+          '</tab>' +
+          '\n        <visibility>DefaultOn</visibility>' +
+          '\n    </tabVisibilities>'
+      );
+      System.debug(
+        '[DEPLOY-TRACE] defaultCustomTabVisibilityToOn: defaulted [' +
+          tabName +
+          '] to DefaultOn (no explicit visibility declared)'
+      );
+    }
+
+    for (String oldBlock : replacements.keySet()) {
+      xml = xml.replace(oldBlock, replacements.get(oldBlock));
     }
     return xml;
   }
@@ -1358,6 +1414,80 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // OBJECT-LEVEL HISTORY TRACKING CONSISTENCY
+  //
+  // A field's <trackHistory>true</trackHistory> only takes effect if its
+  // parent CustomObject also has <enableHistory>true</enableHistory> — the
+  // Setup UI enforces this by graying out the field-level checkbox until
+  // the object-level one is checked, but the Metadata API doesn't reject a
+  // mismatch, it just silently no-ops the field-level tracking. Unlike
+  // enableReports/enableActivities this is NOT blanket-defaulted — object
+  // history tracking has real storage cost, so it should only turn on when
+  // the ticket (via the LLM's own trackHistory=true on some field, or on
+  // the object itself) actually asked for it.
+  //
+  // Usage: call collectObjectsNeedingHistoryTracking(files) once before
+  // the main file loop, then forceEnableHistory() on each CustomObject
+  // file whose memberName is in the returned set.
+  // ─────────────────────────────────────────────────────────────
+  public static Set<String> collectObjectsNeedingHistoryTracking(
+    List<Object> files
+  ) {
+    Set<String> result = new Set<String>();
+    if (files == null) {
+      return result;
+    }
+
+    Pattern fieldBlockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String mt = (String) file.get('metadataType');
+      String mn = (String) file.get('memberName');
+      String xml = (String) file.get('xmlContent');
+      if (String.isBlank(mn) || String.isBlank(xml)) {
+        continue;
+      }
+
+      if (mt == 'CustomField' && mn.contains('.')) {
+        if (xml.contains('<trackHistory>true</trackHistory>')) {
+          result.add(mn.substringBefore('.'));
+        }
+      } else if (mt == 'CustomObject') {
+        Matcher blockMatcher = fieldBlockPat.matcher(xml);
+        while (blockMatcher.find()) {
+          if (
+            blockMatcher.group(1).contains('<trackHistory>true</trackHistory>')
+          ) {
+            result.add(mn);
+            break;
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  public static String forceEnableHistory(String xml) {
+    if (String.isBlank(xml) || !xml.contains('</CustomObject>')) {
+      return xml;
+    }
+    if (xml.contains('<enableHistory>true</enableHistory>')) {
+      return xml;
+    }
+    if (xml.contains('<enableHistory>false</enableHistory>')) {
+      return xml.replace(
+        '<enableHistory>false</enableHistory>',
+        '<enableHistory>true</enableHistory>'
+      );
+    }
+    return xml.replace(
+      '</CustomObject>',
+      '    <enableHistory>true</enableHistory>\n</CustomObject>'
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // APPEND DESTRUCTIVE MEMBER
   // ─────────────────────────────────────────────────────────────
   public static void appendDestructiveMember(
@@ -1574,6 +1704,90 @@ public class LLMXmlSanitizer {
           ' fieldPermissions'
       );
     }
+  }
+
+  // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // TAB VISIBILITY BACKSTOP
+  //
+  // Guarantees the Admin profile always gets a DefaultOn tabVisibilities
+  // entry for every custom tab newly created in this deploy \u2014 regardless
+  // of whether the LLM's own Profile file mentioned the tab at all. This
+  // is what makes a brand-new tab immediately addable to a Lightning app's
+  // navigation without a manual Setup fix.
+  //
+  // Other profiles are left untouched here \u2014 they only get a tab entry
+  // when the ticket explicitly targets them, which flows through the
+  // LLM's own Profile file and defaultCustomTabVisibilityToOn() above.
+  // \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  public static void injectDefaultTabVisibility(List<Object> files) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    Set<String> newTabs = new Set<String>();
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String mt = (String) file.get('metadataType');
+      String mn = (String) file.get('memberName');
+      if (mt == 'CustomTab' && String.isNotBlank(mn) && mn.endsWith('__c')) {
+        newTabs.add(mn);
+      }
+    }
+    if (newTabs.isEmpty()) {
+      return;
+    }
+
+    String adminPath = 'profiles/Admin.profile';
+    String adminXml = ZipBuilder.files.get(adminPath);
+
+    Set<String> alreadyCovered = new Set<String>();
+    if (String.isNotBlank(adminXml)) {
+      Pattern tabPat = Pattern.compile(
+        '<tabVisibilities>\\s*<tab>([^<]+)</tab>'
+      );
+      Matcher m = tabPat.matcher(adminXml);
+      while (m.find()) {
+        alreadyCovered.add(m.group(1).trim());
+      }
+    }
+
+    List<String> newBlocks = new List<String>();
+    for (String tabName : newTabs) {
+      if (alreadyCovered.contains(tabName)) {
+        continue;
+      }
+      newBlocks.add(
+        '    <tabVisibilities>\n' +
+          '        <tab>' +
+          tabName +
+          '</tab>\n' +
+          '        <visibility>DefaultOn</visibility>\n' +
+          '    </tabVisibilities>'
+      );
+    }
+    if (newBlocks.isEmpty()) {
+      return;
+    }
+
+    if (String.isNotBlank(adminXml) && adminXml.contains('</Profile>')) {
+      String updatedXml = adminXml.replace(
+        '</Profile>',
+        String.join(newBlocks, '\n') + '\n</Profile>'
+      );
+      ZipBuilder.addFile('Profile', 'Admin', adminPath, updatedXml);
+    } else {
+      String profileXml =
+        '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<Profile xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
+        String.join(newBlocks, '\n') +
+        '\n</Profile>';
+      ZipBuilder.addFile('Profile', 'Admin', adminPath, profileXml);
+    }
+    System.debug(
+      '[DEPLOY-TRACE] injectDefaultTabVisibility: granted DefaultOn on Admin for ' +
+        newBlocks.size() +
+        ' new tab(s)'
+    );
   }
 
   // Maps a Profile display Name to its Salesforce metadata member name.

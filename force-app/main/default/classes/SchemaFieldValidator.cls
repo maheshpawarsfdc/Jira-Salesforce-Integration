@@ -19,6 +19,11 @@ public class SchemaFieldValidator {
   // or blank if the type couldn't be determined.
   private static Map<String, String> pendingFields = new Map<String, String>();
 
+  // Same key space as pendingFields — whether the pending field's generated
+  // XML declared <required>true</required>. Needed because live schema
+  // describe can't see requiredness for a field that doesn't exist yet.
+  private static Map<String, Boolean> pendingFieldRequired = new Map<String, Boolean>();
+
   // ─────────────────────────────────────────────────────────────
   // RESET — call once at the start of processing a fresh LLM response
   // (including each repair-retry attempt), so pending fields from a
@@ -26,12 +31,14 @@ public class SchemaFieldValidator {
   // ─────────────────────────────────────────────────────────────
   public static void reset() {
     pendingFields.clear();
+    pendingFieldRequired.clear();
   }
 
   // ─────────────────────────────────────────────────────────────
-  // PRE-PASS — scan every CustomObject file in the response for newly
-  // declared <fields> blocks and register them as pending, before any
-  // individual file is validated. Safe to call even if fields is null/empty.
+  // PRE-PASS — scan every CustomObject file (embedded <fields> blocks) and
+  // every standalone CustomField file in the response, and register the
+  // fields they declare as pending, before any individual file is
+  // validated. Safe to call even if fields is null/empty.
   // ─────────────────────────────────────────────────────────────
   public static void registerPendingFieldsFromResponse(List<Object> files) {
     if (files == null) {
@@ -41,6 +48,7 @@ public class SchemaFieldValidator {
     Pattern fieldBlockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
     Pattern fullNamePat = Pattern.compile('<fullName>([^<]+)</fullName>');
     Pattern typePat = Pattern.compile('<type>([^<]+)</type>');
+    Pattern requiredPat = Pattern.compile('<required>([^<]+)</required>');
 
     for (Object rawFile : files) {
       Map<String, Object> file = (Map<String, Object>) rawFile;
@@ -48,25 +56,50 @@ public class SchemaFieldValidator {
       String memberName = (String) file.get('memberName');
       String xmlContent = (String) file.get('xmlContent');
 
-      if (
-        metadataType != 'CustomObject' ||
-        String.isBlank(memberName) ||
-        String.isBlank(xmlContent)
-      ) {
+      if (String.isBlank(memberName) || String.isBlank(xmlContent)) {
         continue;
       }
 
-      Matcher blockMatcher = fieldBlockPat.matcher(xmlContent);
-      while (blockMatcher.find()) {
-        String block = blockMatcher.group(1);
-        Matcher nameMatcher = fullNamePat.matcher(block);
-        Matcher typeMatcher = typePat.matcher(block);
-        if (nameMatcher.find()) {
+      if (metadataType == 'CustomObject') {
+        Matcher blockMatcher = fieldBlockPat.matcher(xmlContent);
+        while (blockMatcher.find()) {
+          String block = blockMatcher.group(1);
+          Matcher nameMatcher = fullNamePat.matcher(block);
+          if (!nameMatcher.find()) {
+            continue;
+          }
+          Matcher typeMatcher = typePat.matcher(block);
+          Matcher requiredMatcher = requiredPat.matcher(block);
           String declaredType = typeMatcher.find()
             ? typeMatcher.group(1).toUpperCase()
             : '';
-          registerPendingField(memberName, nameMatcher.group(1), declaredType);
+          Boolean required =
+            requiredMatcher.find() && requiredMatcher.group(1) == 'true';
+          registerPendingField(
+            memberName,
+            nameMatcher.group(1),
+            declaredType,
+            required
+          );
         }
+      } else if (metadataType == 'CustomField' && memberName.contains('.')) {
+        // Standalone decomposed CustomField file — memberName is already
+        // qualified as "ObjectApiName.FieldApiName".
+        String objectApiName = memberName.substringBefore('.');
+        String fieldApiName = memberName.substringAfter('.');
+        Matcher typeMatcher = typePat.matcher(xmlContent);
+        Matcher requiredMatcher = requiredPat.matcher(xmlContent);
+        String declaredType = typeMatcher.find()
+          ? typeMatcher.group(1).toUpperCase()
+          : '';
+        Boolean required =
+          requiredMatcher.find() && requiredMatcher.group(1) == 'true';
+        registerPendingField(
+          objectApiName,
+          fieldApiName,
+          declaredType,
+          required
+        );
       }
     }
   }
@@ -74,15 +107,15 @@ public class SchemaFieldValidator {
   public static void registerPendingField(
     String objectApiName,
     String fieldApiName,
-    String declaredType
+    String declaredType,
+    Boolean isRequired
   ) {
     if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
       return;
     }
-    pendingFields.put(
-      objectApiName.toLowerCase() + '.' + fieldApiName.toLowerCase(),
-      declaredType
-    );
+    String key = objectApiName.toLowerCase() + '.' + fieldApiName.toLowerCase();
+    pendingFields.put(key, declaredType);
+    pendingFieldRequired.put(key, isRequired == true);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -137,6 +170,36 @@ public class SchemaFieldValidator {
       return null;
     }
     return String.valueOf(f.getDescribe().getType());
+  }
+
+  // Returns true if the field is required. Checks fields newly declared in
+  // this response first — their required flag comes straight from the
+  // generated XML since live schema can't see them yet — then falls back
+  // to a live Schema describe for fields that already exist in the org.
+  public static Boolean isFieldRequired(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
+      return false;
+    }
+    String key = objectApiName.toLowerCase() + '.' + fieldApiName.toLowerCase();
+    if (pendingFieldRequired.containsKey(key)) {
+      return pendingFieldRequired.get(key);
+    }
+    Schema.SObjectField f = getFieldMap(objectApiName)
+      .get(fieldApiName.toLowerCase());
+    if (f == null) {
+      return false;
+    }
+    Schema.DescribeFieldResult d = f.getDescribe();
+    // Required in the permission-set sense: not nillable, not
+    // auto-populated, not an auto-number, not a formula, and not Id.
+    return !d.isNillable() &&
+      !d.isDefaultedOnCreate() &&
+      !d.isAutoNumber() &&
+      !d.isCalculated() &&
+      d.getType() != Schema.DisplayType.ID;
   }
 
   // Comma-separated list of the object's actual field API names, for
