@@ -13855,7 +13855,6 @@ public class MetadataService {
     public String description;
     public MetadataService.ProfileExternalDataSourceAccess[] externalDataSourceAccesses;
     public MetadataService.ProfileFieldLevelSecurity[] fieldPermissions;
-    public MetadataService.ProfileFlowAccess[] flowAccesses;
     public MetadataService.ProfileLayoutAssignment[] layoutAssignments;
     public MetadataService.ProfileLoginHours loginHours;
     public MetadataService.ProfileLoginIpRange[] loginIpRanges;
@@ -13924,14 +13923,6 @@ public class MetadataService {
     };
     private String[] fieldPermissions_type_info = new List<String>{
       'fieldPermissions',
-      SOAP_M_URI,
-      null,
-      '0',
-      '-1',
-      'false'
-    };
-    private String[] flowAccesses_type_info = new List<String>{
-      'flowAccesses',
       SOAP_M_URI,
       null,
       '0',
@@ -14034,7 +14025,6 @@ public class MetadataService {
       'description',
       'externalDataSourceAccesses',
       'fieldPermissions',
-      'flowAccesses',
       'layoutAssignments',
       'loginHours',
       'loginIpRanges',
@@ -42762,35 +42752,6 @@ public class MetadataService {
     private String[] field_order_type_info = new List<String>{
       'apexClass',
       'enabled'
-    };
-  }
-  public class ProfileFlowAccess {
-    public Boolean enabled;
-    public String flow;
-    private String[] enabled_type_info = new List<String>{
-      'enabled',
-      SOAP_M_URI,
-      null,
-      '1',
-      '1',
-      'false'
-    };
-    private String[] flow_type_info = new List<String>{
-      'flow',
-      SOAP_M_URI,
-      null,
-      '1',
-      '1',
-      'false'
-    };
-    private String[] apex_schema_type_info = new List<String>{
-      SOAP_M_URI,
-      'true',
-      'false'
-    };
-    private String[] field_order_type_info = new List<String>{
-      'enabled',
-      'flow'
     };
   }
   public class ProfileLoginIpRange {
