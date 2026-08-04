@@ -367,6 +367,7 @@ public class LLMResponseProcessor {
               }
             }
           }
+
         }
       }
       return false;
@@ -818,6 +819,15 @@ public class LLMResponseProcessor {
             xmlContent,
             sourceObj
           );
+          xmlContent = LLMXmlSanitizer.normalizeFormulaFieldTypesInCustomObjectXml(
+            xmlContent
+          );
+        }
+
+        if (metadataType == 'CustomField') {
+          xmlContent = LLMXmlSanitizer.normalizeFormulaFieldTypeInCustomFieldXml(
+            xmlContent
+          );
         }
 
         if (
@@ -982,6 +992,55 @@ public class LLMResponseProcessor {
                     ']'
                 );
               }
+            }
+          }
+
+          // Force Readonly on all formula/rollup/autonumber fields — runs
+          // after merge/injection so behavior is safe for final layout XML.
+          if (memberName != null && memberName.contains('-')) {
+            String lParentObj = memberName.substringBefore('-');
+            Set<String> formulaFields = new Set<String>();
+            for (Object f3Raw : files) {
+              Map<String, Object> f3 = (Map<String, Object>) f3Raw;
+              String f3mt = (String) f3.get('metadataType');
+              String f3mn = (String) f3.get('memberName');
+              String f3Xml = (String) f3.get('xmlContent');
+              if (String.isBlank(f3Xml)) {
+                continue;
+              }
+              if ('CustomObject'.equals(f3mt) && lParentObj.equals(f3mn)) {
+                formulaFields.addAll(LLMXmlSanitizer.extractFormulaFieldNames(f3Xml));
+              } else if (
+                'CustomField'.equals(f3mt) &&
+                f3mn != null &&
+                f3mn.contains('.') &&
+                lParentObj.equals(f3mn.substringBefore('.')) &&
+                f3Xml.contains('<formula>')
+              ) {
+                formulaFields.add(f3mn.substringAfter('.'));
+              }
+            }
+
+            // Fallback for existing objects: if this run doesn't include
+            // sibling field XML, infer readonly fields directly from schema.
+            for (String layoutField : LLMLayoutHelper.extractFieldNamesFromLayoutXml(
+              xmlContent
+            )) {
+              if (
+                SchemaFieldValidator.isLayoutReadOnlyField(
+                  lParentObj,
+                  layoutField
+                )
+              ) {
+                formulaFields.add(layoutField);
+              }
+            }
+
+            if (!formulaFields.isEmpty()) {
+              xmlContent = LLMXmlSanitizer.fixFormulaFieldBehaviorsInLayout(
+                xmlContent,
+                formulaFields
+              );
             }
           }
         }
@@ -1541,7 +1600,12 @@ public class LLMResponseProcessor {
         }
         String layoutFullName = path.removeStart('layouts/')
           .removeEnd('.layout');
-        ZipBuilder.addFile('Layout', layoutFullName, path, zip2Files.get(path));
+        String safeLayoutXml = enforceReadonlyFormulaFieldsInLayout(
+          layoutFullName,
+          zip2Files.get(path),
+          files
+        );
+        ZipBuilder.addFile('Layout', layoutFullName, path, safeLayoutXml);
         promoted.add(path);
         System.debug(
           '[DEPLOY-TRACE] promoted backstop Layout to ZIP1: ' + path
@@ -1610,6 +1674,22 @@ public class LLMResponseProcessor {
 
     // ── Persist zip2 data ──────────────────────────────────────
     if (!zip2Files.isEmpty()) {
+      for (String path : new List<String>(zip2Files.keySet())) {
+        if (!path.startsWith('layouts/')) {
+          continue;
+        }
+        String layoutFullName = path.removeStart('layouts/')
+          .removeEnd('.layout');
+        zip2Files.put(
+          path,
+          enforceReadonlyFormulaFieldsInLayout(
+            layoutFullName,
+            zip2Files.get(path),
+            files
+          )
+        );
+      }
+
       Map<String, Object> zip2Data = new Map<String, Object>{
         'files' => zip2Files,
         'binaryFiles' => new Map<String, String>(),
@@ -1643,6 +1723,63 @@ public class LLMResponseProcessor {
   // ─────────────────────────────────────────────────────────────
   // EXTRACT RECORD TYPE NAMES FROM OBJECT XML
   // ─────────────────────────────────────────────────────────────
+  private static String enforceReadonlyFormulaFieldsInLayout(
+    String layoutFullName,
+    String layoutXml,
+    List<Object> files
+  ) {
+    if (
+      String.isBlank(layoutXml) ||
+      String.isBlank(layoutFullName) ||
+      !layoutFullName.contains('-')
+    ) {
+      return layoutXml;
+    }
+
+    String parentObj = layoutFullName.substringBefore('-');
+    Set<String> readOnlyFields = new Set<String>();
+
+    if (files != null) {
+      for (Object rawFile : files) {
+        Map<String, Object> f = (Map<String, Object>) rawFile;
+        String mt = (String) f.get('metadataType');
+        String mn = (String) f.get('memberName');
+        String x = (String) f.get('xmlContent');
+        if (String.isBlank(x)) {
+          continue;
+        }
+
+        if ('CustomObject'.equals(mt) && parentObj.equals(mn)) {
+          readOnlyFields.addAll(LLMXmlSanitizer.extractFormulaFieldNames(x));
+        } else if (
+          'CustomField'.equals(mt) &&
+          mn != null &&
+          mn.contains('.') &&
+          parentObj.equals(mn.substringBefore('.')) &&
+          x.contains('<formula>')
+        ) {
+          readOnlyFields.add(mn.substringAfter('.'));
+        }
+      }
+    }
+
+    for (String layoutField : LLMLayoutHelper.extractFieldNamesFromLayoutXml(
+      layoutXml
+    )) {
+      if (SchemaFieldValidator.isLayoutReadOnlyField(parentObj, layoutField)) {
+        readOnlyFields.add(layoutField);
+      }
+    }
+
+    if (readOnlyFields.isEmpty()) {
+      return layoutXml;
+    }
+    return LLMXmlSanitizer.fixFormulaFieldBehaviorsInLayout(
+      layoutXml,
+      readOnlyFields
+    );
+  }
+
   private static Boolean hasInvalidApexSource(String llmResponse) {
     if (String.isBlank(llmResponse)) {
       return false;

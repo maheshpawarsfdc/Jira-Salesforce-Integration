@@ -553,6 +553,172 @@ public class LLMXmlSanitizer {
     return xml;
   }
 
+  // Normalizes formula field blocks in CustomObject XML so deploy never
+  // carries invalid <type>Formula</type> values.
+  public static String normalizeFormulaFieldTypesInCustomObjectXml(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fields>')) {
+      return xml;
+    }
+
+    Pattern blockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+    Matcher mat = blockPat.matcher(xml);
+    List<String> originals = new List<String>();
+    List<String> replacements = new List<String>();
+
+    while (mat.find()) {
+      String fieldBody = mat.group(1);
+      String block = '<fields>' + fieldBody + '</fields>';
+      if (!block.contains('<formula>')) {
+        continue;
+      }
+
+      String fieldType = extractInlineTagValue(block, 'type');
+      if (!'Formula'.equalsIgnoreCase(fieldType)) {
+        continue;
+      }
+
+      String normalizedType = normalizeFormulaReturnType(
+        extractInlineTagValue(block, 'returnType'),
+        block
+      );
+
+      String updated = block.replaceAll(
+        '<type>\\s*Formula\\s*</type>',
+        '<type>' + normalizedType + '</type>'
+      );
+      // returnType is not a valid CustomField element when type already
+      // expresses the formula return datatype.
+      updated = updated.replaceAll('(?s)\\s*<returnType>[^<]*</returnType>', '');
+
+      if (
+        normalizedType == 'Number' ||
+        normalizedType == 'Currency' ||
+        normalizedType == 'Percent'
+      ) {
+        if (!updated.contains('<precision>')) {
+          updated = updated.replace(
+            '</fields>',
+            '    <precision>18</precision>\n</fields>'
+          );
+        }
+        if (!updated.contains('<scale>')) {
+          updated = updated.replace(
+            '</fields>',
+            '    <scale>2</scale>\n</fields>'
+          );
+        }
+      } else {
+        // Non-numeric formulas should not carry numeric sizing tags.
+        updated = updated.replaceAll('(?s)\\s*<precision>[^<]*</precision>', '');
+        updated = updated.replaceAll('(?s)\\s*<scale>[^<]*</scale>', '');
+      }
+      // Salesforce rejects <length> on ALL formula fields regardless of return type.
+      updated = updated.replaceAll('(?s)\\s*<length>[^<]*</length>', '');
+
+      originals.add(block);
+      replacements.add(updated);
+    }
+
+    for (Integer i = 0; i < originals.size(); i++) {
+      xml = xml.replace(originals[i], replacements[i]);
+    }
+
+    if (!originals.isEmpty()) {
+      System.debug(
+        '[DEPLOY-TRACE] normalizeFormulaFieldTypesInCustomObjectXml: normalized ' +
+          originals.size() +
+          ' formula field block(s)'
+      );
+    }
+    return xml;
+  }
+
+  // Normalizes standalone CustomField XML formula type in the same way as
+  // object-embedded <fields> blocks.
+  public static String normalizeFormulaFieldTypeInCustomFieldXml(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<formula>')) {
+      return xml;
+    }
+
+    String fieldType = extractInlineTagValue(xml, 'type');
+    if (!'Formula'.equalsIgnoreCase(fieldType)) {
+      return xml;
+    }
+
+    String normalizedType = normalizeFormulaReturnType(
+      extractInlineTagValue(xml, 'returnType'),
+      xml
+    );
+    String out = xml.replaceAll(
+      '<type>\\s*Formula\\s*</type>',
+      '<type>' + normalizedType + '</type>'
+    );
+    out = out.replaceAll('(?s)\\s*<returnType>[^<]*</returnType>', '');
+
+    if (
+      normalizedType == 'Number' ||
+      normalizedType == 'Currency' ||
+      normalizedType == 'Percent'
+    ) {
+      if (!out.contains('<precision>')) {
+        out = out.replace(
+          '</CustomField>',
+          '    <precision>18</precision>\n</CustomField>'
+        );
+      }
+      if (!out.contains('<scale>')) {
+        out = out.replace(
+          '</CustomField>',
+          '    <scale>2</scale>\n</CustomField>'
+        );
+      }
+    } else {
+      out = out.replaceAll('(?s)\\s*<precision>[^<]*</precision>', '');
+      out = out.replaceAll('(?s)\\s*<scale>[^<]*</scale>', '');
+    }
+    // Salesforce rejects <length> on ALL formula fields regardless of return type.
+    out = out.replaceAll('(?s)\\s*<length>[^<]*</length>', '');
+
+    System.debug(
+      '[DEPLOY-TRACE] normalizeFormulaFieldTypeInCustomFieldXml: normalized formula type to [' +
+        normalizedType +
+        ']'
+    );
+    return out;
+  }
+
+  private static String normalizeFormulaReturnType(
+    String rawReturnType,
+    String formulaBlock
+  ) {
+    Set<String> valid = new Set<String>{
+      'Text',
+      'Number',
+      'Currency',
+      'Percent',
+      'Date',
+      'DateTime',
+      'Checkbox'
+    };
+
+    if (String.isNotBlank(rawReturnType)) {
+      for (String t : valid) {
+        if (t.equalsIgnoreCase(rawReturnType.trim())) {
+          return t;
+        }
+      }
+    }
+
+    // Best-effort fallback when returnType is omitted by the model.
+    if (
+      formulaBlock.contains('<precision>') ||
+      formulaBlock.contains('<scale>')
+    ) {
+      return 'Number';
+    }
+    return 'Text';
+  }
+
   private static String extractInlineTagValue(String block, String tag) {
     String open = '<' + tag + '>';
     String close = '</' + tag + '>';
@@ -568,6 +734,22 @@ public class LLMXmlSanitizer {
     String block,
     String fieldType
   ) {
+    if (block.contains('<formula>')) {
+      if (String.isBlank(fieldType) || 'Formula'.equalsIgnoreCase(fieldType)) {
+        return true;
+      }
+      if (
+        fieldType == 'Number' ||
+        fieldType == 'Currency' ||
+        fieldType == 'Percent'
+      ) {
+        return !block.contains('<precision>') || !block.contains('<scale>');
+      }
+      // Text/Date/DateTime/Checkbox formula fields do not require
+      // length/precision/scale tags.
+      return false;
+    }
+
     if (
       fieldType == 'Text' ||
       fieldType == 'TextArea' ||
@@ -601,9 +783,6 @@ public class LLMXmlSanitizer {
     }
     if (fieldType == 'AutoNumber') {
       return !block.contains('<displayFormat>');
-    }
-    if (fieldType == 'Formula') {
-      return !block.contains('<formula>') || !block.contains('<returnType>');
     }
     if (fieldType == 'Summary') {
       return !block.contains('<summaryOperation>') ||
@@ -1363,6 +1542,121 @@ public class LLMXmlSanitizer {
         ']'
     );
     return xml;
+  }
+
+  // Returns field API names whose <fields> block contains a <formula> element.
+  public static Set<String> extractFormulaFieldNames(String objectXml) {
+    Set<String> result = new Set<String>();
+    if (String.isBlank(objectXml)) {
+      return result;
+    }
+    Pattern blockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+    Matcher blockMat = blockPat.matcher(objectXml);
+    while (blockMat.find()) {
+      String block = blockMat.group(1);
+      if (!block.contains('<formula>')) {
+        continue;
+      }
+      Matcher nameMat = Pattern.compile('<fullName>([^<]+)</fullName>').matcher(block);
+      if (nameMat.find()) {
+        result.add(nameMat.group(1).trim());
+      }
+    }
+    return result;
+  }
+
+  // Forces behavior=Readonly for every formula/rollup/autonumber field in a layout.
+  public static String fixFormulaFieldBehaviorsInLayout(
+    String xml,
+    Set<String> formulaFieldNames
+  ) {
+    if (
+      String.isBlank(xml) ||
+      formulaFieldNames == null ||
+      formulaFieldNames.isEmpty()
+    ) {
+      return xml;
+    }
+    Set<String> normalizedTargets = new Set<String>();
+    for (String fieldName : formulaFieldNames) {
+      if (String.isBlank(fieldName)) {
+        continue;
+      }
+      String f = fieldName.trim();
+      normalizedTargets.add(f.toLowerCase());
+      if (f.contains('.')) {
+        normalizedTargets.add(f.substringAfter('.').toLowerCase());
+      }
+    }
+
+    Pattern itemPat = Pattern.compile('(?s)<layoutItems>.*?</layoutItems>');
+    Matcher itemMat = itemPat.matcher(xml);
+    List<String> oldItems = new List<String>();
+    List<String> newItems = new List<String>();
+    Pattern fieldValPat = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>');
+
+    while (itemMat.find()) {
+      String item = itemMat.group(0);
+      Matcher fieldValMat = fieldValPat.matcher(item);
+      if (!fieldValMat.find()) {
+        continue;
+      }
+
+      String rawField = fieldValMat.group(1).trim();
+      String norm = rawField.toLowerCase();
+      if (norm.contains('.')) {
+        norm = norm.substringAfter('.');
+      }
+      if (!normalizedTargets.contains(norm) && !normalizedTargets.contains(rawField.toLowerCase())) {
+        continue;
+      }
+
+      String updatedItem = item;
+      if (updatedItem.contains('<behavior>')) {
+        updatedItem = updatedItem.replaceAll(
+          '(?s)<behavior>\\s*[^<]*\\s*</behavior>',
+          '<behavior>Readonly</behavior>'
+        );
+      } else {
+        updatedItem = updatedItem.replace(
+          '<layoutItems>',
+          '<layoutItems>\n                <behavior>Readonly</behavior>'
+        );
+      }
+
+      oldItems.add(item);
+      newItems.add(updatedItem);
+    }
+
+    for (Integer i = 0; i < oldItems.size(); i++) {
+      xml = xml.replace(oldItems[i], newItems[i]);
+    }
+    System.debug(
+      '[SANITIZE] fixFormulaFieldBehaviorsInLayout: forced Readonly on ' + formulaFieldNames
+    );
+    return xml;
+  }
+
+  private static String escapeRegexLiteral(String raw) {
+    if (raw == null) {
+      return '';
+    }
+    String s = raw;
+    s = s.replace('\\', '\\\\');
+    s = s.replace('.', '\\.');
+    s = s.replace('+', '\\+');
+    s = s.replace('*', '\\*');
+    s = s.replace('?', '\\?');
+    s = s.replace('^', '\\^');
+    s = s.replace('$', '\\$');
+    s = s.replace('(', '\\(');
+    s = s.replace(')', '\\)');
+    s = s.replace('[', '\\[');
+    s = s.replace(']', '\\]');
+    s = s.replace('{', '\\{');
+    s = s.replace('}', '\\}');
+    s = s.replace('|', '\\|');
+    return s;
   }
 
   // ─────────────────────────────────────────────────────────────
