@@ -24,6 +24,10 @@ public class SchemaFieldValidator {
   // describe can't see requiredness for a field that doesn't exist yet.
   private static Map<String, Boolean> pendingFieldRequired = new Map<String, Boolean>();
 
+  // Same key space as pendingFields — true when the generated field should
+  // be readonly on layouts (formula/summary/autonumber/id semantics).
+  private static Map<String, Boolean> pendingFieldLayoutReadOnly = new Map<String, Boolean>();
+
   // ─────────────────────────────────────────────────────────────
   // RESET — call once at the start of processing a fresh LLM response
   // (including each repair-retry attempt), so pending fields from a
@@ -32,6 +36,7 @@ public class SchemaFieldValidator {
   public static void reset() {
     pendingFields.clear();
     pendingFieldRequired.clear();
+    pendingFieldLayoutReadOnly.clear();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -75,11 +80,15 @@ public class SchemaFieldValidator {
             : '';
           Boolean required =
             requiredMatcher.find() && requiredMatcher.group(1) == 'true';
+          Boolean layoutReadOnly = block.contains('<formula>') ||
+            declaredType == 'SUMMARY' ||
+            declaredType == 'AUTONUMBER';
           registerPendingField(
             memberName,
             nameMatcher.group(1),
             declaredType,
-            required
+            required,
+            layoutReadOnly
           );
         }
       } else if (metadataType == 'CustomField' && memberName.contains('.')) {
@@ -94,11 +103,15 @@ public class SchemaFieldValidator {
           : '';
         Boolean required =
           requiredMatcher.find() && requiredMatcher.group(1) == 'true';
+        Boolean layoutReadOnly = xmlContent.contains('<formula>') ||
+          declaredType == 'SUMMARY' ||
+          declaredType == 'AUTONUMBER';
         registerPendingField(
           objectApiName,
           fieldApiName,
           declaredType,
-          required
+          required,
+          layoutReadOnly
         );
       }
     }
@@ -110,12 +123,29 @@ public class SchemaFieldValidator {
     String declaredType,
     Boolean isRequired
   ) {
+    registerPendingField(
+      objectApiName,
+      fieldApiName,
+      declaredType,
+      isRequired,
+      false
+    );
+  }
+
+  public static void registerPendingField(
+    String objectApiName,
+    String fieldApiName,
+    String declaredType,
+    Boolean isRequired,
+    Boolean isLayoutReadOnly
+  ) {
     if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
       return;
     }
     String key = objectApiName.toLowerCase() + '.' + fieldApiName.toLowerCase();
     pendingFields.put(key, declaredType);
     pendingFieldRequired.put(key, isRequired == true);
+    pendingFieldLayoutReadOnly.put(key, isLayoutReadOnly == true);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -124,17 +154,63 @@ public class SchemaFieldValidator {
   private static Map<String, Schema.SObjectField> getFieldMap(
     String objectApiName
   ) {
-    String key = objectApiName.toLowerCase();
-    if (fieldMapCache.containsKey(key)) {
-      return fieldMapCache.get(key);
+    if (String.isBlank(objectApiName)) {
+      return new Map<String, Schema.SObjectField>();
     }
+    String cacheKey = objectApiName.toLowerCase();
+    if (fieldMapCache.containsKey(cacheKey)) {
+      return fieldMapCache.get(cacheKey);
+    }
+
     Map<String, Schema.SObjectField> fieldMap = new Map<String, Schema.SObjectField>();
     Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
-    if (globalDescribe.containsKey(key)) {
-      fieldMap = globalDescribe.get(key).getDescribe().fields.getMap();
+
+    // Global describe keys are case-sensitive API names (e.g. Contract1__c),
+    // while callers may pass mixed/lower case. Resolve case-insensitively.
+    String resolvedKey = null;
+    if (globalDescribe.containsKey(objectApiName)) {
+      resolvedKey = objectApiName;
+    } else {
+      String target = objectApiName.toLowerCase();
+      for (String gdKey : globalDescribe.keySet()) {
+        if (gdKey != null && gdKey.toLowerCase() == target) {
+          resolvedKey = gdKey;
+          break;
+        }
+      }
     }
-    fieldMapCache.put(key, fieldMap);
+
+    if (resolvedKey != null) {
+      fieldMap = globalDescribe.get(resolvedKey).getDescribe().fields.getMap();
+    }
+
+    fieldMapCache.put(cacheKey, fieldMap);
     return fieldMap;
+  }
+
+  private static Schema.SObjectField getFieldDescribe(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
+      return null;
+    }
+    Map<String, Schema.SObjectField> fmap = getFieldMap(objectApiName);
+    if (fmap == null || fmap.isEmpty()) {
+      return null;
+    }
+
+    if (fmap.containsKey(fieldApiName)) {
+      return fmap.get(fieldApiName);
+    }
+
+    String target = fieldApiName.toLowerCase();
+    for (String k : fmap.keySet()) {
+      if (k != null && k.toLowerCase() == target) {
+        return fmap.get(k);
+      }
+    }
+    return null;
   }
 
   public static Boolean fieldExists(String objectApiName, String fieldApiName) {
@@ -148,7 +224,7 @@ public class SchemaFieldValidator {
     ) {
       return true;
     }
-    return getFieldMap(objectApiName).containsKey(fieldApiName.toLowerCase());
+    return getFieldDescribe(objectApiName, fieldApiName) != null;
   }
 
   // Returns the field's real Display Type name (e.g. 'DATE', 'DATETIME'),
@@ -164,8 +240,7 @@ public class SchemaFieldValidator {
     if (pendingFields.containsKey(pendingKey)) {
       return pendingFields.get(pendingKey);
     }
-    Schema.SObjectField f = getFieldMap(objectApiName)
-      .get(fieldApiName.toLowerCase());
+    Schema.SObjectField f = getFieldDescribe(objectApiName, fieldApiName);
     if (f == null) {
       return null;
     }
@@ -187,8 +262,7 @@ public class SchemaFieldValidator {
     if (pendingFieldRequired.containsKey(key)) {
       return pendingFieldRequired.get(key);
     }
-    Schema.SObjectField f = getFieldMap(objectApiName)
-      .get(fieldApiName.toLowerCase());
+    Schema.SObjectField f = getFieldDescribe(objectApiName, fieldApiName);
     if (f == null) {
       return false;
     }
@@ -200,6 +274,32 @@ public class SchemaFieldValidator {
       !d.isAutoNumber() &&
       !d.isCalculated() &&
       d.getType() != Schema.DisplayType.ID;
+  }
+
+  // Returns true for fields that must be Readonly on layouts because the
+  // value is system-derived (formula/rollup/autonumber/Id).
+  public static Boolean isLayoutReadOnlyField(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
+      return false;
+    }
+    String normalizedField = fieldApiName.contains('.')
+      ? fieldApiName.substringAfter('.')
+      : fieldApiName;
+    String key = objectApiName.toLowerCase() + '.' + normalizedField.toLowerCase();
+    if (pendingFieldLayoutReadOnly.containsKey(key)) {
+      return pendingFieldLayoutReadOnly.get(key);
+    }
+    Schema.SObjectField f = getFieldDescribe(objectApiName, normalizedField);
+    if (f == null) {
+      return false;
+    }
+    Schema.DescribeFieldResult d = f.getDescribe();
+    return d.isCalculated() ||
+      d.isAutoNumber() ||
+      d.getType() == Schema.DisplayType.ID;
   }
 
   // Comma-separated list of the object's actual field API names, for
