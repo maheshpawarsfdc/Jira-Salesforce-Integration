@@ -757,6 +757,14 @@ public class LLMResponseProcessor {
 
     List<Object> files = (List<Object>) parsed.get('files');
 
+    // ── Merge duplicate record-identifier fields (runs first — mutates
+    // files[] in place before anything else reads it) ──
+    // Deterministic backstop for the RECORD IDENTIFIER FIELDS prompt rule,
+    // since the LLM doesn't reliably follow it: if an object's field list
+    // includes e.g. Invoice_Number__c alongside object Invoice__c, that
+    // field gets folded into <nameField> instead of staying a duplicate.
+    LLMXmlSanitizer.mergeDuplicateIdentifierFields(files);
+
     // ── Schema-aware field validation setup (runs before files loop) ──
     // Reset per-response so a previous repair attempt's pending fields don't
     // leak in, then register every field newly declared in this response's
@@ -929,30 +937,35 @@ public class LLMResponseProcessor {
 
           if (memberName != null && memberName.contains('-')) {
             String layoutParentObj = memberName.substringBefore('-');
-            String nameFieldType = 'Text';
-            for (Object f2Raw : files) {
-              Map<String, Object> f2 = (Map<String, Object>) f2Raw;
-              if (
-                'CustomObject'.equals(f2.get('metadataType')) &&
-                layoutParentObj.equals(f2.get('memberName'))
-              ) {
-                String coXml = (String) f2.get('xmlContent');
-                if (String.isNotBlank(coXml)) {
-                  Pattern nfPat = Pattern.compile(
-                    '(?s)<nameField>.*?<type>(\\w+)</type>.*?</nameField>'
-                  );
-                  Matcher nfMat = nfPat.matcher(coXml);
-                  if (nfMat.find()) {
-                    nameFieldType = nfMat.group(1).trim();
-                  }
-                }
-                break;
-              }
-            }
+            // Single canonical lookup — checks the current response's
+            // sibling CustomObject, then ZipBuilder, then live org schema.
+            // See LLMLayoutHelper.resolveNameFieldType() for the full
+            // priority order; every Layout-related call site in the
+            // codebase shares this one implementation.
+            String nameFieldType = LLMLayoutHelper.resolveNameFieldType(
+              layoutParentObj,
+              files
+            );
             xmlContent = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(
               xmlContent,
               nameFieldType
             );
+
+            // Same Readonly-only rule applies to any OTHER AutoNumber
+            // field on this object (e.g. Invoice_Number__c) — not just
+            // the implicit Name field. Salesforce rejects Required/Edit
+            // on any AutoNumber field with "Field:X must be Readonly".
+            Set<String> autoNumberFields = LLMLayoutHelper.collectAutoNumberFieldNames(
+              layoutParentObj,
+              files
+            );
+            autoNumberFields.remove('Name'); // already handled above
+            if (!autoNumberFields.isEmpty()) {
+              xmlContent = LLMXmlSanitizer.forceReadonlyForAutoNumberFields(
+                xmlContent,
+                autoNumberFields
+              );
+            }
           }
 
           if (
@@ -2297,6 +2310,9 @@ public class LLMResponseProcessor {
           ']'
       );
     }
+
+    // Same duplicate record-identifier backstop as the ticket-driven path
+    LLMXmlSanitizer.mergeDuplicateIdentifierFields(files);
 
     // ── Stage each file into ZipBuilder ──────────────────────
     Integer count = 0;

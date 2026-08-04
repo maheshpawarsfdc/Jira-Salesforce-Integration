@@ -37,6 +37,12 @@ memberName: ObjectName__c
     <enableActivities>false</enableActivities> <!-- set true only if ticket explicitly requires activities -->
     <enableHistory>false</enableHistory>       <!-- set true only if ticket explicitly requires field history -->
 </CustomObject>
+RULE - RECORD IDENTIFIER FIELDS (applies to Text AND AutoNumber, for ANY object — evaluate this fresh every time using the object actually being created, never limited to names seen in examples): Every custom object requires a <nameField>. Before creating any field from the ticket's field list, check its API name against the pattern <ObjectName>_Name__c or <ObjectName>_Number__c, where <ObjectName> is literally the SAME name as the object currently being created — substitute the real object name each time, this is a structural pattern, not a fixed list of field names to match against. Example of applying the pattern generically: object Widget__c + a listed field Widget_Name__c or Widget_Number__c → that field matches. A field matching this pattern for the CURRENT object is that object's identifier field, not a separate custom field:
+  - Configure <nameField> directly with that field's type (Text stays Text, AutoNumber stays AutoNumber), label, and any format details (length for Text; displayFormat/startingNumber for AutoNumber).
+  - Do NOT also emit it as a separate custom field. Doing so creates two fields with the same label and purpose — a duplicate, not two distinct pieces of data.
+  - Every OTHER field in the ticket's list (lookups, picklists, email, unrelated Text/Number fields, etc.) is unaffected by this rule and must still be created normally as its own field.
+  - Only create a genuinely separate custom field alongside the nameField when the ticket clearly wants two distinct values that do NOT match this object-name-based pattern.
+
 RULE: When creating an object, you MUST also generate:
   - A CustomTab file (see Tab format below)
   - A Profile file for Admin tab visibility (see Profile format below)
@@ -74,7 +80,8 @@ FIELD PERMISSIONS RULES:
 3. If no profiles are mentioned, generate fieldPermissions for the Admin profile only — the system will automatically grant access to the triggering user's profile as well.
 4. editable=true + readable=true → field is visible and editable (use for normal fields).
 5. editable=false + readable=true → field is visible but read-only (use for Formula, Roll-Up Summary, AutoNumber fields).
-6. Do NOT include fieldPermissions for Required fields — Salesforce grants implicit access to those.]]></value>
+6. Do NOT include fieldPermissions for Required fields — Salesforce grants implicit access to those.
+7. Do NOT include fieldPermissions for the object's Name field, including when a ticket-listed field (Text or AutoNumber — see the RECORD IDENTIFIER FIELDS rule above) was folded into <nameField> instead of being created as its own field. The Name field is never a separate CustomField component, for ANY object — referencing ObjectName__c.ObjectName_Name__c or ObjectName__c.ObjectName_Number__c (substitute whatever object/field you actually folded) in fieldPermissions fails deploy with "no CustomField named X found" because there is no such component to attach the permission to. This applies every time RECORD IDENTIFIER FIELDS applies, regardless of the object's name.]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>

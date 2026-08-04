@@ -554,9 +554,21 @@ public class LLMLayoutHelper {
         String parentObj = fullName.substringBefore('-');
         String nameFieldType = resolveNameFieldType(parentObj);
         xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(xml, nameFieldType);
+
+        Set<String> autoNumberFields = collectAutoNumberFieldNames(
+          parentObj,
+          null
+        );
+        autoNumberFields.remove('Name'); // already handled above
+        if (!autoNumberFields.isEmpty()) {
+          xml = LLMXmlSanitizer.forceReadonlyForAutoNumberFields(
+            xml,
+            autoNumberFields
+          );
+        }
       } catch (Exception ex) {
         System.debug(
-          '[DEPLOY-TRACE] rebuildLayoutXmlWithNewFields: could not fix Name behavior: ' +
+          '[DEPLOY-TRACE] rebuildLayoutXmlWithNewFields: could not fix Name/AutoNumber behavior: ' +
           ex.getMessage()
         );
       }
@@ -592,9 +604,7 @@ public class LLMLayoutHelper {
     String nameBehavior = 'Edit';
     if (String.isNotBlank(objectApiName)) {
       try {
-        String nameFieldType = LLMOrgStateService.getObjectNameFieldType(
-          objectApiName
-        );
+        String nameFieldType = resolveNameFieldType(objectApiName);
         nameBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
           ? 'Readonly'
           : 'Required';
@@ -616,7 +626,9 @@ public class LLMLayoutHelper {
         if (String.isBlank(f)) {
           continue;
         }
-        String behavior = (t == 'MasterDetail') ? 'Required' : 'Edit';
+        String behavior = (t == 'MasterDetail')
+          ? 'Required'
+          : ((t == 'AutoNumber') ? 'Readonly' : 'Edit');
         s += '            <layoutItems>\n';
         s += '                <behavior>' + behavior + '</behavior>\n';
         s += '                <field>' + f + '</field>\n';
@@ -860,14 +872,65 @@ public class LLMLayoutHelper {
   }
   // ─────────────────────────────────────────────────────────────
   // RESOLVE NAME FIELD TYPE
-  // Checks ZipBuilder first (for new objects in same deploy),
-  // then falls back to org query (for existing objects).
+  //
+  // Single canonical source of truth for "what type is this object's Name
+  // field?" — every Layout-related call site in the codebase should call
+  // this instead of re-implementing any part of this lookup, so a future
+  // fix only ever needs to happen in one place.
+  //
+  // Checked in order:
+  //   1. The sibling CustomObject entry in the CURRENT LLM response, if the
+  //      caller has one (object + layout generated together in the same
+  //      pass, regardless of array order).
+  //   2. Whatever's already staged in ZipBuilder — covers a layout
+  //      generated in a later repair-retry pass than the object itself.
+  //   3. Live org schema — covers a layout added to an object that already
+  //      exists.
+  // Defaults to 'Text' only if all three come up empty.
   // ─────────────────────────────────────────────────────────────
   public static String resolveNameFieldType(String objectApiName) {
+    return resolveNameFieldType(objectApiName, null);
+  }
+
+  public static String resolveNameFieldType(
+    String objectApiName,
+    List<Object> currentResponseFiles
+  ) {
     if (String.isBlank(objectApiName)) {
       return 'Text';
     }
-    // 1. New object being created in this same deploy — read from ZIP
+
+    // 1. Sibling CustomObject entry in the current LLM response
+    if (currentResponseFiles != null) {
+      Pattern nfPat = Pattern.compile(
+        '(?s)<nameField>.*?<type>(\\w+)</type>.*?</nameField>'
+      );
+      for (Object rawFile : currentResponseFiles) {
+        Map<String, Object> file = (Map<String, Object>) rawFile;
+        if (
+          'CustomObject'.equals(file.get('metadataType')) &&
+          objectApiName.equals(file.get('memberName'))
+        ) {
+          String coXml = (String) file.get('xmlContent');
+          if (String.isNotBlank(coXml)) {
+            Matcher m = nfPat.matcher(coXml);
+            if (m.find()) {
+              String type = m.group(1).trim();
+              System.debug(
+                '[DEPLOY-TRACE] resolveNameFieldType: [' +
+                  objectApiName +
+                  '] read from current response type=' +
+                  type
+              );
+              return type;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // 2. New object being created in this same deploy — read from ZIP
     String objectFilePath = 'objects/' + objectApiName + '.object';
     String objectXml = ZipBuilder.files.get(objectFilePath);
     if (String.isNotBlank(objectXml) && objectXml.contains('<nameField>')) {
@@ -889,7 +952,126 @@ public class LLMLayoutHelper {
         }
       }
     }
-    // 2. Existing object — query org
+
+    // 3. Existing object — query org
     return LLMOrgStateService.getObjectNameFieldType(objectApiName);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // COLLECT AUTONUMBER FIELD NAMES
+  //
+  // Returns the API names of every AutoNumber field on the given object —
+  // the implicit Name field (if it's AutoNumber) plus any regular custom
+  // AutoNumber fields — so a Layout's <behavior> can be corrected to
+  // Readonly for ALL of them, not just Name. Salesforce rejects Required
+  // or Edit on any AutoNumber field, custom or not.
+  //
+  // Sources are MERGED rather than short-circuited (unlike
+  // resolveNameFieldType): Name might only be resolvable from the current
+  // response while a pre-existing custom AutoNumber field is only
+  // resolvable from live org schema, so all three need to contribute.
+  // ─────────────────────────────────────────────────────────────
+  public static Set<String> collectAutoNumberFieldNames(
+    String objectApiName,
+    List<Object> currentResponseFiles
+  ) {
+    Set<String> result = new Set<String>();
+    if (String.isBlank(objectApiName)) {
+      return result;
+    }
+
+    if (
+      'AutoNumber'
+        .equalsIgnoreCase(
+          resolveNameFieldType(objectApiName, currentResponseFiles)
+        )
+    ) {
+      result.add('Name');
+    }
+
+    Pattern fieldBlockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+    Pattern fullNamePat = Pattern.compile('<fullName>([^<]+)</fullName>');
+    Pattern typePat = Pattern.compile('<type>([^<]+)</type>');
+
+    // 1. Current response — embedded <fields> blocks + standalone CustomField files
+    if (currentResponseFiles != null) {
+      for (Object rawFile : currentResponseFiles) {
+        Map<String, Object> file = (Map<String, Object>) rawFile;
+        String mt = (String) file.get('metadataType');
+        String mn = (String) file.get('memberName');
+        String xml = (String) file.get('xmlContent');
+        if (String.isBlank(mn) || String.isBlank(xml)) {
+          continue;
+        }
+        if (mt == 'CustomObject' && objectApiName.equals(mn)) {
+          Matcher blockMatcher = fieldBlockPat.matcher(xml);
+          while (blockMatcher.find()) {
+            String block = blockMatcher.group(1);
+            Matcher nameMatcher = fullNamePat.matcher(block);
+            Matcher typeMatcher = typePat.matcher(block);
+            if (
+              nameMatcher.find() &&
+              typeMatcher.find() &&
+              'AutoNumber'.equalsIgnoreCase(typeMatcher.group(1).trim())
+            ) {
+              result.add(nameMatcher.group(1).trim());
+            }
+          }
+        } else if (mt == 'CustomField' && mn.startsWith(objectApiName + '.')) {
+          Matcher typeMatcher = typePat.matcher(xml);
+          if (
+            typeMatcher.find() &&
+            'AutoNumber'.equalsIgnoreCase(typeMatcher.group(1).trim())
+          ) {
+            result.add(mn.substringAfter('.'));
+          }
+        }
+      }
+    }
+
+    // 2. Already staged in ZipBuilder
+    String stagedXml = ZipBuilder.files.get(
+      'objects/' + objectApiName + '.object'
+    );
+    if (String.isNotBlank(stagedXml)) {
+      Matcher blockMatcher = fieldBlockPat.matcher(stagedXml);
+      while (blockMatcher.find()) {
+        String block = blockMatcher.group(1);
+        Matcher nameMatcher = fullNamePat.matcher(block);
+        Matcher typeMatcher = typePat.matcher(block);
+        if (
+          nameMatcher.find() &&
+          typeMatcher.find() &&
+          'AutoNumber'.equalsIgnoreCase(typeMatcher.group(1).trim())
+        ) {
+          result.add(nameMatcher.group(1).trim());
+        }
+      }
+    }
+
+    // 3. Live org schema — existing AutoNumber fields on an existing object
+    try {
+      Schema.SObjectType objType = Schema.getGlobalDescribe()
+        .get(objectApiName);
+      if (objType != null) {
+        for (
+          Schema.SObjectField f : objType.getDescribe().fields.getMap().values()
+        ) {
+          Schema.DescribeFieldResult d = f.getDescribe();
+          if (d.isAutoNumber()) {
+            result.add(d.getName());
+          }
+        }
+      }
+    } catch (Exception e) {
+      System.debug(
+        '[DEPLOY-TRACE] collectAutoNumberFieldNames: live schema lookup failed for [' +
+          objectApiName +
+          ']: ' +
+          e.getMessage()
+      );
+    }
+
+    return result;
   }
 }

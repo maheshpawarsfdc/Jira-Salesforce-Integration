@@ -819,6 +819,262 @@ public class LLMXmlSanitizer {
     return '';
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // MERGE DUPLICATE RECORD-IDENTIFIER FIELDS
+  //
+  // Deterministic backstop for the RECORD IDENTIFIER FIELDS prompt rule
+  // (LLM_Prompt__mdt CUSTOM_OBJECT) — the LLM doesn't reliably follow it,
+  // so this detects the duplicate mechanically instead of trusting the
+  // prompt alone. For every CustomObject in the batch, if a sibling field
+  // named <ObjectName>_Name__c or <ObjectName>_Number__c exists (a
+  // standalone CustomField file OR an embedded <fields> block), it is
+  // folded into <nameField> and removed as its own field. Every
+  // Profile/PermissionSet fieldPermissions entry and Layout layoutItems
+  // entry referencing that now-removed field is corrected too, so the
+  // merge doesn't just trade one deploy failure for another.
+  //
+  // Must run BEFORE the main files[] loop — it mutates the files list
+  // itself (removing entries, rewriting xmlContent in place).
+  // ─────────────────────────────────────────────────────────────
+  public static void mergeDuplicateIdentifierFields(List<Object> files) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    List<String> objectApiNames = new List<String>();
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      Object mnRaw = file.get('memberName');
+      if (
+        'CustomObject'.equals(file.get('metadataType')) &&
+        mnRaw != null &&
+        String.valueOf(mnRaw).endsWith('__c')
+      ) {
+        objectApiNames.add(String.valueOf(mnRaw));
+      }
+    }
+    if (objectApiNames.isEmpty()) {
+      return;
+    }
+
+    for (String objectApiName : objectApiNames) {
+      // Re-find the object's file each iteration — indices shift as
+      // duplicate CustomField entries are removed from `files` below.
+      Map<String, Object> objFile = null;
+      for (Object rawFile : files) {
+        Map<String, Object> file = (Map<String, Object>) rawFile;
+        if (
+          'CustomObject'.equals(file.get('metadataType')) &&
+          objectApiName.equals(file.get('memberName'))
+        ) {
+          objFile = file;
+          break;
+        }
+      }
+      if (objFile == null) {
+        continue;
+      }
+      String objXml = (String) objFile.get('xmlContent');
+      if (String.isBlank(objXml)) {
+        continue;
+      }
+
+      String baseName = objectApiName.removeEnd('__c');
+      Set<String> candidates = new Set<String>{
+        (baseName + '_Name__c').toLowerCase(),
+        (baseName + '_Number__c').toLowerCase()
+      };
+      // Also match against the object name with a trailing numeric suffix
+      // stripped (e.g. object Account1__c naming its identifier field
+      // Account_Name__c instead of Account1_Name__c) — tickets aren't
+      // always internally consistent about repeating a disambiguating
+      // digit in the field name too.
+      String baseNameNoDigits = baseName.replaceAll('[0-9]+$', '');
+      if (String.isNotBlank(baseNameNoDigits) && baseNameNoDigits != baseName) {
+        candidates.add((baseNameNoDigits + '_Name__c').toLowerCase());
+        candidates.add((baseNameNoDigits + '_Number__c').toLowerCase());
+      }
+
+      // 1. Look for a standalone CustomField match
+      Integer matchIndex = -1;
+      String matchedFieldName = null;
+      String matchedFieldXml = null;
+      for (Integer i = 0; i < files.size(); i++) {
+        Map<String, Object> f = (Map<String, Object>) files[i];
+        if (!'CustomField'.equals(f.get('metadataType'))) {
+          continue;
+        }
+        String mn = (String) f.get('memberName');
+        if (String.isBlank(mn) || !mn.startsWith(objectApiName + '.')) {
+          continue;
+        }
+        String fn = mn.substringAfter('.');
+        if (candidates.contains(fn.toLowerCase())) {
+          matchIndex = i;
+          matchedFieldName = fn;
+          matchedFieldXml = (String) f.get('xmlContent');
+          break;
+        }
+      }
+
+      // 2. Otherwise look for an embedded <fields> block inside the object
+      String embeddedBlockToRemove = null;
+      if (matchedFieldName == null) {
+        Pattern fieldBlockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+        Matcher m = fieldBlockPat.matcher(objXml);
+        while (m.find()) {
+          String block = m.group(1);
+          String fn = extractInlineTagValue(block, 'fullName');
+          if (String.isNotBlank(fn) && candidates.contains(fn.toLowerCase())) {
+            matchedFieldName = fn;
+            matchedFieldXml = block;
+            embeddedBlockToRemove = m.group(0);
+            break;
+          }
+        }
+      }
+
+      if (matchedFieldName == null) {
+        continue; // nothing to merge for this object
+      }
+
+      String fType = extractInlineTagValue(matchedFieldXml, 'type');
+      if (String.isBlank(fType)) {
+        continue; // can't safely merge without a known type
+      }
+      String fLabel = extractInlineTagValue(matchedFieldXml, 'label');
+      String fDisplayFormat = extractInlineTagValue(
+        matchedFieldXml,
+        'displayFormat'
+      );
+
+      String newNameField =
+        '<nameField>' +
+        '<label>' +
+        (String.isNotBlank(fLabel) ? fLabel : baseName + ' Name') +
+        '</label>' +
+        '<type>' +
+        fType +
+        '</type>';
+      if ('AutoNumber'.equalsIgnoreCase(fType)) {
+        newNameField +=
+          '<displayFormat>' +
+          (String.isNotBlank(fDisplayFormat)
+            ? fDisplayFormat
+            : baseName.toUpperCase() + '-{0000}') +
+          '</displayFormat>';
+      }
+      newNameField += '</nameField>';
+
+      Integer nfStart = objXml.indexOf('<nameField>');
+      Integer nfEnd = objXml.indexOf('</nameField>');
+      if (nfStart >= 0 && nfEnd > nfStart) {
+        nfEnd += '</nameField>'.length();
+        objXml =
+          objXml.substring(0, nfStart) +
+          newNameField +
+          objXml.substring(nfEnd);
+      } else {
+        objXml = objXml.replace(
+          '</CustomObject>',
+          newNameField + '</CustomObject>'
+        );
+      }
+
+      if (embeddedBlockToRemove != null) {
+        objXml = objXml.replace(embeddedBlockToRemove, '');
+      }
+      objFile.put('xmlContent', objXml);
+
+      if (matchIndex >= 0) {
+        files.remove(matchIndex);
+      }
+
+      // Clean up every other file that referenced the now-removed field
+      String qualifiedField = objectApiName + '.' + matchedFieldName;
+      for (Object rawFile : files) {
+        Map<String, Object> f = (Map<String, Object>) rawFile;
+        String mt = (String) f.get('metadataType');
+        String xml = (String) f.get('xmlContent');
+        if (String.isBlank(xml)) {
+          continue;
+        }
+        if ('Profile'.equals(mt) || 'PermissionSet'.equals(mt)) {
+          String updated = removeBlocksContaining(
+            xml,
+            'fieldPermissions',
+            '<field>' + qualifiedField + '</field>'
+          );
+          if (updated != xml) {
+            f.put('xmlContent', updated);
+          }
+        } else if ('Layout'.equals(mt)) {
+          String updated = xml;
+          if (xml.contains('<field>Name</field>')) {
+            // Name is already on the layout — drop the redundant item
+            // instead of creating a duplicate <field>Name</field>.
+            updated = removeBlocksContaining(
+              xml,
+              'layoutItems',
+              '<field>' + matchedFieldName + '</field>'
+            );
+          } else if (xml.contains('<field>' + matchedFieldName + '</field>')) {
+            updated = xml.replace(
+              '<field>' + matchedFieldName + '</field>',
+              '<field>Name</field>'
+            );
+          }
+          if (updated != xml) {
+            f.put('xmlContent', updated);
+          }
+        }
+      }
+
+      System.debug(
+        '[DEPLOY-TRACE] mergeDuplicateIdentifierFields: merged [' +
+          qualifiedField +
+          '] into nameField for [' +
+          objectApiName +
+          ']'
+      );
+    }
+  }
+
+  // Removes every <blockTag>...</blockTag> block that contains
+  // mustContainSubstring — used to drop stale fieldPermissions/layoutItems
+  // blocks that reference a field mergeDuplicateIdentifierFields() removed.
+  private static String removeBlocksContaining(
+    String xml,
+    String blockTag,
+    String mustContainSubstring
+  ) {
+    String openTag = '<' + blockTag + '>';
+    String closeTag = '</' + blockTag + '>';
+    if (String.isBlank(xml) || !xml.contains(openTag)) {
+      return xml;
+    }
+    Integer cursor = 0;
+    while (true) {
+      Integer bs = xml.indexOf(openTag, cursor);
+      if (bs < 0) {
+        break;
+      }
+      Integer be = xml.indexOf(closeTag, bs);
+      if (be < 0) {
+        break;
+      }
+      be += closeTag.length();
+      String block = xml.substring(bs, be);
+      if (block.contains(mustContainSubstring)) {
+        xml = xml.substring(0, bs) + xml.substring(be);
+        cursor = bs;
+      } else {
+        cursor = be;
+      }
+    }
+    return xml;
+  }
+
   private static Boolean isIncompleteFieldBlock(
     String block,
     String fieldType
@@ -2174,6 +2430,53 @@ public class LLMXmlSanitizer {
     s = s.replace('}', '\\}');
     s = s.replace('|', '\\|');
     return s;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // AUTONUMBER FIELD BEHAVIOR ENFORCEMENT FOR LAYOUTS
+  //
+  // The same Readonly-only rule that applies to an AutoNumber Name field
+  // (see fixNameFieldBehaviorInLayout above) applies to ANY AutoNumber
+  // field — including regular custom fields like Invoice_Number__c.
+  // Salesforce rejects Required or Edit on any AutoNumber field with
+  // "Field:X must be Readonly". Unlike the Name-field fix, there is no
+  // "else" behavior to force here — every field NOT in autoNumberFieldNames
+  // is left completely untouched, since Required/Edit is a legitimate,
+  // ticket-driven choice for every other field type.
+  // ─────────────────────────────────────────────────────────────
+  public static String forceReadonlyForAutoNumberFields(
+    String xml,
+    Set<String> autoNumberFieldNames
+  ) {
+    if (
+      String.isBlank(xml) ||
+      autoNumberFieldNames == null ||
+      autoNumberFieldNames.isEmpty()
+    ) {
+      return xml;
+    }
+    for (String fieldName : autoNumberFieldNames) {
+      if (String.isBlank(fieldName)) {
+        continue;
+      }
+      xml = xml.replaceAll(
+        '<behavior>(Required|Edit|Readonly)</behavior>(\\s*)<field>' +
+          fieldName +
+          '</field>',
+        '<behavior>Readonly</behavior>$2<field>' + fieldName + '</field>'
+      );
+      xml = xml.replaceAll(
+        '<field>' +
+          fieldName +
+          '</field>(\\s*)<behavior>(Required|Edit|Readonly)</behavior>',
+        '<field>' + fieldName + '</field>$1<behavior>Readonly</behavior>'
+      );
+    }
+    System.debug(
+      '[SANITIZE] forceReadonlyForAutoNumberFields: enforced Readonly for ' +
+      autoNumberFieldNames
+    );
+    return xml;
   }
 
   // ─────────────────────────────────────────────────────────────
