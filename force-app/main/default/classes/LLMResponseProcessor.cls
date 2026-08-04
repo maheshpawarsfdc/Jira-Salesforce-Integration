@@ -809,6 +809,9 @@ public class LLMResponseProcessor {
             '(?s)\\s*<viewAllFields>[^<]*</viewAllFields>',
             ''
           );
+          xmlContent = LLMXmlSanitizer.sanitizeUnknownFieldPermissions(
+            xmlContent
+          );
         }
 
         if (metadataType == 'CustomObject') {
@@ -819,15 +822,44 @@ public class LLMResponseProcessor {
             xmlContent,
             sourceObj
           );
+          xmlContent = LLMXmlSanitizer.normalizeReferenceToTargets(xmlContent);
+          xmlContent = LLMXmlSanitizer.normalizeRequiredLookupDeleteConstraint(
+            xmlContent
+          );
+          xmlContent = LLMXmlSanitizer.repairMalformedCustomObjectXml(
+            xmlContent
+          );
           xmlContent = LLMXmlSanitizer.normalizeFormulaFieldTypesInCustomObjectXml(
+            xmlContent
+          );
+          if (String.isNotBlank(memberName) && memberName.endsWith('__c')) {
+            xmlContent = LLMXmlSanitizer.sanitizeCustomObjectListViewUnknownColumns(
+              xmlContent,
+              memberName
+            );
+          }
+        }
+
+        if (metadataType == 'CustomField') {
+          xmlContent = LLMXmlSanitizer.normalizeReferenceToTargets(xmlContent);
+          xmlContent = LLMXmlSanitizer.normalizeRequiredLookupDeleteConstraint(
+            xmlContent
+          );
+          xmlContent = LLMXmlSanitizer.normalizeFormulaFieldTypeInCustomFieldXml(
             xmlContent
           );
         }
 
-        if (metadataType == 'CustomField') {
-          xmlContent = LLMXmlSanitizer.normalizeFormulaFieldTypeInCustomFieldXml(
+        if (metadataType == 'CustomObject' || metadataType == 'CustomField') {
+          String refError = LLMXmlSanitizer.validateReferenceToTargets(
+            metadataType,
+            memberName,
             xmlContent
           );
+          if (String.isNotBlank(refError)) {
+            FunctionHelper.hadError = true;
+            return 'Error: ' + refError;
+          }
         }
 
         if (
@@ -1043,6 +1075,18 @@ public class LLMResponseProcessor {
               );
             }
           }
+
+          xmlContent = LLMXmlSanitizer.sanitizeLayoutUnknownFields(
+            xmlContent,
+            memberName
+          );
+        }
+
+        if (metadataType == 'ListView') {
+          xmlContent = LLMXmlSanitizer.sanitizeListViewUnknownColumns(
+            xmlContent,
+            memberName
+          );
         }
 
         if (metadataType == 'CustomLabel' || metadataType == 'CustomLabels') {
@@ -1116,6 +1160,9 @@ public class LLMResponseProcessor {
             xmlContent
           );
           xmlContent = LLMXmlSanitizer.sanitizeProfileMasterRecordType(
+            xmlContent
+          );
+          xmlContent = LLMXmlSanitizer.sanitizeUnknownFieldPermissions(
             xmlContent
           );
         }
@@ -1772,11 +1819,18 @@ public class LLMResponseProcessor {
     }
 
     if (readOnlyFields.isEmpty()) {
-      return layoutXml;
+      return LLMXmlSanitizer.sanitizeLayoutUnknownFields(
+        layoutXml,
+        layoutFullName
+      );
     }
-    return LLMXmlSanitizer.fixFormulaFieldBehaviorsInLayout(
+    String fixed = LLMXmlSanitizer.fixFormulaFieldBehaviorsInLayout(
       layoutXml,
       readOnlyFields
+    );
+    return LLMXmlSanitizer.sanitizeLayoutUnknownFields(
+      fixed,
+      layoutFullName
     );
   }
 

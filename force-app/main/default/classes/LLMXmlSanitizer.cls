@@ -553,6 +553,95 @@ public class LLMXmlSanitizer {
     return xml;
   }
 
+  // Repairs common malformed CustomObject XML where a <fields> block is left
+  // unclosed and the model starts emitting top-level blocks like
+  // <validationRules>, <recordTypes>, <listViews>, etc.
+  public static String repairMalformedCustomObjectXml(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fields>')) {
+      return xml;
+    }
+
+    Integer openCount = 0;
+    Integer closeCount = 0;
+    Integer idx = 0;
+    while (true) {
+      Integer p = xml.indexOf('<fields>', idx);
+      if (p < 0) {
+        break;
+      }
+      openCount++;
+      idx = p + '<fields>'.length();
+    }
+
+    idx = 0;
+    while (true) {
+      Integer p = xml.indexOf('</fields>', idx);
+      if (p < 0) {
+        break;
+      }
+      closeCount++;
+      idx = p + '</fields>'.length();
+    }
+
+    if (openCount <= closeCount) {
+      return xml;
+    }
+
+    List<String> boundaryTags = new List<String>{
+      '<validationRules>',
+      '<recordTypes>',
+      '<listViews>',
+      '<webLinks>',
+      '<compactLayouts>',
+      '<searchLayouts>',
+      '<fieldSets>',
+      '<nameField>',
+      '<sharingModel>',
+      '<enableHistory>',
+      '<deploymentStatus>',
+      '<pluralLabel>',
+      '</CustomObject>'
+    };
+
+    Integer inserted = 0;
+    while (openCount > closeCount) {
+      Integer lastFieldStart = xml.lastIndexOf('<fields>');
+      if (lastFieldStart < 0) {
+        break;
+      }
+
+      Integer alreadyClosed = xml.indexOf('</fields>', lastFieldStart);
+      if (alreadyClosed > -1) {
+        break;
+      }
+
+      Integer insertPos = -1;
+      for (String tag : boundaryTags) {
+        Integer p = xml.indexOf(tag, lastFieldStart + '<fields>'.length());
+        if (p > -1 && (insertPos == -1 || p < insertPos)) {
+          insertPos = p;
+        }
+      }
+
+      if (insertPos < 0) {
+        break;
+      }
+
+      xml = xml.substring(0, insertPos) + '</fields>' + xml.substring(insertPos);
+      closeCount++;
+      inserted++;
+    }
+
+    if (inserted > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] repairMalformedCustomObjectXml: inserted ' +
+          inserted +
+          ' missing </fields> tag(s)'
+      );
+    }
+    return xml;
+  }
+
   // Normalizes formula field blocks in CustomObject XML so deploy never
   // carries invalid <type>Formula</type> values.
   public static String normalizeFormulaFieldTypesInCustomObjectXml(String xml) {
@@ -1245,6 +1334,434 @@ public class LLMXmlSanitizer {
       );
     }
     return cleaned;
+  }
+
+  // Removes layoutItems that reference fields not known in schema/pending
+  // state for the layout's parent object.
+  public static String sanitizeLayoutUnknownFields(
+    String xml,
+    String layoutMemberName
+  ) {
+    if (
+      String.isBlank(xml) ||
+      String.isBlank(layoutMemberName) ||
+      !layoutMemberName.contains('-')
+    ) {
+      return xml;
+    }
+    String objectApi = layoutMemberName.substringBefore('-');
+    Pattern itemPat = Pattern.compile('(?s)<layoutItems>.*?</layoutItems>');
+    Matcher itemMat = itemPat.matcher(xml);
+    List<String> oldItems = new List<String>();
+    Integer removed = 0;
+
+    while (itemMat.find()) {
+      String item = itemMat.group(0);
+      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>').matcher(item);
+      if (!fm.find()) {
+        continue;
+      }
+      String ref = fm.group(1).trim();
+      String fieldName = ref.contains('.') ? ref.substringAfter('.') : ref;
+
+      if (fieldName == 'Name') {
+        continue;
+      }
+      if (!SchemaFieldValidator.fieldExists(objectApi, fieldName)) {
+        oldItems.add(item);
+        removed++;
+      } else {
+        String canonical = SchemaFieldValidator.resolveFieldApiName(
+          objectApi,
+          fieldName
+        );
+        if (String.isNotBlank(canonical) && canonical != fieldName) {
+          String updatedItem = item.replaceFirst(
+            '(?is)<field>\\s*[^<]+?\\s*</field>',
+            '<field>' + canonical + '</field>'
+          );
+          // Safe in-place normalization of field API casing.
+          xml = xml.replace(item, updatedItem);
+        }
+      }
+    }
+
+    for (String oldItem : oldItems) {
+      xml = xml.replace(oldItem, '');
+    }
+
+    if (removed > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeLayoutUnknownFields: removed ' +
+          removed +
+          ' unknown field layoutItems from [' +
+          layoutMemberName +
+          ']'
+      );
+    }
+    return xml;
+  }
+
+  // Removes ListView columns that reference unknown custom fields.
+  public static String sanitizeListViewUnknownColumns(
+    String xml,
+    String listViewMemberName
+  ) {
+    if (
+      String.isBlank(xml) ||
+      String.isBlank(listViewMemberName) ||
+      !listViewMemberName.contains('.') ||
+      !xml.contains('<columns>')
+    ) {
+      return xml;
+    }
+    String objectApi = listViewMemberName.substringBefore('.');
+    Pattern colPat = Pattern.compile('(?is)\\s*<columns>\\s*([^<]+?)\\s*</columns>');
+    Matcher cm = colPat.matcher(xml);
+    List<String> oldCols = new List<String>();
+    Integer removed = 0;
+
+    while (cm.find()) {
+      String fullTag = cm.group(0);
+      String colVal = cm.group(1).trim();
+
+      // Keep standard columns and relationship traversals as-is.
+      String lowerCol = colVal.toLowerCase();
+      if (!lowerCol.endsWith('__c') && !colVal.contains('.')) {
+        continue;
+      }
+
+      String fieldName = colVal;
+      String targetObj = objectApi;
+      if (colVal.contains('.')) {
+        targetObj = colVal.substringBefore('.');
+        fieldName = colVal.substringAfter('.');
+      }
+
+      if (targetObj != objectApi) {
+        continue;
+      }
+      if (!SchemaFieldValidator.fieldExists(objectApi, fieldName)) {
+        oldCols.add(fullTag);
+        removed++;
+      } else {
+        String canonical = SchemaFieldValidator.resolveFieldApiName(
+          objectApi,
+          fieldName
+        );
+        if (String.isNotBlank(canonical) && canonical != fieldName) {
+          xml = xml.replace(fullTag, '<columns>' + canonical + '</columns>');
+        }
+      }
+    }
+
+    for (String oldCol : oldCols) {
+      xml = xml.replace(oldCol, '');
+    }
+
+    if (removed > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeListViewUnknownColumns: removed ' +
+          removed +
+          ' unknown column(s) from [' +
+          listViewMemberName +
+          ']'
+      );
+    }
+    return xml;
+  }
+
+  // Removes Profile/PermissionSet fieldPermissions that target fields not
+  // present in schema/pending field set.
+  public static String sanitizeUnknownFieldPermissions(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fieldPermissions>')) {
+      return xml;
+    }
+    Pattern fpPat = Pattern.compile('(?s)<fieldPermissions>.*?</fieldPermissions>');
+    Matcher fpm = fpPat.matcher(xml);
+    List<String> oldBlocks = new List<String>();
+    Integer removed = 0;
+
+    while (fpm.find()) {
+      String block = fpm.group(0);
+      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>').matcher(block);
+      if (!fm.find()) {
+        continue;
+      }
+      String qf = fm.group(1).trim();
+      if (!qf.contains('.')) {
+        continue;
+      }
+      String obj = qf.substringBefore('.');
+      String fld = qf.substringAfter('.');
+      if (!obj.endsWith('__c')) {
+        continue;
+      }
+      Boolean exists = SchemaFieldValidator.objectExists(obj)
+        ? SchemaFieldValidator.fieldExistsInSchema(obj, fld)
+        : SchemaFieldValidator.fieldExists(obj, fld);
+      if (!exists) {
+        oldBlocks.add(block);
+        removed++;
+      }
+    }
+
+    for (String oldBlock : oldBlocks) {
+      xml = xml.replace(oldBlock, '');
+    }
+
+    if (removed > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeUnknownFieldPermissions: removed ' +
+          removed +
+          ' fieldPermissions block(s) for unknown fields'
+      );
+    }
+    return xml;
+  }
+
+  // Sanitizes embedded <listViews> sections inside CustomObject XML.
+  public static String sanitizeCustomObjectListViewUnknownColumns(
+    String xml,
+    String objectApiName
+  ) {
+    if (
+      String.isBlank(xml) ||
+      String.isBlank(objectApiName) ||
+      !xml.contains('<listViews>') ||
+      !xml.contains('<columns>')
+    ) {
+      return xml;
+    }
+
+    Pattern colPat = Pattern.compile('(?is)\\s*<columns>\\s*([^<]+?)\\s*</columns>');
+    Matcher cm = colPat.matcher(xml);
+    List<String> oldCols = new List<String>();
+    List<String> newCols = new List<String>();
+    Integer removed = 0;
+    Integer normalized = 0;
+
+    while (cm.find()) {
+      String fullTag = cm.group(0);
+      String colVal = cm.group(1).trim();
+      String lowerCol = colVal.toLowerCase();
+      if (!lowerCol.endsWith('__c') && !colVal.contains('.')) {
+        continue;
+      }
+
+      String fieldName = colVal.contains('.') ? colVal.substringAfter('.') : colVal;
+      if (!SchemaFieldValidator.fieldExists(objectApiName, fieldName)) {
+        oldCols.add(fullTag);
+        newCols.add('');
+        removed++;
+      } else {
+        String canonical = SchemaFieldValidator.resolveFieldApiName(
+          objectApiName,
+          fieldName
+        );
+        if (String.isNotBlank(canonical) && canonical != fieldName) {
+          oldCols.add(fullTag);
+          newCols.add('<columns>' + canonical + '</columns>');
+          normalized++;
+        }
+      }
+    }
+
+    for (Integer i = 0; i < oldCols.size(); i++) {
+      xml = xml.replace(oldCols[i], newCols[i]);
+    }
+
+    if (removed > 0 || normalized > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeCustomObjectListViewUnknownColumns: removed=' +
+          removed +
+          ' normalized=' +
+          normalized +
+          ' for [' +
+          objectApiName +
+          ']'
+      );
+    }
+    return xml;
+  }
+
+  // Normalizes <referenceTo> values by resolving case/format drift against
+  // live schema object API names.
+  public static String normalizeReferenceToTargets(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<referenceTo>')) {
+      return xml;
+    }
+    Pattern p = Pattern.compile('(?is)<referenceTo>\\s*([^<]+?)\\s*</referenceTo>');
+    Matcher m = p.matcher(xml);
+    List<String> oldTags = new List<String>();
+    List<String> newTags = new List<String>();
+
+    while (m.find()) {
+      String fullTag = m.group(0);
+      String val = m.group(1).trim();
+      String resolved = SchemaFieldValidator.resolveObjectApiName(val);
+      if (String.isNotBlank(resolved) && resolved != val) {
+        oldTags.add(fullTag);
+        newTags.add('<referenceTo>' + resolved + '</referenceTo>');
+      }
+    }
+
+    for (Integer i = 0; i < oldTags.size(); i++) {
+      xml = xml.replace(oldTags[i], newTags[i]);
+    }
+    return xml;
+  }
+
+  // Required Lookup fields cannot use deleteConstraint=SetNull.
+  // Salesforce expects Restrict or CascadeDelete semantics for required
+  // lookup foreign keys. This normalizer enforces Restrict for safety.
+  public static String normalizeRequiredLookupDeleteConstraint(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<required>true</required>')) {
+      return xml;
+    }
+
+    if (xml.contains('<fields>')) {
+      Pattern blockPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+      Matcher mat = blockPat.matcher(xml);
+      List<String> oldBlocks = new List<String>();
+      List<String> newBlocks = new List<String>();
+
+      while (mat.find()) {
+        String body = mat.group(1);
+        String block = '<fields>' + body + '</fields>';
+        String typeVal = extractInlineTagValue(block, 'type');
+        String reqVal = extractInlineTagValue(block, 'required');
+        if (typeVal != 'Lookup' || reqVal != 'true') {
+          continue;
+        }
+
+        String updated = block;
+        if (updated.contains('<deleteConstraint>')) {
+          updated = updated.replaceAll(
+            '(?is)<deleteConstraint>\\s*SetNull\\s*</deleteConstraint>',
+            '<deleteConstraint>Restrict</deleteConstraint>'
+          );
+        } else {
+          if (updated.contains('</referenceTo>')) {
+            updated = updated.replace(
+              '</referenceTo>',
+              '</referenceTo><deleteConstraint>Restrict</deleteConstraint>'
+            );
+          } else {
+            updated = updated.replace(
+              '</fields>',
+              '    <deleteConstraint>Restrict</deleteConstraint>\n</fields>'
+            );
+          }
+        }
+
+        oldBlocks.add(block);
+        newBlocks.add(updated);
+      }
+
+      for (Integer i = 0; i < oldBlocks.size(); i++) {
+        xml = xml.replace(oldBlocks[i], newBlocks[i]);
+      }
+      return xml;
+    }
+
+    // Standalone CustomField XML case
+    String typeVal = extractInlineTagValue(xml, 'type');
+    String reqVal = extractInlineTagValue(xml, 'required');
+    if (typeVal != 'Lookup' || reqVal != 'true') {
+      return xml;
+    }
+
+    if (xml.contains('<deleteConstraint>')) {
+      return xml.replaceAll(
+        '(?is)<deleteConstraint>\\s*SetNull\\s*</deleteConstraint>',
+        '<deleteConstraint>Restrict</deleteConstraint>'
+      );
+    }
+    if (xml.contains('</referenceTo>')) {
+      return xml.replace(
+        '</referenceTo>',
+        '</referenceTo><deleteConstraint>Restrict</deleteConstraint>'
+      );
+    }
+    return xml.replace(
+      '</CustomField>',
+      '    <deleteConstraint>Restrict</deleteConstraint>\n</CustomField>'
+    );
+  }
+
+  // Returns a user-friendly error when lookup/master-detail referenceTo
+  // values point to objects that do not exist in org schema.
+  public static String validateReferenceToTargets(
+    String metadataType,
+    String memberName,
+    String xml
+  ) {
+    if (String.isBlank(xml) || !xml.contains('<referenceTo>')) {
+      return null;
+    }
+
+    Set<String> missingRefs = new Set<String>();
+    if (metadataType == 'CustomObject') {
+      Pattern fieldPat = Pattern.compile('(?s)<fields>(.*?)</fields>');
+      Matcher fm = fieldPat.matcher(xml);
+      while (fm.find()) {
+        String block = fm.group(1);
+        String typeVal = extractInlineTagValue('<fields>' + block + '</fields>', 'type');
+        if (
+          typeVal != 'Lookup' &&
+          typeVal != 'MasterDetail' &&
+          typeVal != 'ExternalLookup'
+        ) {
+          continue;
+        }
+        String ref = extractInlineTagValue('<fields>' + block + '</fields>', 'referenceTo');
+        if (String.isBlank(ref)) {
+          continue;
+        }
+        if (!SchemaFieldValidator.objectExists(ref)) {
+          missingRefs.add(ref);
+        }
+      }
+    } else if (metadataType == 'CustomField') {
+      String typeVal = extractInlineTagValue(xml, 'type');
+      if (
+        typeVal == 'Lookup' ||
+        typeVal == 'MasterDetail' ||
+        typeVal == 'ExternalLookup'
+      ) {
+        String ref = extractInlineTagValue(xml, 'referenceTo');
+        if (String.isNotBlank(ref) && !SchemaFieldValidator.objectExists(ref)) {
+          missingRefs.add(ref);
+        }
+      }
+    }
+
+    if (missingRefs.isEmpty()) {
+      return null;
+    }
+
+    List<String> lines = new List<String>();
+    for (String missingRef : missingRefs) {
+      List<String> suggestions = SchemaFieldValidator.suggestObjectApiNames(
+        missingRef
+      );
+      if (!suggestions.isEmpty()) {
+        lines.add(
+          missingRef +
+            ' (did you mean: ' +
+            String.join(suggestions, ', ') +
+            '?)'
+        );
+      } else {
+        lines.add(missingRef);
+      }
+    }
+    lines.sort();
+    return 'Prerequisite missing for [' +
+      memberName +
+      ']: referenceTo object(s) not found in org: ' +
+      String.join(lines, '; ');
   }
 
   // ─────────────────────────────────────────────────────────────
