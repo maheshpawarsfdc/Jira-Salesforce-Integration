@@ -12,6 +12,7 @@
  */
 public class SchemaFieldValidator {
   private static Map<String, Map<String, Schema.SObjectField>> fieldMapCache = new Map<String, Map<String, Schema.SObjectField>>();
+  private static Map<String, Schema.SObjectType> globalDescribeCache;
 
   // Fields being newly created in the current generation response, not yet
   // in the org. Key: lowercased "ObjectApiName.FieldApiName", value: the
@@ -27,6 +28,7 @@ public class SchemaFieldValidator {
   // Same key space as pendingFields — true when the generated field should
   // be readonly on layouts (formula/summary/autonumber/id semantics).
   private static Map<String, Boolean> pendingFieldLayoutReadOnly = new Map<String, Boolean>();
+  private static Map<String, String> pendingFieldApiNames = new Map<String, String>();
 
   // ─────────────────────────────────────────────────────────────
   // RESET — call once at the start of processing a fresh LLM response
@@ -37,6 +39,7 @@ public class SchemaFieldValidator {
     pendingFields.clear();
     pendingFieldRequired.clear();
     pendingFieldLayoutReadOnly.clear();
+    pendingFieldApiNames.clear();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -146,11 +149,92 @@ public class SchemaFieldValidator {
     pendingFields.put(key, declaredType);
     pendingFieldRequired.put(key, isRequired == true);
     pendingFieldLayoutReadOnly.put(key, isLayoutReadOnly == true);
+    pendingFieldApiNames.put(key, fieldApiName);
   }
 
   // ─────────────────────────────────────────────────────────────
   // LOOKUPS
   // ─────────────────────────────────────────────────────────────
+  private static Map<String, Schema.SObjectType> getGlobalDescribeMap() {
+    if (globalDescribeCache == null) {
+      globalDescribeCache = Schema.getGlobalDescribe();
+    }
+    return globalDescribeCache;
+  }
+
+  private static String normalizeObjectToken(String v) {
+    if (String.isBlank(v)) {
+      return '';
+    }
+    return v.toLowerCase().replaceAll('[^a-z0-9]', '');
+  }
+
+  public static String resolveObjectApiName(String objectApiName) {
+    if (String.isBlank(objectApiName)) {
+      return null;
+    }
+    Map<String, Schema.SObjectType> globalDescribe = getGlobalDescribeMap();
+    if (globalDescribe.containsKey(objectApiName)) {
+      return objectApiName;
+    }
+
+    String targetLower = objectApiName.toLowerCase();
+    for (String gdKey : globalDescribe.keySet()) {
+      if (gdKey != null && gdKey.toLowerCase() == targetLower) {
+        return gdKey;
+      }
+    }
+
+    // Last-pass fuzzy canonicalization for common underscore/case drift.
+    String normTarget = normalizeObjectToken(objectApiName);
+    String resolved = null;
+    Integer hits = 0;
+    for (String gdKey : globalDescribe.keySet()) {
+      if (normalizeObjectToken(gdKey) == normTarget) {
+        resolved = gdKey;
+        hits++;
+        if (hits > 1) {
+          return null;
+        }
+      }
+    }
+    return resolved;
+  }
+
+  public static List<String> suggestObjectApiNames(String objectApiName) {
+    List<String> suggestions = new List<String>();
+    if (String.isBlank(objectApiName)) {
+      return suggestions;
+    }
+    String target = normalizeObjectToken(objectApiName);
+    for (String gdKey : getGlobalDescribeMap().keySet()) {
+      if (String.isBlank(gdKey) || !gdKey.endsWith('__c')) {
+        continue;
+      }
+      String norm = normalizeObjectToken(gdKey);
+      if (
+        norm.contains(target) ||
+        target.contains(norm) ||
+        (target.length() >= 6 && norm.contains(target.substring(0, 6)))
+      ) {
+        suggestions.add(gdKey);
+      }
+    }
+    suggestions.sort();
+    if (suggestions.size() > 5) {
+      List<String> top = new List<String>();
+      for (Integer i = 0; i < 5; i++) {
+        top.add(suggestions[i]);
+      }
+      suggestions = top;
+    }
+    return suggestions;
+  }
+
+  public static Boolean objectExists(String objectApiName) {
+    return resolveObjectApiName(objectApiName) != null;
+  }
+
   private static Map<String, Schema.SObjectField> getFieldMap(
     String objectApiName
   ) {
@@ -163,7 +247,7 @@ public class SchemaFieldValidator {
     }
 
     Map<String, Schema.SObjectField> fieldMap = new Map<String, Schema.SObjectField>();
-    Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+    Map<String, Schema.SObjectType> globalDescribe = getGlobalDescribeMap();
 
     // Global describe keys are case-sensitive API names (e.g. Contract1__c),
     // while callers may pass mixed/lower case. Resolve case-insensitively.
@@ -225,6 +309,39 @@ public class SchemaFieldValidator {
       return true;
     }
     return getFieldDescribe(objectApiName, fieldApiName) != null;
+  }
+
+  public static Boolean fieldExistsInSchema(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
+      return false;
+    }
+    return getFieldDescribe(objectApiName, fieldApiName) != null;
+  }
+
+  public static String resolveFieldApiName(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    if (String.isBlank(objectApiName) || String.isBlank(fieldApiName)) {
+      return fieldApiName;
+    }
+
+    String normalizedField = fieldApiName.contains('.')
+      ? fieldApiName.substringAfter('.')
+      : fieldApiName;
+    String key = objectApiName.toLowerCase() + '.' + normalizedField.toLowerCase();
+    if (pendingFieldApiNames.containsKey(key)) {
+      return pendingFieldApiNames.get(key);
+    }
+
+    Schema.SObjectField f = getFieldDescribe(objectApiName, normalizedField);
+    if (f != null) {
+      return f.getDescribe().getName();
+    }
+    return fieldApiName;
   }
 
   // Returns the field's real Display Type name (e.g. 'DATE', 'DATETIME'),
