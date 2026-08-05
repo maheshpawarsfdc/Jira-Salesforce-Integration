@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Record Type</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == RECORD TYPE RULES ==
 Record Types are embedded inside the CustomObject XML as <recordTypes> blocks.
 metadataType: CustomObject
@@ -59,6 +65,86 @@ CORRECT XML for a Case record type:
     <businessProcess>Basic Support Process</businessProcess>
     <label>Technical Support</label>
 </recordTypes>
+
+== CREATING A NEW BUSINESS PROCESS ==
+The rule above ("use the first entry from orgState.existingBusinessProcesses") only applies
+when the ticket wants a record type on the object's DEFAULT/EXISTING process. If the ticket
+instead asks for a NEW, distinctly-named process (e.g. "create a new Lead Process called
+X", "a dedicated process for this record type") that process does not exist yet and MUST be
+generated as its own component — referencing it by name in <businessProcess> without also
+generating it deploys a record type whose businessProcess points at nothing, and fails with
+"no BusinessProcess named <Object>.<Name> found".
+
+A BusinessProcess is embedded in the SAME CustomObject XML as the object's <recordTypes>
+blocks (same file, sibling elements — not a separate file):
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <businessProcesses>
+        <fullName>New_Process_API_Name</fullName>
+        <isActive>true</isActive>
+        <values>
+            <fullName>Opening_Status_Value</fullName>
+            <default>true</default>
+        </values>
+        <values>
+            <fullName>Another_Status_Value</fullName>
+            <default>false</default>
+        </values>
+        <!-- one <values> block per status included in this process —
+             exactly ONE of them must be <default>true</default>, see rule 5 below -->
+    </businessProcesses>
+    <recordTypes>
+        <fullName>Record_Type_API_Name</fullName>
+        <active>true</active>
+        <businessProcess>New_Process_API_Name</businessProcess>
+        <label>Record Type Label</label>
+    </recordTypes>
+</CustomObject>
+
+RULES for a new BusinessProcess (apply to any process-driven object, not just the one shown above):
+1. Element order: fullName, description (optional), isActive, values — same <fullName>/<default>-only
+   shape as <picklistValues><values> above; NEVER include <label> inside a businessProcess <values> block.
+2. The record type's <businessProcess> value must be an EXACT match, character-for-character, of the
+   new businessProcess's own <fullName> — this is the single most common point of failure. Generate
+   both from one variable/value in your own reasoning so they can never drift apart.
+3. Every <values><fullName> inside the businessProcess must be a status value that already exists on
+   the object's status/stage picklist — either a standard value already in orgState, or a NEW value
+   requested via an addStandardPicklistValues dmlOperation in this SAME response (see below). Never
+   invent a value that isn't backed by an actual picklist entry somewhere in this deploy or the org.
+4. This is a NEW component being created — it goes in the same CustomObject file as the object's other
+   new pieces, it is never a reason to touch or restate any OTHER existing business process on the object.
+5. DEFAULT VALUE RULE — CRITICAL: exactly ONE <values> entry inside the businessProcess must have
+   <default>true</default> — every other entry must be <default>false</default>. Omitting this, or
+   leaving every entry false, fails deploy with "No default value specified". This is normally whichever
+   status represents the START of the process (e.g. the "Open"/"New"-style status), not the converted
+   or closed one. Never leave two or more entries as default=true either — exactly one, always.
+
+== ADDING NEW VALUES TO A STANDARD PICKLIST (Lead Status, Case Status, Opportunity Stage, Solution Status) ==
+If a ticket asks to create NEW status/stage values that don't exist yet (e.g. "Create New Lead Status
+Values: Connected, Interested, ..."), do NOT hand-write a StandardValueSet XML file for this — that
+metadata type REPLACES the entire value list on deploy, and freehand-generating it risks silently
+dropping every existing value you don't know about, breaking the process for every other user of that
+object. Instead, emit a dmlOperations entry and let deterministic code merge it safely:
+
+"dmlOperations": [
+  {
+    "type": "addStandardPicklistValues",
+    "objectApiName": "Lead",
+    "fieldApiName": "Status",
+    "newValues": ["Connected", "Interested", "Meeting Scheduled"]
+  }
+]
+
+RULES:
+1. Supported objectApiName.fieldApiName pairs: Lead.Status, Case.Status, Opportunity.StageName,
+   Solution.Status. Do not use this op for any other picklist — custom fields' picklist values still
+   go in that field's own <valueSet> inside its CustomField/embedded <fields> block as usual.
+2. newValues is a list of the NEW value names ONLY — never list existing values, they are preserved
+   automatically. Each entry may be a plain string (its label will match the value) or an object
+   { "fullName": "...", "label": "..." } when the ticket wants a different display label.
+3. Every new value referenced anywhere else in this response (a businessProcess, a record type's
+   picklistValues, etc.) must appear in this newValues list — that is what makes the reference valid.
+4. This entirely replaces any need to generate a StandardValueSet file yourself — never emit a
+   files[] entry with metadataType StandardValueSet.
 
 == STANDARD OBJECT RECORD TYPES — ABSOLUTE RULES ==
 When the object is a STANDARD object:
@@ -127,6 +213,8 @@ Salesforce requires exactly ONE recordTypeVisibility per object to have default=
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Record Type XML, Profile assignment, picklist values, process-driven objects</value>
+        <value
+      xsi:type="xsd:string"
+    >Record Type XML, Profile assignment, picklist values, process-driven objects</value>
     </values>
 </CustomMetadata>

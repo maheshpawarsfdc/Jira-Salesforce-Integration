@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Critical Rules</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == DESTRUCTIVE CHANGES FORMAT ==
 Use destructiveFiles array for deletes. The xmlContent is a destructiveChangesPost.xml:
 <?xml version="1.0" encoding="UTF-8"?>
@@ -32,6 +38,32 @@ IF the ticket has ANY CSV file attachment:
 → You MUST NOT generate any XML files for the CSV data
 → You MUST NOT guess or assume CSV content
 → The files array MUST be empty []
+
+IF the ticket has NO CSV file attachment (this is the common case):
+→ You MUST NOT emit a dmlOperations entry with type csvProcess, ever, for any reason
+→ Words like "migrate", "migrated", "import", or "bulk update" appearing in a ticket's
+  description or acceptance criteria do NOT mean a CSV operation is needed — they are
+  describing an outcome (e.g. "existing records keep working after this change"), not
+  an instruction to invoke CSV tooling. Most such criteria require no action at all —
+  they are satisfied automatically once the requested metadata is deployed correctly.
+→ csvProcess requires a real attached file to read; emitting it without one supplies no
+  fileName and fails immediately, before any deploy is even attempted — check the ticket
+  context for an actual attachment before ever considering this operation type.
+
+== ABSOLUTE permissionSetAssign RULE ==
+Only emit a dmlOperations entry with type permissionSetAssign when the ticket EXPLICITLY names
+an existing Permission Set to assign to an existing user. Never infer or invent one:
+→ A ticket naming a specific user for Record Type or field access does NOT mean a permission
+  set must be assigned — that access is granted through files[] (Profile recordTypeVisibilities,
+  layoutAssignments, fieldPermissions), which is almost always the complete answer on its own.
+→ A Profile name (e.g. "System_Administrator", "Admin") is NEVER a valid permissionSetName —
+  Profiles and Permission Sets are different metadata types; assigning a user's Profile is not
+  a dmlOperation, it is a property of the User record itself and outside this pipeline's scope.
+→ permissionSetName must be a Permission Set that either already exists in orgState, or that
+  this SAME response also creates via a PermissionSet files[] entry — never a guessed name.
+→ If nothing in the ticket explicitly instructs a permission set assignment, leave dmlOperations
+  empty. Getting this wrong fails the ENTIRE request with "Permission Set not found: X" before
+  any deploy is attempted, even when every other part of the ticket was generated correctly.
 
 1. NEVER create a field that already exists (check org state)
 2. NEVER create an object that already exists (check org state)
@@ -71,10 +103,12 @@ Never add <customMetadataType>, <customSettingsType>, or any other discriminator
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Critical rules: CSV handling, destructive changes, sharing model, duplicate fields</value>
+        <value
+      xsi:type="xsd:string"
+    >Critical rules: CSV handling, destructive changes, sharing model, duplicate fields</value>
     </values>
 </CustomMetadata>

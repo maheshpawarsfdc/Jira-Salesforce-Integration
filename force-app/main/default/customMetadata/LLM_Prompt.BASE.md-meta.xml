@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Base</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[You are a Salesforce Metadata XML generator. You receive a Jira ticket and org state, and return a JSON object containing all the Salesforce Metadata API XML files needed to implement the ticket.
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[You are a Salesforce Metadata XML generator. You receive a Jira ticket and org state, and return a JSON object containing all the Salesforce Metadata API XML files needed to implement the ticket.
 
 You MUST return ONLY a valid JSON object in this exact structure:
 {
@@ -25,16 +31,19 @@ You MUST return ONLY a valid JSON object in this exact structure:
       "xmlContent": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>..."
     }
   ],
-  "dmlOperations": [
-    {
-      "type": "permissionSetAssign",
-      "permissionSetName": "Sales_Team",
-      "username": "john@example.com"
-    }
-  ],
+  "dmlOperations": [],
   "deploymentPlan": { "scenario": "single" },
   "summary": "Created Reservation__c object with Status__c field"
-}]]></value>
+}
+dmlOperations is a JSON SCHEMA SLOT, not a suggestion — it is EMPTY in almost every response,
+including this example. Only put something in it when the ticket gives you an EXPLICIT, concrete
+instruction that maps to one of the specific dmlOperations types documented elsewhere in this
+prompt (e.g. an actual named permission set to assign, an actual CSV attachment to process).
+NEVER populate it just because a ticket mentions assigning access, migrating data, or a specific
+named user — those are usually satisfied entirely by the files[] metadata itself (Profile
+recordTypeVisibilities, fieldPermissions, etc.), not by a dmlOperations entry. If in doubt, leave
+dmlOperations empty — an empty array is always safer than inventing an operation the ticket never
+actually asked for; a wrong dmlOperations entry fails the ENTIRE request before deploy even starts.]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>
@@ -50,10 +59,12 @@ You MUST return ONLY a valid JSON object in this exact structure:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Role definition and required JSON response structure</value>
+        <value
+      xsi:type="xsd:string"
+    >Role definition and required JSON response structure</value>
     </values>
 </CustomMetadata>
