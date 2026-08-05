@@ -3414,6 +3414,7 @@ public class MetadataService {
         public String description;
         public MetadataService.ProfileExternalDataSourceAccess[] externalDataSourceAccesses;
         public MetadataService.ProfileFieldLevelSecurity[] fieldPermissions;
+        public MetadataService.ProfileFlowAccess[] flowAccesses;
         public MetadataService.ProfileLayoutAssignment[] layoutAssignments;
         public MetadataService.ProfileLoginHours loginHours;
         public MetadataService.ProfileLoginIpRange[] loginIpRanges;
@@ -3432,6 +3433,7 @@ public class MetadataService {
         private String[] description_type_info = new String[]{'description',SOAP_M_URI,null,'0','1','false'};
         private String[] externalDataSourceAccesses_type_info = new String[]{'externalDataSourceAccesses',SOAP_M_URI,null,'0','-1','false'};
         private String[] fieldPermissions_type_info = new String[]{'fieldPermissions',SOAP_M_URI,null,'0','-1','false'};
+        private String[] flowAccesses_type_info = new String[]{'flowAccesses',SOAP_M_URI,null,'0','-1','false'};
         private String[] layoutAssignments_type_info = new String[]{'layoutAssignments',SOAP_M_URI,null,'0','-1','false'};
         private String[] loginHours_type_info = new String[]{'loginHours',SOAP_M_URI,null,'0','1','false'};
         private String[] loginIpRanges_type_info = new String[]{'loginIpRanges',SOAP_M_URI,null,'0','-1','false'};
@@ -3444,7 +3446,15 @@ public class MetadataService {
         private String[] userPermissions_type_info = new String[]{'userPermissions',SOAP_M_URI,null,'0','-1','false'};
         private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
         private String[] type_att_info = new String[]{'xsi:type'};
-        private String[] field_order_type_info = new String[]{'fullName', 'applicationVisibilities','categoryGroupVisibilities','classAccesses','custom','customPermissions','description','externalDataSourceAccesses','fieldPermissions','layoutAssignments','loginHours','loginIpRanges','objectPermissions','pageAccesses','profileActionOverrides','recordTypeVisibilities','tabVisibilities','userLicense','userPermissions'};
+        private String[] field_order_type_info = new String[]{'fullName', 'applicationVisibilities','categoryGroupVisibilities','classAccesses','custom','customPermissions','description','externalDataSourceAccesses','fieldPermissions','flowAccesses','layoutAssignments','loginHours','loginIpRanges','objectPermissions','pageAccesses','profileActionOverrides','recordTypeVisibilities','tabVisibilities','userLicense','userPermissions'};
+    }
+    public class ProfileFlowAccess {
+        public Boolean enabled;
+        public String flow;
+        private String[] enabled_type_info = new String[]{'enabled',SOAP_M_URI,null,'0','1','false'};
+        private String[] flow_type_info = new String[]{'flow',SOAP_M_URI,null,'0','1','false'};
+        private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
+        private String[] field_order_type_info = new String[]{'enabled','flow'};
     }
     public class KnowledgeLanguage {
         public Boolean active;
@@ -4421,6 +4431,7 @@ public class MetadataService {
         public String description;
         public MetadataService.PermissionSetExternalDataSourceAccess[] externalDataSourceAccesses;
         public MetadataService.PermissionSetFieldPermissions[] fieldPermissions;
+        public MetadataService.ProfileFlowAccess[] flowAccesses;
         public Boolean hasActivationRequired;
         public String label;
         public String license;
@@ -4435,6 +4446,7 @@ public class MetadataService {
         private String[] description_type_info = new String[]{'description',SOAP_M_URI,null,'0','1','false'};
         private String[] externalDataSourceAccesses_type_info = new String[]{'externalDataSourceAccesses',SOAP_M_URI,null,'0','-1','false'};
         private String[] fieldPermissions_type_info = new String[]{'fieldPermissions',SOAP_M_URI,null,'0','-1','false'};
+        private String[] flowAccesses_type_info = new String[]{'flowAccesses',SOAP_M_URI,null,'0','-1','false'};
         private String[] hasActivationRequired_type_info = new String[]{'hasActivationRequired',SOAP_M_URI,null,'0','1','false'};
         private String[] label_type_info = new String[]{'label',SOAP_M_URI,null,'1','1','false'};
         private String[] license_type_info = new String[]{'license',SOAP_M_URI,null,'0','1','false'};
@@ -4445,7 +4457,7 @@ public class MetadataService {
         private String[] userPermissions_type_info = new String[]{'userPermissions',SOAP_M_URI,null,'0','-1','false'};
         private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
         private String[] type_att_info = new String[]{'xsi:type'};
-        private String[] field_order_type_info = new String[]{'fullName', 'applicationVisibilities','classAccesses','customPermissions','description','externalDataSourceAccesses','fieldPermissions','hasActivationRequired','label','license','objectPermissions','pageAccesses','recordTypeVisibilities','tabSettings','userPermissions'};
+        private String[] field_order_type_info = new String[]{'fullName', 'applicationVisibilities','classAccesses','customPermissions','description','externalDataSourceAccesses','fieldPermissions','flowAccesses','hasActivationRequired','label','license','objectPermissions','pageAccesses','recordTypeVisibilities','tabSettings','userPermissions'};
     }
     public class WorkflowRule extends Metadata {
         public String type = 'WorkflowRule';

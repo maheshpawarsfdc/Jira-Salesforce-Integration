@@ -367,7 +367,6 @@ public class LLMResponseProcessor {
               }
             }
           }
-
         }
       }
       return false;
@@ -1054,7 +1053,9 @@ public class LLMResponseProcessor {
                 continue;
               }
               if ('CustomObject'.equals(f3mt) && lParentObj.equals(f3mn)) {
-                formulaFields.addAll(LLMXmlSanitizer.extractFormulaFieldNames(f3Xml));
+                formulaFields.addAll(
+                  LLMXmlSanitizer.extractFormulaFieldNames(f3Xml)
+                );
               } else if (
                 'CustomField'.equals(f3mt) &&
                 f3mn != null &&
@@ -1068,9 +1069,11 @@ public class LLMResponseProcessor {
 
             // Fallback for existing objects: if this run doesn't include
             // sibling field XML, infer readonly fields directly from schema.
-            for (String layoutField : LLMLayoutHelper.extractFieldNamesFromLayoutXml(
-              xmlContent
-            )) {
+            for (
+              String layoutField : LLMLayoutHelper.extractFieldNamesFromLayoutXml(
+                xmlContent
+              )
+            ) {
               if (
                 SchemaFieldValidator.isLayoutReadOnlyField(
                   lParentObj,
@@ -1823,9 +1826,11 @@ public class LLMResponseProcessor {
       }
     }
 
-    for (String layoutField : LLMLayoutHelper.extractFieldNamesFromLayoutXml(
-      layoutXml
-    )) {
+    for (
+      String layoutField : LLMLayoutHelper.extractFieldNamesFromLayoutXml(
+        layoutXml
+      )
+    ) {
       if (SchemaFieldValidator.isLayoutReadOnlyField(parentObj, layoutField)) {
         readOnlyFields.add(layoutField);
       }
@@ -1841,10 +1846,7 @@ public class LLMResponseProcessor {
       layoutXml,
       readOnlyFields
     );
-    return LLMXmlSanitizer.sanitizeLayoutUnknownFields(
-      fixed,
-      layoutFullName
-    );
+    return LLMXmlSanitizer.sanitizeLayoutUnknownFields(fixed, layoutFullName);
   }
 
   private static Boolean hasInvalidApexSource(String llmResponse) {
@@ -1930,37 +1932,65 @@ public class LLMResponseProcessor {
       if (opType == 'permissionSetAssign') {
         String psName = (String) op.get('permissionSetName');
         String username = (String) op.get('username');
-        SObject assignment = PermissionSetHelper.buildAssignment(
-          new Map<String, Object>{
-            'permissionSetName' => psName,
-            'username' => username
-          }
-        );
-        FunctionHelper.recordsToInsert.add(assignment);
-        System.debug(
-          'processDmlOperations: queued PS assignment [' +
-            psName +
-            '] → [' +
-            username +
-            ']'
-        );
+        // Defensive — a permissionSetAssign op is sometimes emitted for a
+        // permission set that doesn't exist (or isn't really a permission
+        // set at all, e.g. a Profile name like "System_Administrator"
+        // mistaken for one), or one already assigned from an earlier run.
+        // None of those should kill the entire request over an operation
+        // that was never actually going to succeed — skip it instead.
+        try {
+          SObject assignment = PermissionSetHelper.buildAssignment(
+            new Map<String, Object>{
+              'permissionSetName' => psName,
+              'username' => username
+            }
+          );
+          FunctionHelper.recordsToInsert.add(assignment);
+          System.debug(
+            'processDmlOperations: queued PS assignment [' +
+              psName +
+              '] → [' +
+              username +
+              ']'
+          );
+        } catch (PermissionSetHelper.PermissionSetException pse) {
+          System.debug(
+            'processDmlOperations: SKIPPED permissionSetAssign [' +
+              psName +
+              '] → [' +
+              username +
+              '] — ' +
+              pse.getMessage()
+          );
+        }
       } else if (opType == 'permissionSetRemove') {
         String psName = (String) op.get('permissionSetName');
         String username = (String) op.get('username');
-        SObject assignment = PermissionSetHelper.findAssignment(
-          new Map<String, Object>{
-            'permissionSetName' => psName,
-            'username' => username
-          }
-        );
-        FunctionHelper.recordsToDelete.add(assignment);
-        System.debug(
-          'processDmlOperations: queued PS removal [' +
-            psName +
-            '] → [' +
-            username +
-            ']'
-        );
+        try {
+          SObject assignment = PermissionSetHelper.findAssignment(
+            new Map<String, Object>{
+              'permissionSetName' => psName,
+              'username' => username
+            }
+          );
+          FunctionHelper.recordsToDelete.add(assignment);
+          System.debug(
+            'processDmlOperations: queued PS removal [' +
+              psName +
+              '] → [' +
+              username +
+              ']'
+          );
+        } catch (PermissionSetHelper.PermissionSetException pse) {
+          System.debug(
+            'processDmlOperations: SKIPPED permissionSetRemove [' +
+              psName +
+              '] → [' +
+              username +
+              '] — ' +
+              pse.getMessage()
+          );
+        }
       } else if (opType == 'staticResourceDeploy') {
         String apiName = (String) op.get('apiName');
         String fileName = (String) op.get('fileName');
@@ -2040,6 +2070,23 @@ public class LLMResponseProcessor {
       } else if (opType == 'csvProcess') {
         String fileName = (String) op.get('fileName');
         String csvType = (String) op.get('csvType');
+
+        // A csvProcess op only ever makes sense against an actual CSV
+        // attachment on the ticket. If the LLM emits one with no fileName
+        // (e.g. it read "migrate" in an acceptance criterion as a reason
+        // to invoke CSV tooling on a ticket that never had a file), there
+        // is nothing to process — skip it instead of hard-failing the
+        // entire request over an operation that could never have worked.
+        if (String.isBlank(fileName)) {
+          System.debug(
+            'processDmlOperations: SKIPPED csvProcess op with no fileName ' +
+              '(csvType=[' +
+              csvType +
+              ']) — no CSV attachment to process'
+          );
+          continue;
+        }
+
         System.debug(
           'processDmlOperations: processing CSV [' +
             fileName +
@@ -2078,6 +2125,19 @@ public class LLMResponseProcessor {
               ' records staged'
           );
         }
+      } else if (opType == 'addStandardPicklistValues') {
+        // Deterministic — never freehand a StandardValueSet's full value
+        // list. See StandardValueSetHelper for why (a StandardValueSet
+        // deploy replaces the entire list; this reads the live values and
+        // only ever appends, so an existing value can never be dropped).
+        StandardValueSetHelper.addValues(op);
+        System.debug(
+          'processDmlOperations: addStandardPicklistValues staged for [' +
+            op.get('objectApiName') +
+            '.' +
+            op.get('fieldApiName') +
+            ']'
+        );
       }
     }
   }
