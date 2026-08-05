@@ -97,12 +97,19 @@ public class LLMResponseProcessor {
           String itype = (String) item.get('type');
           String iname = (String) item.get('name');
           Boolean claimedExists = item.get('existsAlready') == true;
-          Boolean verifiedExists = verifyItemExists(
-            itype,
-            iname,
-            orgState,
-            claimedExists
-          );
+          // verifyItemExists() only does a name/identity lookup — it has no
+          // way to know WHAT attribute (a label, a formula, etc.) the ticket
+          // wants changed on an already-existing component, so it can only
+          // be trusted to catch a hallucinated "true" (a false positive).
+          // It must never be allowed to override a "false" the LLM already
+          // gave us back to "true" — that would silently undo attribute-
+          // aware verdicts like "this record type exists, but not with the
+          // requested label yet". A wrongly-kept "false" only costs an
+          // unnecessary regeneration; a wrongly-forced "true" causes a
+          // silent skip of real work, which is the failure that matters.
+          Boolean verifiedExists = claimedExists
+            ? verifyItemExists(itype, iname, orgState, claimedExists)
+            : false;
 
           if (!verifiedExists) {
             allSatisfied = false;
