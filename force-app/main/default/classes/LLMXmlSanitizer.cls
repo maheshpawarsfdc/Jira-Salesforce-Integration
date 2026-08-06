@@ -2528,6 +2528,33 @@ public class LLMXmlSanitizer {
     return sanitized;
   }
 
+  // All Custom Labels share ONE physical file (labels/CustomLabels.labels),
+  // but each is a separately-named package.xml member. The LLM's files[]
+  // schema only carries a single memberName per file, so when multiple
+  // labels are merged into one file (per the CUSTOM_LABEL prompt's
+  // instruction), only the first/declared memberName was ever registered
+  // for package.xml — the rest deployed in the file's actual content but
+  // were absent from package.xml, causing "Not in package.xml" errors.
+  // This extracts every <fullName> still present in the final (post-
+  // sanitize) CustomLabels XML so all of them can be registered.
+  public static List<String> extractCustomLabelFullNames(String xml) {
+    List<String> names = new List<String>();
+    if (String.isBlank(xml) || !xml.contains('<labels>')) {
+      return names;
+    }
+    Matcher blockM = Pattern.compile('(?s)<labels>.*?</labels>').matcher(xml);
+    while (blockM.find()) {
+      Matcher fnM = Pattern.compile(
+          '(?is)<fullName>\\s*([^<]+?)\\s*</fullName>'
+        )
+        .matcher(blockM.group(0));
+      if (fnM.find()) {
+        names.add(fnM.group(1).trim());
+      }
+    }
+    return names;
+  }
+
   // ─────────────────────────────────────────────────────────────
   // APEX REGEX SANITIZER
   // ─────────────────────────────────────────────────────────────

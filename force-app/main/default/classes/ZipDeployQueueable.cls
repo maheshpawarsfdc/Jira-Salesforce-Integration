@@ -2,6 +2,13 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
   private Map<String, String> files;
   private Map<String, String> binaryFiles;
   private String metadataTypesJson; // Set<String> values need JSON round-trip
+  // extraPackageMembers (e.g. individual Custom Label names sharing one
+  // physical file) — Queueable.execute() runs in a brand-new transaction,
+  // so ZipBuilder's static state doesn't carry over automatically. This
+  // must be snapshotted here and restored in execute() exactly like
+  // metadataTypesJson is, or anything registered via ZipBuilder.registerMember()
+  // silently vanishes before package.xml is built.
+  private String extraPackageMembersJson;
   private String issueKey;
   private String pendingZip2DataJson;
   private String apexTestContextJson;
@@ -13,6 +20,9 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
     this.files = ZipBuilder.files.clone();
     this.binaryFiles = ZipBuilder.binaryFiles.clone();
     this.metadataTypesJson = JSON.serialize(ZipBuilder.metadataTypes);
+    this.extraPackageMembersJson = JSON.serialize(
+      ZipBuilder.extraPackageMembers
+    );
   }
 
   // ── Constructor for ZIP 1: snapshot ZipBuilder state + carry zip2 data forward
@@ -21,6 +31,9 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
     this.files = ZipBuilder.files.clone();
     this.binaryFiles = ZipBuilder.binaryFiles.clone();
     this.metadataTypesJson = JSON.serialize(ZipBuilder.metadataTypes);
+    this.extraPackageMembersJson = JSON.serialize(
+      ZipBuilder.extraPackageMembers
+    );
     this.pendingZip2DataJson = pendingZip2DataJson;
   }
 
@@ -34,6 +47,9 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
     this.files = ZipBuilder.files.clone();
     this.binaryFiles = ZipBuilder.binaryFiles.clone();
     this.metadataTypesJson = JSON.serialize(ZipBuilder.metadataTypes);
+    this.extraPackageMembersJson = JSON.serialize(
+      ZipBuilder.extraPackageMembers
+    );
     this.pendingZip2DataJson = pendingZip2DataJson;
     this.apexTestContextJson = apexTestContextJson;
   }
@@ -95,6 +111,12 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
       metadataTypesJson,
       Map<String, Set<String>>.class
     );
+    ZipBuilder.extraPackageMembers = String.isNotBlank(extraPackageMembersJson)
+      ? (Map<String, Set<String>>) JSON.deserialize(
+          extraPackageMembersJson,
+          Map<String, Set<String>>.class
+        )
+      : new Map<String, Set<String>>();
 
     try {
       System.debug(
