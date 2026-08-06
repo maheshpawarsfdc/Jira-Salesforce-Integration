@@ -99,11 +99,20 @@ With app visibility:
 
 NOTE: <connectedAppAccesses> and <namedCredentialAccesses> are NOT valid in PermissionSet metadata XML — Salesforce rejects them. Do NOT generate these blocks. Connected App and Named Credential access must be assigned manually via Setup after deployment.
 
-With External Credential Principal access:
+With External Credential Principal access (grants a Per-User Principal to users assigned this
+Permission Set — required before a Per-User Principal on an External Credential is usable):
 <externalCredentialPrincipalAccesses>
     <enabled>true</enabled>
-    <externalCredentialPrincipal>My_Credential_Principal</externalCredentialPrincipal>
+    <externalCredentialPrincipal>ExternalCredentialApiName-ParameterGroup</externalCredentialPrincipal>
 </externalCredentialPrincipalAccesses>
+RULES:
+- externalCredentialPrincipal is a SINGLE dash-separated string: {ExternalCredentialApiName}-{ParameterGroup}
+  — NOT two separate elements. ParameterGroup is the parameterGroup (or parameterName if
+  parameterGroup was omitted) used on that credential's PerUserPrincipal parameter block.
+  Example: External Credential "Test_PerUser_API_Credential" with principal parameterGroup
+  "Principal" → <externalCredentialPrincipal>Test_PerUser_API_Credential-Principal</externalCredentialPrincipal>
+- NEVER invent this value — it must reference an ExternalCredential + principal that actually
+  exists in orgState or is being created in the SAME ticket.
 
 With External Data Source access:
 <externalDataSourceAccesses>

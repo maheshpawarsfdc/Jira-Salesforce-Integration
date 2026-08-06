@@ -176,6 +176,42 @@ public class LLMXmlSanitizer {
     }
 
     if (metadataType == 'NamedCredential') {
+      // Modern (External-Credential-based) model uses namedCredentialType +
+      // namedCredentialParameters instead of endpoint/protocol/principalType —
+      // detect which shape this file is before picking which fields are required.
+      Boolean isModernModel = xmlContent.contains('<namedCredentialType>');
+
+      if (isModernModel) {
+        String modernError = validateRequiredElements(
+          xmlContent,
+          new List<String>{
+            '<label>',
+            '<namedCredentialType>',
+            '<namedCredentialParameters>'
+          }
+        );
+        if (String.isNotBlank(modernError)) {
+          return modernError;
+        }
+        if (
+          xmlContent.contains('<protocol>') ||
+          xmlContent.contains('<principalType>') ||
+          xmlContent.contains('<endpoint>')
+        ) {
+          return 'Invalid: PATH B (modern, namedCredentialType present) must not also ' +
+            'contain <protocol>, <principalType>, or <endpoint> — those are legacy-only elements.';
+        }
+        if (!xmlContent.contains('<parameterType>Url</parameterType>')) {
+          return 'Modern Named Credential is missing a namedCredentialParameters block with parameterType=Url';
+        }
+        if (
+          !xmlContent.contains('<parameterType>Authentication</parameterType>')
+        ) {
+          return 'Modern Named Credential is missing a namedCredentialParameters block with parameterType=Authentication';
+        }
+        return null;
+      }
+
       String baseError = validateRequiredElements(
         xmlContent,
         new List<String>{
@@ -213,6 +249,97 @@ public class LLMXmlSanitizer {
       return null;
     }
 
+    if (metadataType == 'ExternalCredential') {
+      String baseError = validateRequiredElements(
+        xmlContent,
+        new List<String>{ '<label>', '<authenticationProtocol>' }
+      );
+      if (String.isNotBlank(baseError)) {
+        return baseError;
+      }
+      if (xmlContent.contains('<fullName>')) {
+        return 'Invalid element <fullName> inside ExternalCredential XML — remove it, ' +
+          'the file name is the identity';
+      }
+      if (xmlContent.contains('<parameters>')) {
+        return 'Invalid element <parameters> — ExternalCredential uses ' +
+          '<externalCredentialParameters> blocks, not a generic <parameters> wrapper';
+      }
+      // Custom protocol never carries a literal credential value in metadata —
+      // Salesforce populates it post-deploy via Setup/Connect REST API, and
+      // rejects AuthParameter here with "The authentication protocol 'Custom'
+      // doesn't support the following external credential parameter type(s):
+      // AuthParameter." Catch it before deploy instead of after.
+      if (
+        xmlContent.contains(
+          '<authenticationProtocol>Custom</authenticationProtocol>'
+        ) && xmlContent.contains('<parameterType>AuthParameter</parameterType>')
+      ) {
+        return 'Invalid: Custom protocol does not support parameterType=AuthParameter. ' +
+          'Only declare the principal (NamedPrincipal/PerUserPrincipal) — literal values ' +
+          'are entered manually post-deploy, not embedded in metadata.';
+      }
+      // Oauth protocol only accepts parameterType=AuthProvider referencing a real
+      // AuthProvider component — it does not accept invented parameter names for
+      // raw client credentials. Salesforce rejects those with: "The authentication
+      // protocol 'Oauth' doesn't support the external credential parameter name:
+      // ClientId,ClientSecret,TokenEndpoint." Catch the common invented names here.
+      if (
+        xmlContent.contains(
+          '<authenticationProtocol>Oauth</authenticationProtocol>'
+        )
+      ) {
+        for (
+          String badName : new List<String>{
+            'ClientId',
+            'ClientSecret',
+            'TokenEndpoint',
+            'AuthorizeEndpoint',
+            'IdentityProviderUrl'
+          }
+        ) {
+          if (
+            xmlContent.contains(
+              '<parameterName>' + badName + '</parameterName>'
+            )
+          ) {
+            return 'Invalid: Oauth protocol does not support parameterName="' +
+              badName +
+              '". OAuth must reference a separate AuthProvider component via ' +
+              'parameterType=AuthProvider — see the AUTH_PROVIDER prompt.';
+          }
+        }
+      }
+      // <parameterGroup> is only valid on NamedPrincipal/PerUserPrincipal blocks,
+      // or on an AuthParameter block whose parameterName is literally "Scope".
+      // Salesforce rejects it anywhere else: "A parameter group can only be
+      // specified for the parameter types NamedPrincipal and PerUserPrincipal.
+      // It can also be specified for an AuthParameter if the AuthParameter is
+      // named Scope."
+      Matcher ecpMatcher = Pattern.compile(
+          '(?s)<externalCredentialParameters>.*?</externalCredentialParameters>'
+        )
+        .matcher(xmlContent);
+      while (ecpMatcher.find()) {
+        String block = ecpMatcher.group(0);
+        if (!block.contains('<parameterGroup>')) {
+          continue;
+        }
+        Boolean isPrincipalType =
+          block.contains('<parameterType>NamedPrincipal</parameterType>') ||
+          block.contains('<parameterType>PerUserPrincipal</parameterType>');
+        Boolean isScopeAuthParameter =
+          block.contains('<parameterType>AuthParameter</parameterType>') &&
+          block.contains('<parameterName>Scope</parameterName>');
+        if (!isPrincipalType && !isScopeAuthParameter) {
+          return 'Invalid: <parameterGroup> is only allowed on a NamedPrincipal/' +
+            'PerUserPrincipal block, or an AuthParameter block named "Scope". ' +
+            'Remove it from this block.';
+        }
+      }
+      return null;
+    }
+
     if (metadataType == 'AuthProvider') {
       String baseError = validateRequiredElements(
         xmlContent,
@@ -220,6 +347,20 @@ public class LLMXmlSanitizer {
       );
       if (String.isNotBlank(baseError)) {
         return baseError;
+      }
+
+      // friendlyName has a hard 32-character max — Salesforce rejects longer
+      // values with "Value too long for field: FriendlyName maximum length is:32"
+      Matcher fnMatcher = Pattern.compile(
+          '(?is)<friendlyName>\\s*([^<]*?)\\s*</friendlyName>'
+        )
+        .matcher(xmlContent);
+      if (fnMatcher.find() && fnMatcher.group(1).length() > 32) {
+        return 'Invalid: <friendlyName> is ' +
+          fnMatcher.group(1).length() +
+          ' characters ("' +
+          fnMatcher.group(1) +
+          '") — maximum allowed is 32. Shorten it; do not concatenate the full ticket label with a suffix.';
       }
 
       if (xmlContent.contains('<fullName>')) {

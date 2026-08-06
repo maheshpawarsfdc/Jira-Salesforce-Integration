@@ -38,6 +38,14 @@ CONSUMER SECRET RULE:
   For CREATE or UPDATE: consumerSecret MUST come from the ticket.
   If the ticket does not provide it → return error in summary, do NOT deploy.
 
+FRIENDLYNAME LENGTH RULE:
+  <friendlyName> has a HARD 32-CHARACTER MAX. Salesforce rejects longer values with:
+  "Value too long for field: FriendlyName maximum length is:32"
+  Do NOT derive friendlyName by concatenating the ticket's label with a suffix (e.g.
+  "<Ticket Label> Auth" or "<Ticket Label>_Auth") — that easily exceeds 32 characters.
+  If the natural name is too long, abbreviate it sensibly and keep the full descriptive
+  name only in <description>/ticket summary, not in friendlyName itself.
+
 -- PROVIDER TYPE: Salesforce --
 Use when: ticket says "Salesforce OAuth", "Salesforce Auth Provider", "Salesforce SSO"
 Required from ticket: consumerKey, consumerSecret
