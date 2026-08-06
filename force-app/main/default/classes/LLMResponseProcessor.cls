@@ -1114,6 +1114,19 @@ public class LLMResponseProcessor {
 
         if (metadataType == 'CustomLabel' || metadataType == 'CustomLabels') {
           xmlContent = LLMXmlSanitizer.sanitizeCustomLabelsXml(xmlContent);
+          // All labels share ONE file, but each needs its own package.xml
+          // member. addFile() below will only register `memberName` (a
+          // single value) — register every other label actually present
+          // in the merged content so none of them deploy as "Not in
+          // package.xml". Canonical singular type name, matching what
+          // Salesforce's package.xml schema actually expects.
+          for (
+            String labelName : LLMXmlSanitizer.extractCustomLabelFullNames(
+              xmlContent
+            )
+          ) {
+            ZipBuilder.registerMember('CustomLabel', labelName);
+          }
         }
 
         if (metadataType == 'Translations' && String.isNotBlank(memberName)) {
