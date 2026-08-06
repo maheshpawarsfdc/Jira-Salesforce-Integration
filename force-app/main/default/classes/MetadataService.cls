@@ -1573,10 +1573,26 @@ public class MetadataService {
         public Boolean allowMergeFieldsInBody;
         public Boolean allowMergeFieldsInHeader;
         public String authProvider;
+        // AWS Signature Version 4 protocol fields — missing from the original
+        // WSDL2Apex generation, which broke deserialization of ANY readMetadata
+        // batch call that included an AWS-authenticated Named Credential (e.g.
+        // this org's own "Bedrock" NC) with "Apex type not found for element
+        // awsAccessKey", failing the ENTIRE batch — not just that one record.
+        public String awsAccessKey;
+        public String awsRegion;
+        public String awsSecretKey;
+        public String awsService;
+        public String calloutStatus;
         public String certificate;
         public String endpoint;
+        // Enhanced/modern Named Credential model — a NamedCredential can
+        // reference a separate ExternalCredential instead of carrying auth
+        // directly. Needed to read NCs built on the newer two-object model
+        // (e.g. this org's own "Groq_API" NC) without another parse failure.
+        public String externalCredential;
         public Boolean generateAuthorizationHeader;
         public String label;
+        public String namedCredentialType;
         public String oauthRefreshToken;
         public String oauthScope;
         public String oauthToken;
@@ -1587,10 +1603,17 @@ public class MetadataService {
         private String[] allowMergeFieldsInBody_type_info = new String[]{'allowMergeFieldsInBody',SOAP_M_URI,null,'0','1','false'};
         private String[] allowMergeFieldsInHeader_type_info = new String[]{'allowMergeFieldsInHeader',SOAP_M_URI,null,'0','1','false'};
         private String[] authProvider_type_info = new String[]{'authProvider',SOAP_M_URI,null,'0','1','false'};
+        private String[] awsAccessKey_type_info = new String[]{'awsAccessKey',SOAP_M_URI,null,'0','1','false'};
+        private String[] awsRegion_type_info = new String[]{'awsRegion',SOAP_M_URI,null,'0','1','false'};
+        private String[] awsSecretKey_type_info = new String[]{'awsSecretKey',SOAP_M_URI,null,'0','1','false'};
+        private String[] awsService_type_info = new String[]{'awsService',SOAP_M_URI,null,'0','1','false'};
+        private String[] calloutStatus_type_info = new String[]{'calloutStatus',SOAP_M_URI,null,'0','1','false'};
         private String[] certificate_type_info = new String[]{'certificate',SOAP_M_URI,null,'0','1','false'};
         private String[] endpoint_type_info = new String[]{'endpoint',SOAP_M_URI,null,'0','1','false'};
+        private String[] externalCredential_type_info = new String[]{'externalCredential',SOAP_M_URI,null,'0','1','false'};
         private String[] generateAuthorizationHeader_type_info = new String[]{'generateAuthorizationHeader',SOAP_M_URI,null,'0','1','false'};
         private String[] label_type_info = new String[]{'label',SOAP_M_URI,null,'1','1','false'};
+        private String[] namedCredentialType_type_info = new String[]{'namedCredentialType',SOAP_M_URI,null,'0','1','false'};
         private String[] oauthRefreshToken_type_info = new String[]{'oauthRefreshToken',SOAP_M_URI,null,'0','1','false'};
         private String[] oauthScope_type_info = new String[]{'oauthScope',SOAP_M_URI,null,'0','1','false'};
         private String[] oauthToken_type_info = new String[]{'oauthToken',SOAP_M_URI,null,'0','1','false'};
@@ -1600,7 +1623,7 @@ public class MetadataService {
         private String[] username_type_info = new String[]{'username',SOAP_M_URI,null,'0','1','false'};
         private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
         private String[] type_att_info = new String[]{'xsi:type'};
-        private String[] field_order_type_info = new String[]{'fullName', 'allowMergeFieldsInBody','allowMergeFieldsInHeader','authProvider','certificate','endpoint','generateAuthorizationHeader','label','oauthRefreshToken','oauthScope','oauthToken','password','principalType','protocol','username'};
+        private String[] field_order_type_info = new String[]{'fullName', 'allowMergeFieldsInBody','allowMergeFieldsInHeader','authProvider','awsAccessKey','awsRegion','awsSecretKey','awsService','calloutStatus','certificate','endpoint','externalCredential','generateAuthorizationHeader','label','namedCredentialType','oauthRefreshToken','oauthScope','oauthToken','password','principalType','protocol','username'};
     }
     public class QuickAction extends Metadata {
         public String type = 'QuickAction';
