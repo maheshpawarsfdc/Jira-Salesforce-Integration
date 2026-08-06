@@ -168,6 +168,22 @@ public class ProfileHelper {
       for (
         MetadataService.ProfileFieldLevelSecurity fp : profile.fieldPermissions
       ) {
+        // Skip standard compound sub-fields (e.g. BillingPostalCode,
+        // FirstName) — retrieveMetadata returns these but deployMetadata
+        // rejects them with "Invalid field permission field name". See
+        // LLMXmlSanitizer.isNonDeployableCompoundField().
+        String fpFieldName = fp.field != null && fp.field.contains('.')
+          ? fp.field.substringAfter('.')
+          : fp.field;
+        if (LLMXmlSanitizer.isNonDeployableCompoundField(fpFieldName)) {
+          System.debug(
+            'ProfileHelper.buildBaseProfileXml(): skipping non-deployable compound field [' +
+              fp.field +
+              ']'
+          );
+          continue;
+        }
+
         Boolean fpReadable = fp.readable != null ? fp.readable : false;
         Boolean fpEditable = fp.editable != null ? fp.editable : false;
 

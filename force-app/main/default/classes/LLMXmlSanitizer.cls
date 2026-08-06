@@ -627,7 +627,10 @@ public class LLMXmlSanitizer {
         break;
       }
 
-      xml = xml.substring(0, insertPos) + '</fields>' + xml.substring(insertPos);
+      xml =
+        xml.substring(0, insertPos) +
+        '</fields>' +
+        xml.substring(insertPos);
       closeCount++;
       inserted++;
     }
@@ -677,7 +680,10 @@ public class LLMXmlSanitizer {
       );
       // returnType is not a valid CustomField element when type already
       // expresses the formula return datatype.
-      updated = updated.replaceAll('(?s)\\s*<returnType>[^<]*</returnType>', '');
+      updated = updated.replaceAll(
+        '(?s)\\s*<returnType>[^<]*</returnType>',
+        ''
+      );
 
       if (
         normalizedType == 'Number' ||
@@ -698,7 +704,10 @@ public class LLMXmlSanitizer {
         }
       } else {
         // Non-numeric formulas should not carry numeric sizing tags.
-        updated = updated.replaceAll('(?s)\\s*<precision>[^<]*</precision>', '');
+        updated = updated.replaceAll(
+          '(?s)\\s*<precision>[^<]*</precision>',
+          ''
+        );
         updated = updated.replaceAll('(?s)\\s*<scale>[^<]*</scale>', '');
       }
       // Salesforce rejects <length> on ALL formula fields regardless of return type.
@@ -800,8 +809,7 @@ public class LLMXmlSanitizer {
 
     // Best-effort fallback when returnType is omitted by the model.
     if (
-      formulaBlock.contains('<precision>') ||
-      formulaBlock.contains('<scale>')
+      formulaBlock.contains('<precision>') || formulaBlock.contains('<scale>')
     ) {
       return 'Number';
     }
@@ -1237,17 +1245,49 @@ public class LLMXmlSanitizer {
   }
 
   // Remove unsupported Profile elements that LLM may emit.
+  // Profile metadata has no <label>/<pluralLabel>/<fullName> elements —
+  // a profile's display name comes solely from its file name, unlike
+  // PermissionSet/CustomObject which require <label>. The LLM sometimes
+  // bleeds that convention into a Profile file when asked to "create" a
+  // named profile in one shot, which the Metadata API rejects with
+  // "Element ... label invalid at this location in type Profile".
   public static String sanitizeProfileXml(String xml) {
     if (String.isBlank(xml)) {
       return xml;
     }
-    if (!xml.contains('<cloneFrom>')) {
-      return xml;
+    String cleaned = xml;
+    if (cleaned.contains('<cloneFrom>')) {
+      cleaned = cleaned.replaceAll('(?s)\\s*<cloneFrom>.*?</cloneFrom>', '');
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeProfileXml: removed unsupported <cloneFrom> element'
+      );
     }
-    String cleaned = xml.replaceAll('(?s)\\s*<cloneFrom>.*?</cloneFrom>', '');
-    System.debug(
-      '[DEPLOY-TRACE] sanitizeProfileXml: removed unsupported <cloneFrom> element'
-    );
+    for (String tag : new List<String>{ 'label', 'pluralLabel', 'fullName' }) {
+      String tagRegex = '(?s)\\s*<' + tag + '>.*?</' + tag + '>';
+      if (Pattern.compile(tagRegex).matcher(cleaned).find()) {
+        cleaned = cleaned.replaceAll(tagRegex, '');
+        System.debug(
+          '[DEPLOY-TRACE] sanitizeProfileXml: removed unsupported <' +
+            tag +
+            '> element (not a valid Profile field)'
+        );
+      }
+    }
+    // <tabSettings> is the PermissionSet element for tab visibility;
+    // Profile's equivalent is <tabVisibilities>. The LLM sometimes emits
+    // the PermissionSet tag name inside a Profile file. The inner <tab>
+    // and <visibility> children are structurally identical and the
+    // visibility values the LLM is taught to use (DefaultOn/DefaultOff/
+    // Hidden) are already valid on Profile, so a tag rename is sufficient
+    // — no need to drop the requested access.
+    if (cleaned.contains('<tabSettings>')) {
+      cleaned = cleaned
+        .replace('<tabSettings>', '<tabVisibilities>')
+        .replace('</tabSettings>', '</tabVisibilities>');
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeProfileXml: renamed <tabSettings> to <tabVisibilities> (PermissionSet element used in Profile file)'
+      );
+    }
     return cleaned;
   }
 
@@ -1613,7 +1653,8 @@ public class LLMXmlSanitizer {
 
     while (itemMat.find()) {
       String item = itemMat.group(0);
-      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>').matcher(item);
+      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>')
+        .matcher(item);
       if (!fm.find()) {
         continue;
       }
@@ -1672,7 +1713,9 @@ public class LLMXmlSanitizer {
       return xml;
     }
     String objectApi = listViewMemberName.substringBefore('.');
-    Pattern colPat = Pattern.compile('(?is)\\s*<columns>\\s*([^<]+?)\\s*</columns>');
+    Pattern colPat = Pattern.compile(
+      '(?is)\\s*<columns>\\s*([^<]+?)\\s*</columns>'
+    );
     Matcher cm = colPat.matcher(xml);
     List<String> oldCols = new List<String>();
     Integer removed = 0;
@@ -1733,14 +1776,17 @@ public class LLMXmlSanitizer {
     if (String.isBlank(xml) || !xml.contains('<fieldPermissions>')) {
       return xml;
     }
-    Pattern fpPat = Pattern.compile('(?s)<fieldPermissions>.*?</fieldPermissions>');
+    Pattern fpPat = Pattern.compile(
+      '(?s)<fieldPermissions>.*?</fieldPermissions>'
+    );
     Matcher fpm = fpPat.matcher(xml);
     List<String> oldBlocks = new List<String>();
     Integer removed = 0;
 
     while (fpm.find()) {
       String block = fpm.group(0);
-      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>').matcher(block);
+      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>')
+        .matcher(block);
       if (!fm.find()) {
         continue;
       }
@@ -1776,6 +1822,238 @@ public class LLMXmlSanitizer {
     return xml;
   }
 
+  // Standard compound-address fields (BillingAddress, ShippingAddress,
+  // MailingAddress, OtherAddress) expose sub-components like BillingCity,
+  // BillingPostalCode, BillingLatitude etc. Salesforce's retrieveMetadata
+  // happily returns fieldPermissions entries for these sub-fields when
+  // cloning a profile/permission set with broad FLS (e.g. System
+  // Administrator), but deployMetadata REJECTS them:
+  //   "Invalid field permission field name Account field Account.BillingPostalCode"
+  // This is a documented retrieve/deploy asymmetry — these sub-fields are
+  // never independently securable and must never be re-serialized.
+  private static final Set<String> COMPOUND_ADDRESS_PREFIXES = new Set<String>{
+    'Billing',
+    'Shipping',
+    'Mailing',
+    'Other'
+  };
+  private static final Set<String> COMPOUND_ADDRESS_SUFFIXES = new Set<String>{
+    'Street',
+    'City',
+    'State',
+    'StateCode',
+    'PostalCode',
+    'Country',
+    'CountryCode',
+    'Latitude',
+    'Longitude',
+    'GeocodeAccuracy'
+  };
+
+  public static Boolean isNonDeployableCompoundAddressField(
+    String fieldApiName
+  ) {
+    if (String.isBlank(fieldApiName)) {
+      return false;
+    }
+    for (String prefix : COMPOUND_ADDRESS_PREFIXES) {
+      if (
+        fieldApiName.startsWith(prefix) &&
+        COMPOUND_ADDRESS_SUFFIXES.contains(
+          fieldApiName.substring(prefix.length())
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Standard compound Name field (Contact, Lead, Person Account) exposes
+  // FirstName/LastName/Salutation/MiddleName/Suffix as sub-components.
+  // Same retrieve/deploy asymmetry as compound-address fields:
+  //   "Invalid field permission field name Contact field Contact.FirstName"
+  private static final Set<String> COMPOUND_NAME_SUBFIELDS = new Set<String>{
+    'FirstName',
+    'LastName',
+    'Salutation',
+    'MiddleName',
+    'Suffix'
+  };
+
+  // Combined check — covers both compound-address and compound-Name
+  // sub-fields, the two known-non-deployable-via-FLS categories so far.
+  // Use this (not the address-only check) at every fieldPermissions
+  // filtering call site so future additions only need to happen here.
+  public static Boolean isNonDeployableCompoundField(String fieldApiName) {
+    return isNonDeployableCompoundAddressField(fieldApiName) ||
+      (String.isNotBlank(fieldApiName) &&
+      COMPOUND_NAME_SUBFIELDS.contains(fieldApiName));
+  }
+
+  // Removes <fieldPermissions> blocks (Profile or PermissionSet XML) that
+  // target non-deployable compound sub-fields. See
+  // isNonDeployableCompoundField() for why.
+  public static String stripNonDeployableCompoundFieldPermissions(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fieldPermissions>')) {
+      return xml;
+    }
+    Matcher fpm = Pattern.compile(
+        '(?s)<fieldPermissions>.*?</fieldPermissions>'
+      )
+      .matcher(xml);
+    List<String> oldBlocks = new List<String>();
+    Integer removed = 0;
+
+    while (fpm.find()) {
+      String block = fpm.group(0);
+      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>')
+        .matcher(block);
+      if (!fm.find()) {
+        continue;
+      }
+      String qf = fm.group(1).trim();
+      String fld = qf.contains('.') ? qf.substringAfter('.') : qf;
+      if (isNonDeployableCompoundField(fld)) {
+        oldBlocks.add(block);
+        removed++;
+      }
+    }
+
+    for (String oldBlock : oldBlocks) {
+      xml = xml.replace(oldBlock, '');
+    }
+
+    if (removed > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] stripNonDeployableCompoundFieldPermissions: removed ' +
+          removed +
+          ' non-deployable compound-address fieldPermissions block(s)'
+      );
+    }
+    return xml;
+  }
+
+  // Standard fields that are system-managed / implicitly-controlled and
+  // never independently securable via fieldPermissions, regardless of
+  // object. Deploying explicit FLS on these fails even when Apex's schema
+  // describe doesn't flag them as "required" — e.g. OwnerId reports
+  // isDefaultedOnCreate()=true (so PermissionSetHelper.isRequiredField's
+  // describe-based heuristic misses it), yet the Metadata API still
+  // rejects it with "You cannot deploy to a required field: Object.OwnerId".
+  // Single source of truth — checked by both wildcard expansion below and
+  // PermissionSetHelper.isRequiredField() for directly-requested fields.
+  private static final Set<String> SYSTEM_MANAGED_FIELDS = new Set<String>{
+    'Id',
+    'IsDeleted',
+    'CreatedDate',
+    'CreatedById',
+    'LastModifiedDate',
+    'LastModifiedById',
+    'SystemModstamp',
+    'LastActivityDate',
+    'LastViewedDate',
+    'LastReferencedDate',
+    'RecordTypeId',
+    'OwnerId'
+  };
+
+  public static Boolean isSystemManagedField(String fieldApiName) {
+    return String.isNotBlank(fieldApiName) &&
+      SYSTEM_MANAGED_FIELDS.contains(fieldApiName);
+  }
+
+  // Expands "grant on all fields" requests. The LLM sometimes writes
+  // <field>Object.*</field> as shorthand instead of enumerating every
+  // field, which the Metadata API rejects outright:
+  //   "In field: field - no CustomField named Account.* found"
+  // There is no wildcard syntax for fieldPermissions — every field must be
+  // listed individually. This expands the wildcard block into one
+  // <fieldPermissions> block per real field on the object (using the same
+  // readable/editable values as the wildcard block), skipping fields that
+  // are never independently FLS-securable (system-managed fields and
+  // compound-address sub-fields — those are filtered again downstream by
+  // stripRequiredFieldPermissions / stripNonDeployableCompoundFieldPermissions
+  // in case they weren't already caught here).
+  public static String expandWildcardFieldPermissions(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<fieldPermissions>')) {
+      return xml;
+    }
+    Matcher fpm = Pattern.compile(
+        '(?s)<fieldPermissions>.*?</fieldPermissions>'
+      )
+      .matcher(xml);
+    Map<String, String> wildcardBlockToExpansion = new Map<String, String>();
+
+    while (fpm.find()) {
+      String block = fpm.group(0);
+      Matcher fm = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>')
+        .matcher(block);
+      if (!fm.find()) {
+        continue;
+      }
+      String qf = fm.group(1).trim();
+      if (!qf.endsWith('.*')) {
+        continue;
+      }
+      String objectApi = qf.substringBefore('.*');
+
+      Matcher rm = Pattern.compile('(?is)<readable>\\s*([^<]+?)\\s*</readable>')
+        .matcher(block);
+      String readable = rm.find() ? rm.group(1).trim() : 'false';
+      Matcher em = Pattern.compile('(?is)<editable>\\s*([^<]+?)\\s*</editable>')
+        .matcher(block);
+      String editable = em.find() ? em.group(1).trim() : 'false';
+
+      String knownFields = SchemaFieldValidator.getKnownFieldNames(objectApi);
+      if (String.isBlank(knownFields)) {
+        System.debug(
+          '[DEPLOY-TRACE] expandWildcardFieldPermissions: could not resolve fields for [' +
+            objectApi +
+            '] — leaving wildcard block as-is (will fail deploy)'
+        );
+        continue;
+      }
+
+      String expanded = '';
+      for (String fld : knownFields.split(',\\s*')) {
+        if (
+          SYSTEM_MANAGED_FIELDS.contains(fld) ||
+          isNonDeployableCompoundField(fld)
+        ) {
+          continue;
+        }
+        expanded +=
+          '    <fieldPermissions>\n' +
+          '        <editable>' +
+          editable +
+          '</editable>\n' +
+          '        <field>' +
+          objectApi +
+          '.' +
+          fld +
+          '</field>\n' +
+          '        <readable>' +
+          readable +
+          '</readable>\n' +
+          '    </fieldPermissions>\n';
+      }
+      wildcardBlockToExpansion.put(block, expanded);
+      System.debug(
+        '[DEPLOY-TRACE] expandWildcardFieldPermissions: expanded [' +
+          qf +
+          '] into individual field entries for [' +
+          objectApi +
+          ']'
+      );
+    }
+
+    for (String oldBlock : wildcardBlockToExpansion.keySet()) {
+      xml = xml.replace(oldBlock, wildcardBlockToExpansion.get(oldBlock));
+    }
+    return xml;
+  }
+
   // Sanitizes embedded <listViews> sections inside CustomObject XML.
   public static String sanitizeCustomObjectListViewUnknownColumns(
     String xml,
@@ -1790,7 +2068,9 @@ public class LLMXmlSanitizer {
       return xml;
     }
 
-    Pattern colPat = Pattern.compile('(?is)\\s*<columns>\\s*([^<]+?)\\s*</columns>');
+    Pattern colPat = Pattern.compile(
+      '(?is)\\s*<columns>\\s*([^<]+?)\\s*</columns>'
+    );
     Matcher cm = colPat.matcher(xml);
     List<String> oldCols = new List<String>();
     List<String> newCols = new List<String>();
@@ -1805,7 +2085,9 @@ public class LLMXmlSanitizer {
         continue;
       }
 
-      String fieldName = colVal.contains('.') ? colVal.substringAfter('.') : colVal;
+      String fieldName = colVal.contains('.')
+        ? colVal.substringAfter('.')
+        : colVal;
       if (!SchemaFieldValidator.fieldExists(objectApiName, fieldName)) {
         oldCols.add(fullTag);
         newCols.add('');
@@ -1847,7 +2129,9 @@ public class LLMXmlSanitizer {
     if (String.isBlank(xml) || !xml.contains('<referenceTo>')) {
       return xml;
     }
-    Pattern p = Pattern.compile('(?is)<referenceTo>\\s*([^<]+?)\\s*</referenceTo>');
+    Pattern p = Pattern.compile(
+      '(?is)<referenceTo>\\s*([^<]+?)\\s*</referenceTo>'
+    );
     Matcher m = p.matcher(xml);
     List<String> oldTags = new List<String>();
     List<String> newTags = new List<String>();
@@ -1963,7 +2247,10 @@ public class LLMXmlSanitizer {
       Matcher fm = fieldPat.matcher(xml);
       while (fm.find()) {
         String block = fm.group(1);
-        String typeVal = extractInlineTagValue('<fields>' + block + '</fields>', 'type');
+        String typeVal = extractInlineTagValue(
+          '<fields>' + block + '</fields>',
+          'type'
+        );
         if (
           typeVal != 'Lookup' &&
           typeVal != 'MasterDetail' &&
@@ -1971,7 +2258,10 @@ public class LLMXmlSanitizer {
         ) {
           continue;
         }
-        String ref = extractInlineTagValue('<fields>' + block + '</fields>', 'referenceTo');
+        String ref = extractInlineTagValue(
+          '<fields>' + block + '</fields>',
+          'referenceTo'
+        );
         if (String.isBlank(ref)) {
           continue;
         }
@@ -2330,7 +2620,8 @@ public class LLMXmlSanitizer {
       if (!block.contains('<formula>')) {
         continue;
       }
-      Matcher nameMat = Pattern.compile('<fullName>([^<]+)</fullName>').matcher(block);
+      Matcher nameMat = Pattern.compile('<fullName>([^<]+)</fullName>')
+        .matcher(block);
       if (nameMat.find()) {
         result.add(nameMat.group(1).trim());
       }
@@ -2366,7 +2657,9 @@ public class LLMXmlSanitizer {
     Matcher itemMat = itemPat.matcher(xml);
     List<String> oldItems = new List<String>();
     List<String> newItems = new List<String>();
-    Pattern fieldValPat = Pattern.compile('(?is)<field>\\s*([^<]+?)\\s*</field>');
+    Pattern fieldValPat = Pattern.compile(
+      '(?is)<field>\\s*([^<]+?)\\s*</field>'
+    );
 
     while (itemMat.find()) {
       String item = itemMat.group(0);
@@ -2380,7 +2673,10 @@ public class LLMXmlSanitizer {
       if (norm.contains('.')) {
         norm = norm.substringAfter('.');
       }
-      if (!normalizedTargets.contains(norm) && !normalizedTargets.contains(rawField.toLowerCase())) {
+      if (
+        !normalizedTargets.contains(norm) &&
+        !normalizedTargets.contains(rawField.toLowerCase())
+      ) {
         continue;
       }
 
@@ -2405,7 +2701,8 @@ public class LLMXmlSanitizer {
       xml = xml.replace(oldItems[i], newItems[i]);
     }
     System.debug(
-      '[SANITIZE] fixFormulaFieldBehaviorsInLayout: forced Readonly on ' + formulaFieldNames
+      '[SANITIZE] fixFormulaFieldBehaviorsInLayout: forced Readonly on ' +
+      formulaFieldNames
     );
     return xml;
   }
