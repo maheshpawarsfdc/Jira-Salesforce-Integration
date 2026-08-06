@@ -227,6 +227,11 @@ public class PermissionSetHelper {
       );
     }
 
+    // Strip fieldPermissions on non-deployable compound-address sub-fields
+    // (e.g. BillingPostalCode) — retrieve() returns them but deployMetadata
+    // rejects them with "Invalid field permission field name".
+    xml = LLMXmlSanitizer.stripNonDeployableCompoundFieldPermissions(xml);
+
     String filePath =
       'permissionsets/' +
       newApiName +
@@ -434,6 +439,14 @@ public class PermissionSetHelper {
 
   private static Boolean isRequiredField(String objectName, String fieldName) {
     try {
+      // Some fields (e.g. OwnerId) are implicitly-controlled and rejected
+      // by deploy ("You cannot deploy to a required field: ...") even
+      // though Schema describe doesn't flag them as required — OwnerId
+      // reports isDefaultedOnCreate()=true, which the describe-based check
+      // below treats as "not required". Check the curated list first.
+      if (LLMXmlSanitizer.isSystemManagedField(fieldName)) {
+        return true;
+      }
       // Delegates to SchemaFieldValidator so a field being created in this
       // same deploy (not yet in live schema) is still recognized as
       // required — its <required> flag was parsed straight from the

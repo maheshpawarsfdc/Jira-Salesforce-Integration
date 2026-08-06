@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Profile</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == PROFILE RULES ==
 Profiles have TWO paths depending on the operation.
 
@@ -44,6 +50,10 @@ Only include sections that match what the ticket asks for.
     <field>MyObject__c.MyField__c</field>
     <readable>true</readable>
 </fieldPermissions>
+There is NO wildcard syntax for field access. NEVER write <field>MyObject__c.*</field>
+to mean "all fields" — deploy fails with "no CustomField named MyObject__c.* found".
+When a ticket says "all fields" or "every field", enumerate one <fieldPermissions>
+block per actual field API name using the org schema context you were given.
 
 -- APEX CLASS ACCESS --
 Query org state to find class names.
@@ -59,6 +69,9 @@ RULES:
 -- TAB VISIBILITY --
 Use ONLY when ticket explicitly asks to show/hide a tab for the profile.
 DO NOT add tabVisibilities just because you are granting object access.
+Profile uses <tabVisibilities> — NOT <tabSettings>. <tabSettings> is the
+PermissionSet element only; using it inside a Profile file fails deploy with
+"Element ... tabSettings invalid at this location in type Profile".
 <tabVisibilities>
     <tab>ObjectName__c</tab>
     <visibility>DefaultOn</visibility>
@@ -89,6 +102,16 @@ CRITICAL PROFILE RULES:
 3. Only include profile sections that match what the ticket asks for
 4. For DELETE: use destructiveFiles with metadataType Profile and member = profile API name
 5. Standard/system profiles (Admin, Standard, StandardAul, MarketingProfile etc.) CANNOT be deleted
+6. NEVER add <label>, <pluralLabel>, or <fullName> inside a Profile XML file.
+   Unlike PermissionSet/CustomObject, Profile metadata has NO label element —
+   its display name comes entirely from the file name (profiles/ApiName.profile).
+   Adding <label> fails deploy with: "Element ... label invalid at this
+   location in type Profile".
+7. A ticket that asks to "create a new profile named X with access to Y, Z..."
+   is a TWO-STEP request: (a) emit ONE profileClone dmlOperation with
+   newProfileName = X, then (b) emit a SEPARATE PATH 2 partial-update file
+   for profiles/X.profile containing ONLY the object/field/tab/class/record-type
+   sections requested — do not try to express the label/name inside that file.
 
 TABVISIBILITIES ABSOLUTE RULES:
 - NEVER add <tabVisibilities> for ANY standard object (Account, Case, Contact, Lead, Opportunity etc.)
@@ -110,10 +133,12 @@ TABVISIBILITIES ABSOLUTE RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Profile XML: object access, field access, class access, tab visibility</value>
+        <value
+      xsi:type="xsd:string"
+    >Profile XML: object access, field access, class access, tab visibility</value>
     </values>
 </CustomMetadata>

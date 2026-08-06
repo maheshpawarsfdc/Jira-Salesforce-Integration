@@ -1482,11 +1482,24 @@ public class LLMResponseProcessor {
           // the tab existed (Setup > Tabs) but could never be added to a
           // Lightning app's navigation — nothing had made it visible.
           //
+          // Expand any "<field>Object.*</field>" wildcard shorthand into
+          // real per-field entries first — there is no wildcard syntax in
+          // fieldPermissions and deploy rejects it outright with
+          // "no CustomField named Account.* found".
+          xmlContent = LLMXmlSanitizer.expandWildcardFieldPermissions(
+            xmlContent
+          );
           // Salesforce rejects fieldPermissions entries for required fields
           // ("You cannot deploy to a required field: Object__c.Field__c") —
           // required fields get implicit read/edit access already. Same
           // safeguard PermissionSet files already get below.
           xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
+            xmlContent
+          );
+          // Strip fieldPermissions on non-deployable compound-address
+          // sub-fields (e.g. BillingPostalCode) — retrieve returns them
+          // but deploy rejects them with "Invalid field permission field name".
+          xmlContent = LLMXmlSanitizer.stripNonDeployableCompoundFieldPermissions(
             xmlContent
           );
         }
@@ -1509,7 +1522,13 @@ public class LLMResponseProcessor {
                 ']'
             );
           }
+          xmlContent = LLMXmlSanitizer.expandWildcardFieldPermissions(
+            xmlContent
+          );
           xmlContent = PermissionSetHelper.stripRequiredFieldPermissions(
+            xmlContent
+          );
+          xmlContent = LLMXmlSanitizer.stripNonDeployableCompoundFieldPermissions(
             xmlContent
           );
           // Final safety strip — remove viewAllFields which is invalid in PS metadata v61+
