@@ -657,7 +657,13 @@ public class LLMOrgStateService {
       try {
         List<Map<String, Object>> queueList = new List<Map<String, Object>>();
         for (Group g : [
-          SELECT Id, Name, DeveloperName, Email, DoesSendEmailToMembers
+          SELECT
+            Id,
+            Name,
+            DeveloperName,
+            Email,
+            DoesSendEmailToMembers,
+            DoesIncludeBosses
           FROM Group
           WHERE Type = 'Queue'
           ORDER BY Name
@@ -670,13 +676,32 @@ public class LLMOrgStateService {
           ]) {
             sobjectTypes.add(qs.SobjectType);
           }
+          // Some GroupMember rows (observed for Role/RoleAndSubordinates-type
+          // members) don't populate the polymorphic UserOrGroup relationship,
+          // so gm.getSObject('UserOrGroup') can be null. Calling .get('Name')
+          // on that throws "Attempt to de-reference a null object", which —
+          // uncaught here — poisoned the WHOLE existingQueues fetch (every
+          // queue, not just this one), silently leaving the LLM blind to
+          // ALL current queue state on every subsequent ticket. Skip the
+          // unresolvable member instead of losing everything.
           List<String> members = new List<String>();
           for (GroupMember gm : [
             SELECT UserOrGroup.Name
             FROM GroupMember
             WHERE GroupId = :g.Id
           ]) {
-            members.add((String) gm.getSObject('UserOrGroup').get('Name'));
+            SObject relatedEntity = gm.getSObject('UserOrGroup');
+            if (relatedEntity != null && relatedEntity.get('Name') != null) {
+              members.add((String) relatedEntity.get('Name'));
+            } else {
+              System.debug(
+                'runOrgCheck: queue [' +
+                  g.DeveloperName +
+                  '] — GroupMember [' +
+                  gm.Id +
+                  '] has unresolvable UserOrGroup, skipped'
+              );
+            }
           }
           queueList.add(
             new Map<String, Object>{
@@ -684,6 +709,7 @@ public class LLMOrgStateService {
               'name' => g.Name,
               'email' => g.Email,
               'doesSendEmailToMembers' => g.DoesSendEmailToMembers,
+              'doesIncludeBosses' => g.DoesIncludeBosses,
               'sobjectTypes' => sobjectTypes,
               'members' => members
             }
@@ -700,6 +726,38 @@ public class LLMOrgStateService {
         ErrorLogger.log(e);
       }
 
+      // QueueSobject.SobjectType is a RESTRICTED picklist — not every object
+      // supports being owned by a Queue (e.g. Opportunity does not). Without
+      // this, a ticket asking for an unsupported object fails deploy with
+      // Salesforce's raw "bad value for restricted picklist field:
+      // Opportunity" instead of a clear explanation. This picklist is
+      // dynamic per org (custom objects can enable "Allow queues"), so pull
+      // it live from schema rather than hardcoding a list that could go stale.
+      try {
+        List<String> supportedObjects = new List<String>();
+        Schema.DescribeFieldResult sobjectTypeField = QueueSobject.SobjectType.getDescribe();
+        for (Schema.PicklistEntry e : sobjectTypeField.getPicklistValues()) {
+          if (e.isActive()) {
+            supportedObjects.add(e.getValue());
+          }
+        }
+        if (!supportedObjects.isEmpty()) {
+          supportedObjects.sort();
+          orgState.put('existingQueueSupportedObjects', supportedObjects);
+          System.debug(
+            'runOrgCheck: fetched ' +
+              supportedObjects.size() +
+              ' queue-supported object type(s)'
+          );
+        }
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: queue-supported-objects fetch failed — ' +
+          e.getMessage()
+        );
+        ErrorLogger.log(e);
+      }
+
       try {
         List<Map<String, Object>> groupList = new List<Map<String, Object>>();
         for (Group g : [
@@ -713,13 +771,28 @@ public class LLMOrgStateService {
           WHERE Type = 'Regular'
           ORDER BY Name
         ]) {
+          // See matching comment in the Queue block above — some GroupMember
+          // rows don't populate the polymorphic UserOrGroup relationship;
+          // skip them instead of letting one unresolvable member poison the
+          // entire existingGroups fetch.
           List<String> members = new List<String>();
           for (GroupMember gm : [
             SELECT UserOrGroup.Name
             FROM GroupMember
             WHERE GroupId = :g.Id
           ]) {
-            members.add((String) gm.getSObject('UserOrGroup').get('Name'));
+            SObject relatedEntity = gm.getSObject('UserOrGroup');
+            if (relatedEntity != null && relatedEntity.get('Name') != null) {
+              members.add((String) relatedEntity.get('Name'));
+            } else {
+              System.debug(
+                'runOrgCheck: group [' +
+                  g.DeveloperName +
+                  '] — GroupMember [' +
+                  gm.Id +
+                  '] has unresolvable UserOrGroup, skipped'
+              );
+            }
           }
           groupList.add(
             new Map<String, Object>{
@@ -741,6 +814,97 @@ public class LLMOrgStateService {
         System.debug(
           'runOrgCheck: public group fetch failed — ' + e.getMessage()
         );
+        ErrorLogger.log(e);
+      }
+
+      // Queue Routing Configs — needed to resolve a routing config's display
+      // MasterLabel (e.g. "Agent config") to its real DeveloperName (e.g.
+      // "Agent_config") for Queue.queueRoutingConfig references. Without this
+      // the LLM uses the label directly (which contains a space, an invalid
+      // DeveloperName), failing deploy with "no QueueRoutingConfig named X found".
+      try {
+        List<Map<String, Object>> qrcList = new List<Map<String, Object>>();
+        for (QueueRoutingConfig q : [
+          SELECT Id, MasterLabel, DeveloperName
+          FROM QueueRoutingConfig
+          ORDER BY MasterLabel
+        ]) {
+          qrcList.add(
+            new Map<String, Object>{
+              'masterLabel' => q.MasterLabel,
+              'developerName' => q.DeveloperName
+            }
+          );
+        }
+        if (!qrcList.isEmpty()) {
+          orgState.put('existingQueueRoutingConfigs', qrcList);
+          System.debug(
+            'runOrgCheck: fetched ' +
+              qrcList.size() +
+              ' queue routing config(s)'
+          );
+        }
+      } catch (Exception e) {
+        System.debug(
+          'runOrgCheck: queue routing config fetch failed — ' + e.getMessage()
+        );
+        ErrorLogger.log(e);
+      }
+
+      // Roles — needed to resolve a role's display Name (e.g. "Customer
+      // Support, International", commonly comma-containing) to its real
+      // DeveloperName for Queue/Sharing Rule/PermissionSet role references.
+      // Without this the LLM has no way to know the actual API name and
+      // must guess, which silently fails deploy with "no UserRole named X".
+      try {
+        List<Map<String, Object>> roleList = new List<Map<String, Object>>();
+        for (UserRole r : [
+          SELECT Id, Name, DeveloperName, ParentRoleId
+          FROM UserRole
+          ORDER BY Name
+        ]) {
+          roleList.add(
+            new Map<String, Object>{
+              'developerName' => r.DeveloperName,
+              'name' => r.Name,
+              'parentRoleId' => r.ParentRoleId
+            }
+          );
+        }
+        if (!roleList.isEmpty()) {
+          orgState.put('existingRoles', roleList);
+          System.debug('runOrgCheck: fetched ' + roleList.size() + ' role(s)');
+        }
+      } catch (Exception e) {
+        System.debug('runOrgCheck: role fetch failed — ' + e.getMessage());
+        ErrorLogger.log(e);
+      }
+
+      // Users — needed to resolve a person's display Name (e.g. "Mahesh
+      // Pawar") to their real Username for Queue members and similar
+      // metadata that requires a literal username, not a display name.
+      try {
+        List<Map<String, Object>> userList = new List<Map<String, Object>>();
+        for (User u : [
+          SELECT Id, Name, Username, IsActive
+          FROM User
+          WHERE IsActive = TRUE
+          ORDER BY Name
+          LIMIT 200
+        ]) {
+          userList.add(
+            new Map<String, Object>{
+              'name' => u.Name,
+              'username' => u.Username
+            }
+          );
+        }
+        if (!userList.isEmpty()) {
+          orgState.put('existingUsers', userList);
+          System.debug('runOrgCheck: fetched ' + userList.size() + ' user(s)');
+        }
+      } catch (Exception e) {
+        System.debug('runOrgCheck: user fetch failed — ' + e.getMessage());
         ErrorLogger.log(e);
       }
 

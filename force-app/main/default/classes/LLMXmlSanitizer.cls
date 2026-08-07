@@ -340,6 +340,82 @@ public class LLMXmlSanitizer {
       return null;
     }
 
+    if (metadataType == 'Queue') {
+      // Each queueMembers wrapper (users/publicGroups/roles/roleAndSubordinates/
+      // roleAndSubordinatesInternal) must appear at most once — Salesforce
+      // rejects a repeated wrapper with "Element X is duplicated at this
+      // location in type QueueMembers". Multiple members of the same type
+      // belong INSIDE one wrapper as multiple inner elements, not as
+      // multiple copies of the wrapper itself.
+      for (
+        String wrapper : new List<String>{
+          'users',
+          'publicGroups',
+          'roles',
+          'roleAndSubordinates',
+          'roleAndSubordinatesInternal'
+        }
+      ) {
+        Integer occurrences = 0;
+        Integer searchFrom = 0;
+        while (true) {
+          Integer idx = xmlContent.indexOf('<' + wrapper + '>', searchFrom);
+          if (idx < 0) {
+            break;
+          }
+          occurrences++;
+          searchFrom = idx + 1;
+        }
+        if (occurrences > 1) {
+          return 'Invalid: <' +
+            wrapper +
+            '> appears ' +
+            occurrences +
+            ' times inside queueMembers — merge into ONE <' +
+            wrapper +
+            '> block containing all the individual entries.';
+        }
+      }
+
+      // Not every object supports Queue ownership (QueueSobject.SobjectType
+      // is a restricted picklist — e.g. Opportunity is not on it). Checked
+      // here deterministically against live schema, independent of whether
+      // the LLM correctly consulted orgState.existingQueueSupportedObjects,
+      // so this never surfaces as Salesforce's raw "bad value for
+      // restricted picklist field: X" — the LLM gets a clear, actionable
+      // message and a chance to correct/fail cleanly on retry instead.
+      Matcher sobjMatcher = Pattern.compile(
+          '(?is)<sobjectType>\\s*([^<]+?)\\s*</sobjectType>'
+        )
+        .matcher(xmlContent);
+      Set<String> validQueueObjects;
+      while (sobjMatcher.find()) {
+        String requestedObj = sobjMatcher.group(1).trim();
+        if (validQueueObjects == null) {
+          validQueueObjects = new Set<String>();
+          for (
+            Schema.PicklistEntry pe : QueueSobject.SobjectType.getDescribe()
+              .getPicklistValues()
+          ) {
+            if (pe.isActive()) {
+              validQueueObjects.add(pe.getValue());
+            }
+          }
+        }
+        if (!validQueueObjects.contains(requestedObj)) {
+          return 'Invalid: "' +
+            requestedObj +
+            '" does not support Queue ownership in Salesforce. Queues can ' +
+            'only be created for objects that have "Allow queues" enabled ' +
+            '(commonly Case, Lead, Task, and most custom __c objects) — ' +
+            requestedObj +
+            ' is not one of them. Do not deploy this Queue; return a clear ' +
+            'error instead of letting this reach the Metadata API.';
+        }
+      }
+      return null;
+    }
+
     if (metadataType == 'AuthProvider') {
       String baseError = validateRequiredElements(
         xmlContent,
