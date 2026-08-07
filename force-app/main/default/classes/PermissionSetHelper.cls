@@ -621,55 +621,39 @@ public class PermissionSetHelper {
   public static SObject buildAssignment(Map<String, Object> args) {
     String permSetName = getRequired(args, 'permissionSetName');
     String userIdentifier = getRequired(args, 'username');
+    String normalizedPermSetName = normalizeIdentifier(permSetName);
+    String normalizedUserIdentifier = normalizeIdentifier(userIdentifier);
 
     System.debug('PermissionSetHelper.buildAssignment() called');
-    System.debug('permSet=' + permSetName + ', user=' + userIdentifier);
+    System.debug(
+      'permSet=' + normalizedPermSetName + ', user=' + normalizedUserIdentifier
+    );
 
-    List<PermissionSet> permSets = [
-      SELECT Id
-      FROM PermissionSet
-      WHERE Name = :permSetName
-      LIMIT 1
-    ];
-    if (permSets.isEmpty()) {
-      throw new PermissionSetException(
-        'Permission Set not found: ' + permSetName
-      );
-    }
+    PermissionSet resolvedPermSet = resolvePermissionSet(normalizedPermSetName);
+    User resolvedUser = resolveActiveUser(normalizedUserIdentifier);
 
-    List<User> users = [
-      SELECT Id, Username
-      FROM User
-      WHERE
-        (Username = :userIdentifier
-        OR Name = :userIdentifier)
-        AND IsActive = TRUE
-      LIMIT 1
-    ];
-    if (users.isEmpty()) {
-      throw new PermissionSetException(
-        'Active user not found: ' + userIdentifier
-      );
-    }
-
-    System.debug('PermissionSetHelper: found user [' + users[0].Username + ']');
+    System.debug(
+      'PermissionSetHelper: found user [' + resolvedUser.Username + ']'
+    );
 
     List<PermissionSetAssignment> existing = [
       SELECT Id
       FROM PermissionSetAssignment
-      WHERE PermissionSetId = :permSets[0].Id AND AssigneeId = :users[0].Id
+      WHERE
+        PermissionSetId = :resolvedPermSet.Id
+        AND AssigneeId = :resolvedUser.Id
       LIMIT 1
     ];
     if (!existing.isEmpty()) {
       throw new PermissionSetException(
-        permSetName + ' is already assigned to ' + userIdentifier
+        resolvedPermSet.Name + ' is already assigned to ' + resolvedUser.Username
       );
     }
 
     // Build record — NO DML — return to caller
     PermissionSetAssignment assignment = new PermissionSetAssignment();
-    assignment.PermissionSetId = permSets[0].Id;
-    assignment.AssigneeId = users[0].Id;
+    assignment.PermissionSetId = resolvedPermSet.Id;
+    assignment.AssigneeId = resolvedUser.Id;
     System.debug(
       'PermissionSetHelper.buildAssignment(): record built, queued for insert'
     );
@@ -687,46 +671,45 @@ public class PermissionSetHelper {
   public static SObject findAssignment(Map<String, Object> args) {
     String permSetName = getRequired(args, 'permissionSetName');
     String userIdentifier = getRequired(args, 'username');
+    String normalizedPermSetName = normalizeIdentifier(permSetName);
+    String normalizedUserIdentifier = normalizeUserIdentifier(userIdentifier);
 
     System.debug('PermissionSetHelper.findAssignment() called');
-    System.debug('permSet=' + permSetName + ', user=' + userIdentifier);
+    System.debug(
+      'permSet=' + normalizedPermSetName + ', user=' + normalizedUserIdentifier
+    );
 
-    List<PermissionSet> permSets = [
-      SELECT Id
-      FROM PermissionSet
-      WHERE Name = :permSetName
-      LIMIT 1
-    ];
-    if (permSets.isEmpty()) {
-      throw new PermissionSetException(
-        'Permission Set not found: ' + permSetName
-      );
-    }
-
-    List<User> users = [
-      SELECT Id, Username
-      FROM User
-      WHERE
-        (Username = :userIdentifier
-        OR Name = :userIdentifier)
-        AND IsActive = TRUE
-      LIMIT 1
-    ];
-    if (users.isEmpty()) {
-      throw new PermissionSetException(
-        'Active user not found: ' + userIdentifier
-      );
-    }
+    PermissionSet resolvedPermSet = resolvePermissionSet(normalizedPermSetName);
 
     List<PermissionSetAssignment> assignments = [
-      SELECT Id
+      SELECT Id, Assignee.Username, Assignee.Name, Assignee.Alias
       FROM PermissionSetAssignment
-      WHERE PermissionSetId = :permSets[0].Id AND AssigneeId = :users[0].Id
-      LIMIT 1
+      WHERE
+        PermissionSetId = :resolvedPermSet.Id
+        AND (
+          Assignee.Username = :normalizedUserIdentifier
+          OR Assignee.Alias = :normalizedUserIdentifier
+          OR Assignee.Name = :normalizedUserIdentifier
+        )
+      LIMIT 5
     ];
     if (assignments.isEmpty()) {
       throw new PermissionSetException(
-        permSetName + ' is not assigned to ' + userIdentifier
+        resolvedPermSet.Name + ' is not assigned to ' + normalizedUserIdentifier
+      );
+    }
+    if (assignments.size() > 1) {
+      List<String> candidates = new List<String>();
+      for (PermissionSetAssignment psa : assignments) {
+        candidates.add((String) psa.getSObject('Assignee').get('Username'));
+      }
+      throw new PermissionSetException(
+        'Multiple assignees matched [' +
+          normalizedUserIdentifier +
+          '] for permission set [' +
+          resolvedPermSet.Name +
+          ']. Use exact Username. Candidates: ' +
+          String.join(candidates, ', ')
       );
     }
 
@@ -734,6 +717,154 @@ public class PermissionSetHelper {
       'PermissionSetHelper.findAssignment(): record found, queued for delete'
     );
     return assignments[0];
+  }
+
+  private static PermissionSet resolvePermissionSet(String permissionSetIdentifier) {
+    String normalized = normalizeIdentifier(permissionSetIdentifier);
+    Set<String> apiCandidates = new Set<String>{ normalized };
+    if (normalized.contains(' ')) {
+      apiCandidates.add(normalized.replace(' ', '_'));
+    }
+
+    List<PermissionSet> candidates = [
+      SELECT Id, Name, Label
+      FROM PermissionSet
+      WHERE
+        IsOwnedByProfile = FALSE
+        AND (Name IN :apiCandidates OR Label = :normalized)
+      LIMIT 5
+    ];
+
+    if (candidates.isEmpty()) {
+      throw new PermissionSetException(
+        'Permission Set not found: ' + permissionSetIdentifier
+      );
+    }
+
+    for (PermissionSet ps : candidates) {
+      if (ps.Name == normalized) {
+        return ps;
+      }
+    }
+
+    String underscored = normalized.replace(' ', '_');
+    for (PermissionSet ps : candidates) {
+      if (ps.Name == underscored) {
+        return ps;
+      }
+    }
+
+    for (PermissionSet ps : candidates) {
+      if (ps.Label == normalized) {
+        return ps;
+      }
+    }
+
+    return candidates[0];
+  }
+
+  private static User resolveActiveUser(String userIdentifier) {
+    String normalized = normalizeUserIdentifier(userIdentifier);
+
+    List<User> usersByUsername = [
+      SELECT Id, Username, Name, Alias
+      FROM User
+      WHERE IsActive = TRUE AND Username = :normalized
+      LIMIT 1
+    ];
+    if (!usersByUsername.isEmpty()) {
+      return usersByUsername[0];
+    }
+
+    List<User> usersByAlias = [
+      SELECT Id, Username, Name, Alias
+      FROM User
+      WHERE IsActive = TRUE AND Alias = :normalized
+      LIMIT 1
+    ];
+    if (!usersByAlias.isEmpty()) {
+      return usersByAlias[0];
+    }
+
+    List<User> usersByName = [
+      SELECT Id, Username, Name, Alias
+      FROM User
+      WHERE IsActive = TRUE AND Name = :normalized
+      LIMIT 2
+    ];
+    if (usersByName.isEmpty()) {
+      throw new PermissionSetException('Active user not found: ' + userIdentifier);
+    }
+    if (usersByName.size() > 1) {
+      throw new PermissionSetException(
+        'Multiple active users match name [' +
+          normalized +
+          ']. Use exact Username in the ticket.'
+      );
+    }
+    return usersByName[0];
+  }
+
+  private static String normalizeUserIdentifier(String rawValue) {
+    String normalized = normalizeIdentifier(rawValue);
+    if (String.isBlank(normalized)) {
+      return normalized;
+    }
+
+    String lower = normalized.toLowerCase();
+    List<String> prefixes = new List<String>{
+      'username:',
+      'user name:',
+      'user:',
+      'assignee:'
+    };
+    for (String prefix : prefixes) {
+      if (lower.startsWith(prefix)) {
+        normalized = normalizeIdentifier(normalized.substring(prefix.length()));
+        lower = normalized != null ? normalized.toLowerCase() : null;
+        break;
+      }
+    }
+
+    while (String.isNotBlank(normalized)) {
+      String last = normalized.substring(normalized.length() - 1);
+      if (last == '.' || last == ',' || last == ';' || last == ':') {
+        normalized = normalized.substring(0, normalized.length() - 1).trim();
+      } else {
+        break;
+      }
+    }
+
+    return normalized;
+  }
+
+  private static String normalizeIdentifier(String rawValue) {
+    if (String.isBlank(rawValue)) {
+      return rawValue;
+    }
+
+    String normalized = rawValue.trim();
+    while (normalized.length() >= 2) {
+      String first = normalized.substring(0, 1);
+      String last = normalized.substring(normalized.length() - 1);
+      if (isWrappingQuote(first) && isWrappingQuote(last)) {
+        normalized = normalized.substring(1, normalized.length() - 1).trim();
+      } else {
+        break;
+      }
+    }
+    return normalized;
+  }
+
+  private static Boolean isWrappingQuote(String ch) {
+    return
+      ch == '\'' ||
+      ch == '"' ||
+      ch == '`' ||
+      ch == '‘' ||
+      ch == '’' ||
+      ch == '“' ||
+      ch == '”';
   }
 
   // ─────────────────────────────────────────────────────────────

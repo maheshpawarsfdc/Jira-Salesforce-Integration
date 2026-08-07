@@ -173,11 +173,36 @@ public class LLMResponseProcessor {
         }
       }
 
+      // Guardrail: permission-set update/verification tickets are frequently
+      // phrased as "already exists" but still require real delta work.
+      // If intent indicates update-only changes on an existing PermissionSet,
+      // do not allow the existence gate to short-circuit as "all satisfied".
+      if (
+        allSatisfied &&
+        shouldForcePermissionSetUpdateWork(summary, description, verifiedItems)
+      ) {
+        allSatisfied = false;
+        for (Map<String, Object> vi : verifiedItems) {
+          String vt = (String) vi.get('type');
+          if ('PermissionSet'.equalsIgnoreCase(vt)) {
+            vi.put('existsAlready', false);
+          }
+        }
+      }
+
       String gateSummary = (String) parsed.get('summary');
       if (String.isBlank(gateSummary)) {
         gateSummary = allSatisfied
           ? 'All requested metadata already exists in the org — nothing to deploy.'
           : 'Some requested metadata is new — proceeding with deployment.';
+      }
+
+      if (
+        !allSatisfied &&
+        shouldForcePermissionSetUpdateWork(summary, description, verifiedItems)
+      ) {
+        gateSummary =
+          'Existing Permission Set detected, but ticket requests pending permission updates/verification — proceeding with update workflow.';
       }
 
       System.debug(
@@ -480,6 +505,74 @@ public class LLMResponseProcessor {
       }
     }
     return false;
+  }
+
+  private static Boolean shouldForcePermissionSetUpdateWork(
+    String summary,
+    String description,
+    List<Map<String, Object>> verifiedItems
+  ) {
+    Boolean hasPermissionSetItem = false;
+    if (verifiedItems != null) {
+      for (Map<String, Object> it : verifiedItems) {
+        String t = (String) it.get('type');
+        if ('PermissionSet'.equalsIgnoreCase(t)) {
+          hasPermissionSetItem = true;
+          break;
+        }
+      }
+    }
+    if (!hasPermissionSetItem) {
+      return false;
+    }
+
+    String text =
+      (String.isBlank(summary) ? '' : summary + ' ') +
+      (String.isBlank(description) ? '' : description);
+    String lower = text.toLowerCase();
+
+    Boolean mentionsPermissionSet =
+      lower.contains('permission set') ||
+      lower.contains('permissionset') ||
+      lower.contains('jira_integration_access');
+
+    if (!mentionsPermissionSet) {
+      return false;
+    }
+
+    Boolean updateIntent =
+      lower.contains('update') ||
+      lower.contains('modify') ||
+      lower.contains('change') ||
+      lower.contains('assign') ||
+      lower.contains('assignment') ||
+      lower.contains('reassign') ||
+      lower.contains('unassign') ||
+      lower.contains('remove assignment') ||
+      lower.contains('add permission set to user') ||
+      lower.contains('permission set assignment') ||
+      lower.contains('grant') ||
+      lower.contains('revoke') ||
+      lower.contains('temporary users') ||
+      lower.contains('test users') ||
+      lower.contains('object permission') ||
+      lower.contains('field permission') ||
+      lower.contains('fls') ||
+      lower.contains('verify') ||
+      lower.contains('org state') ||
+      lower.contains('not confirmed') ||
+      lower.contains('not yet satisfied') ||
+      lower.contains('pending');
+
+    Boolean existingOnlyIntent =
+      lower.contains('already exists') ||
+      lower.contains('existing permission set') ||
+      lower.contains('no new metadata') ||
+      lower.contains('no new metadata component') ||
+      lower.contains('update-only') ||
+      lower.contains('update only');
+
+    return updateIntent || existingOnlyIntent;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -2091,7 +2184,48 @@ public class LLMResponseProcessor {
               pse.getMessage()
           );
         }
-      } else if (opType == 'permissionSetRemove') {
+      } else if (opType == 'userCreate') {
+        String username = (String) op.get('username');
+        String firstName = (String) op.get('firstName');
+        String lastName = (String) op.get('lastName');
+        String alias = (String) op.get('alias');
+        String email = (String) op.get('email');
+        String profileName = (String) op.get('profileName');
+        String timeZoneSidKey = (String) op.get('timeZoneSidKey');
+        String localeSidKey = (String) op.get('localeSidKey');
+        String emailEncodingKey = (String) op.get('emailEncodingKey');
+        String languageLocaleKey = (String) op.get('languageLocaleKey');
+        try {
+          SObject userRecord = UserHelper.buildUser(
+            new Map<String, Object>{
+              'username' => username,
+              'firstName' => firstName,
+              'lastName' => lastName,
+              'alias' => alias,
+              'email' => email,
+              'profileName' => profileName,
+              'timeZoneSidKey' => timeZoneSidKey,
+              'localeSidKey' => localeSidKey,
+              'emailEncodingKey' => emailEncodingKey,
+              'languageLocaleKey' => languageLocaleKey
+            }
+          );
+          FunctionHelper.recordsToInsert.add(userRecord);
+          System.debug(
+            'processDmlOperations: queued user create [' + username + ']'
+          );
+        } catch (UserHelper.UserHelperException uhe) {
+          System.debug(
+            'processDmlOperations: SKIPPED userCreate [' +
+              username +
+              '] — ' +
+              uhe.getMessage()
+          );
+        }
+      } else if (
+        opType == 'permissionSetRemove' ||
+        opType == 'permissionSetUnassign'
+      ) {
         String psName = (String) op.get('permissionSetName');
         String username = (String) op.get('username');
         try {
@@ -2178,6 +2312,17 @@ public class LLMResponseProcessor {
             opType +
             '] for Permission Set. ' +
             'Use files[] PermissionSet XML for create/update/delete and keep only permissionSetClone in dmlOperations.'
+        );
+      } else if (
+        String.isNotBlank(opType) &&
+        opType.startsWith('user') &&
+        opType != 'userCreate'
+      ) {
+        FunctionHelper.hadError = true;
+        throw new LLMService.LLMException(
+          'Unsupported dmlOperations type [' +
+            opType +
+            '] for User. Use userCreate for creating temporary users and keep assignment/removal operations separate.'
         );
       } else if (opType == 'profileClone') {
         String sourceProfileName = (String) op.get('sourceProfileName');

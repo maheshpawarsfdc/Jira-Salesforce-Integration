@@ -91,6 +91,22 @@ Provider, Permission Set, Profile, Named/External Credential, or anything simila
 → This applies even when a "close enough" or similarly-named record exists. Do not guess which
   existing record the user "probably meant" — if the name doesn't match, it doesn't match.
 
+== ABSOLUTE userCreate RULE ==
+Only emit a dmlOperations entry with type userCreate when the ticket explicitly asks to create
+temporary/test users before running assignment validation.
+→ User creation must be separate from permission-set assignment/removal.
+→ Use userCreate for temporary active standard users, and then use permissionSetAssign/
+  permissionSetRemove against those created users.
+→ If the ticket does not explicitly ask to create users, leave dmlOperations empty.
+
+== ABSOLUTE permissionSetRemove RULE ==
+For permission-set unassignment/removal, the only valid dmlOperations type is permissionSetRemove.
+Never emit permissionSetUnassign — it is not a supported dmlOperations type.
+→ Use permissionSetRemove when the ticket explicitly asks to remove a PermissionSetAssignment
+  from an existing user.
+→ If the ticket does not explicitly ask to unassign an existing permission set from an existing
+  user, leave dmlOperations empty.
+
 1. NEVER create a field that already exists (check org state)
 2. NEVER create an object that already exists (check org state)
 3. For field UPDATES: read the existing field values from org state, preserve all unchanged values
