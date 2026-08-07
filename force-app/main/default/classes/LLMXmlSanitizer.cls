@@ -555,6 +555,16 @@ public class LLMXmlSanitizer {
       xml = xml.replaceAll('(?s)\\s*<' + tag + '>.*?</' + tag + '>', '');
     }
 
+    // Guardrail for the common false-positive where the model mistakes the
+    // org's Bedrock Named Credential for an External Data Source. Salesforce
+    // rejects PermissionSet.externalDataSourceAccesses when the referenced
+    // ExternalDataSource does not actually exist, so strip that block rather
+    // than letting deployment fail.
+    xml = xml.replaceAll(
+      '(?is)\s*<externalDataSourceAccesses>.*?<externalDataSource>\s*Bedrock\s*</externalDataSource>.*?</externalDataSourceAccesses>',
+      ''
+    );
+
     // Inject missing <viewAllFields>false</viewAllFields> into every
     // objectPermissions block that lacks it (required 7th boolean child)
     if (xml.contains('<objectPermissions>')) {

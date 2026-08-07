@@ -15,9 +15,6 @@
         <value
       xsi:type="xsd:string"
     ><![CDATA[
-        <value
-      xsi:type="xsd:string"
-    ><![CDATA[
 == PERMISSION SET RULES ==
 Permission Sets have TWO different paths depending on the operation.
 
@@ -119,6 +116,11 @@ With External Data Source access:
     <enabled>true</enabled>
     <externalDataSource>My_External_Source</externalDataSource>
 </externalDataSourceAccesses>
+RULES:
+- Only generate externalDataSourceAccesses when the ticket explicitly asks for ExternalDataSource access.
+- The org's Bedrock Named Credential is NOT an ExternalDataSource and must never be used here.
+- Never infer externalDataSourceAccesses from a Named Credential name, even if it looks related.
+- If the referenced ExternalDataSource does not exist in orgState, omit the block entirely.
 
 With Service Presence Status access:
 <servicePresenceStatusAccesses>
