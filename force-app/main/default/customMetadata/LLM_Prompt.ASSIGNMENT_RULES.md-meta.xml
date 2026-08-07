@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Assignment Rules</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == ASSIGNMENT RULES XML FORMAT ==
 There are TWO assignment rule files — one per object:
   Lead rules → assignmentRules/Lead.assignmentRules  (memberName: Lead)
@@ -37,6 +43,12 @@ ALL rules for the same object go into ONE file — never split them.
             <assignedToType>Queue</assignedToType>
             <formula>ISBLANK( Email )</formula>
         </ruleEntry>
+        <!-- ruleEntry with NO criteria at all — catches everything not matched above.
+             See CATCH-ALL section below. MUST be the last ruleEntry in the block. -->
+        <ruleEntry>
+            <assignedTo>Lead_Queue</assignedTo>
+            <assignedToType>Queue</assignedToType>
+        </ruleEntry>
     </assignmentRule>
 </AssignmentRules>
 
@@ -48,7 +60,47 @@ ALL rules for the same object go into ONE file — never split them.
 - ALL rules for the same object go in ONE file with multiple <assignmentRule> blocks
 - Each <assignmentRule> has <fullName>, <active>, and one or more <ruleEntry> blocks
 - <criteriaItems> and <formula> are mutually exclusive per ruleEntry — never use both
-- Multiple <criteriaItems> in one ruleEntry = AND logic; separate <ruleEntry> blocks = OR logic
+
+-- RULE ENTRY ORDER (CRITICAL) --
+- <ruleEntry> blocks are evaluated TOP TO BOTTOM at runtime. A record is assigned by the
+  FIRST entry whose criteria match, and evaluation stops there — later entries never see that
+  record. Always emit specific/narrow entries FIRST and any catch-all/default entry LAST.
+
+-- CATCH-ALL / "ALL REMAINING" / "EVERYONE ELSE" ENTRIES (CRITICAL) --
+When the ticket describes a default bucket — "all remaining Leads", "everyone else", "any
+other [value]", "anything not covered above" — represent it as a <ruleEntry> with NO
+<criteriaItems>, NO <formula>, and NO <booleanFilter>: just <assignedTo> and
+<assignedToType>. An empty-criteria ruleEntry matches every record that reaches it, which
+(combined with rule-entry order above) is exactly "all remaining" — this entry MUST be the
+LAST <ruleEntry> in the <assignmentRule>.
+- NEVER emulate "all remaining" by building a formula/booleanFilter that negates every other
+  branch (e.g. chaining NOT(...) AND NOT(...) AND ... once per other value). This is the most
+  common cause of "Syntax error. Extra AND" / "Extra OR" deploy failures on this metadata
+  type: the negated list gets built by iterating the other branches and an operator is left
+  dangling at the end with nothing after it to join. It's also unnecessary — an empty-criteria
+  last entry does the same job with no formula at all.
+- Worked example — ticket: "Web → Mahesh Pawar, Partner Referral → Sales Lead Queue,
+  Purchased List → Integration User, all remaining → Lead Queue":
+  WRONG (produces "Extra AND" on deploy):
+    <formula>NOT(ISPICKVAL(LeadSource,'Web')) AND NOT(ISPICKVAL(LeadSource,'Partner Referral')) AND NOT(ISPICKVAL(LeadSource,'Purchased List')) AND</formula>
+  CORRECT: emit three <ruleEntry> blocks with <criteriaItems> for Web / Partner Referral /
+  Purchased List (in that order), then a fourth <ruleEntry> with no criteria at all assigned
+  to Lead Queue, placed last.
+
+-- BOOLEAN FILTER (only when a ruleEntry genuinely needs OR / mixed logic) --
+- Default (no <booleanFilter> present) = AND across all <criteriaItems> in that ruleEntry.
+  Multiple <criteriaItems> in one ruleEntry with no booleanFilter = AND; separate <ruleEntry>
+  blocks = OR between whole rules.
+- Only add <booleanFilter> when the ticket explicitly needs OR or a mix within a SINGLE
+  ruleEntry (e.g. "A or B, both also requiring C"). Its value is a 1-indexed expression
+  referencing <criteriaItems> by position, e.g. "1 OR 2" or "1 AND (2 OR 3)".
+- The indexes used MUST exactly match the number of <criteriaItems> present in that same
+  ruleEntry — every index 1..N appears exactly once, joined by AND/OR between them.
+- NEVER leave a trailing or leading AND/OR, NEVER emit two operators back to back, and NEVER
+  reference an index that doesn't exist — Salesforce reports these as "Syntax error. Extra
+  AND", "Extra OR", or "Number of criteria doesn't match".
+- If every ruleEntry in the file only needs plain AND (the common case, including the
+  single-criterion case), omit <booleanFilter> entirely — don't add it "just in case".
 
 -- ACTIVE RULE --
 - Only ONE rule per object can be active=true at a time
@@ -57,8 +109,15 @@ ALL rules for the same object go into ONE file — never split them.
 
 -- ASSIGNED TO --
 - assignedToType: User or Queue
-- If User: assignedTo = exact username (email format) — NEVER fabricate usernames
-- If Queue: assignedTo = Queue DeveloperName (e.g. Lead_Queue, Support_Queue)
+- If User: match the ticket's person name against orgState.existingUsers by Name and use that
+  user's exact username (email format) as the value — NEVER fabricate or guess a username.
+  If no match is found, do NOT deploy a guessed value — return an error in summary naming the
+  unresolved person instead.
+- If Queue: assignedTo = Queue DeveloperName, NOT its display label (e.g. "Sales Lead Queue"
+  → Sales_Lead_Queue). Match against orgState.existingQueues by name/label to get the real
+  DeveloperName rather than transforming the label yourself — a guessed DeveloperName that
+  doesn't exist in the org fails deploy with "no Queue named X found". If no match is found,
+  do NOT guess — return an error in summary naming the unresolved queue instead.
 
 -- CRITERIA ITEMS --
 - field format: ObjectName.FieldApiName (e.g. Lead.Country, Case.Status)
@@ -68,12 +127,45 @@ ALL rules for the same object go into ONE file — never split them.
 -- FORMULA --
 - ALWAYS XML-escape formula characters: < → &lt; > → &gt; & → &amp;
 - Example: ISBLANK( Email ), NOT(ISBLANK( Country__c ))
+- Before emitting any formula built by joining multiple conditions (AND/OR), re-read it and
+  confirm it ends in a condition, not a trailing operator, and that no two operators appear
+  back to back — a dangling AND/OR is the direct cause of "Syntax error. Extra AND"/"Extra OR"
+  deploy failures (see the CATCH-ALL section above for the most common way this happens).
 
 -- CREATE / UPDATE / DELETE --
-- Always preserve ALL existing rules when modifying — never drop existing rules
-- For DELETE a specific rule: Regenerate COMPLETE file for that object EXCLUDING the deleted rule
-- Salesforce does NOT support deleting AssignmentRules via destructiveFiles — always regenerate the whole file
-- To delete ALL rules: deploy an EMPTY AssignmentRules file (no <assignmentRule> elements inside)]]></value>
+- For CREATE or UPDATE tickets: preserve ALL existing rules exactly as they are — never drop
+  or alter a rule the ticket didn't mention, just because the whole file is being regenerated.
+- CRITICAL — DELETING AN EXISTING ASSIGNMENT RULE IS NOT POSSIBLE THROUGH ANY MECHANISM THIS
+  TOOL HAS ACCESS TO. This was verified directly against a live org, not assumed: regenerating
+  the file with the target rule's <assignmentRule> block omitted does NOT remove it, deploying
+  a destructiveFiles/destructiveChanges entry for it does NOT remove it (delete() isn't
+  supported for this type), and deploying a completely EMPTY AssignmentRules file does NOT
+  remove ANY existing rule either — a live test confirmed all existing rules were still present
+  and unchanged afterward. Salesforce's Metadata API deploy for this type only ever ADDS a new
+  named rule or UPDATES one already named in the file; anything already in the org that the
+  deployed file simply doesn't mention is left completely untouched, no matter how the file is
+  built. The ONLY way to actually remove an assignment rule is a human clicking "Del" next to
+  it in Setup → Lead/Case Assignment Rules — there is no API path to it at all.
+- Therefore, when a ticket asks to DELETE or remove one or more assignment rules:
+  → Do NOT generate a "files" entry or a "destructiveFiles" entry for the rule(s) to be
+    deleted — there is nothing deployable that accomplishes this, and generating XML that
+    looks like a valid regeneration would misreport the deletion as done when it silently
+    isn't (this happened repeatedly before this limitation was confirmed).
+  → Set the summary to plainly state which rule(s) cannot be deleted and why, e.g.: "Salesforce
+    does not support deleting Assignment Rules via the Metadata API — 'Email Domain Routing'
+    must be removed manually via Setup → Lead Assignment Rules → Del." Do not phrase this as a
+    generic failure — say specifically that it's a Salesforce platform limitation, not a
+    mistake in the request.
+  → If the SAME ticket also asks for other changes that ARE achievable (e.g. "delete rule X
+    and activate rule Y"), still generate and deploy those other changes normally — only the
+    deletion portion is impossible, and it must not block unrelated achievable work in the
+    same ticket.
+  → Deactivating a rule (<active>false</active>) is a real, achievable, different action from
+    deleting it — do NOT silently substitute deactivation when the ticket explicitly says
+    delete/remove. Only treat "remove" as deactivation if the ticket's own wording is
+    genuinely ambiguous between "stop it from running" and "delete the record" — and even
+    then, say in the summary that you interpreted it as deactivation and why, so the requester
+    can correct you if that's not what they meant.]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>
@@ -89,10 +181,12 @@ ALL rules for the same object go into ONE file — never split them.
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Assignment Rules XML for Lead and Case with criteria and formula entries</value>
+        <value
+      xsi:type="xsd:string"
+    >Assignment Rules XML for Lead and Case with criteria and formula entries</value>
     </values>
 </CustomMetadata>

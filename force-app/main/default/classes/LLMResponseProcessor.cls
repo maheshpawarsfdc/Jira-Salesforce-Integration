@@ -91,12 +91,30 @@ public class LLMResponseProcessor {
       Boolean allSatisfied = (items != null && !items.isEmpty());
       List<Map<String, Object>> verifiedItems = new List<Map<String, Object>>();
 
+      // Deterministic backstop for delete-intent — do NOT rely solely on
+      // the LLM's per-item "action" field. It's a brand-new schema field;
+      // the same model already got the *existsAlready* delete-inversion
+      // wrong once on this exact kind of ticket (see comment below), so
+      // there is no reason to trust a second, equally subtle field to be
+      // populated reliably every time. Ticket text itself ("Delete the
+      // Email Domain Routing", "...should also be removed from
+      // Salesforce") is a far more reliable signal and costs nothing to
+      // check directly against the raw summary/description Apex already
+      // has in hand.
+      Boolean ticketLooksLikeDelete =
+        containsDeleteWording(summary) || containsDeleteWording(description);
+
       if (items != null) {
         for (Object rawItem : items) {
           Map<String, Object> item = (Map<String, Object>) rawItem;
           String itype = (String) item.get('type');
           String iname = (String) item.get('name');
+          String iaction = (String) item.get('action');
           Boolean claimedExists = item.get('existsAlready') == true;
+          Boolean isDelete =
+            ticketLooksLikeDelete ||
+            'delete'.equalsIgnoreCase(iaction) ||
+            'remove'.equalsIgnoreCase(iaction);
           // verifyItemExists() only does a name/identity lookup — it has no
           // way to know WHAT attribute (a label, a formula, etc.) the ticket
           // wants changed on an already-existing component, so it can only
@@ -107,9 +125,40 @@ public class LLMResponseProcessor {
           // requested label yet". A wrongly-kept "false" only costs an
           // unnecessary regeneration; a wrongly-forced "true" causes a
           // silent skip of real work, which is the failure that matters.
-          Boolean verifiedExists = claimedExists
-            ? verifyItemExists(itype, iname, orgState, claimedExists)
-            : false;
+          //
+          // DELETE items invert this: "satisfied" means the component is
+          // ABSENT from org state, not present. verifyItemExists() always
+          // reports raw presence for every type it has ground truth for
+          // (it ignores the claimedExists arg in every branch except the
+          // unmapped-type fallback), so for a delete item we must flip that
+          // presence result rather than treat it as confirmation — otherwise
+          // a component the ticket wants deleted, which is still sitting
+          // right there in org state, gets read as "exists=true" the same
+          // way a create/update item would, silently marking the delete as
+          // already done (allSatisfied=true, ticket skipped, nothing ever
+          // deleted). This was a real incident: "delete the Email Domain
+          // Routing assignment rule" got skipped with summary text that
+          // itself said deletion was still required, because the boolean
+          // this loop actually acts on didn't get inverted for delete.
+          Boolean verifiedExists;
+          if (!claimedExists) {
+            verifiedExists = false;
+          } else if (isDelete) {
+            Boolean stillPresent = verifyItemExists(
+              itype,
+              iname,
+              orgState,
+              claimedExists
+            );
+            verifiedExists = !stillPresent;
+          } else {
+            verifiedExists = verifyItemExists(
+              itype,
+              iname,
+              orgState,
+              claimedExists
+            );
+          }
 
           if (!verifiedExists) {
             allSatisfied = false;
@@ -152,6 +201,20 @@ public class LLMResponseProcessor {
       // Fail-safe: any error in the gate must NOT block real work.
       return new Map<String, Object>{ 'allSatisfied' => false };
     }
+  }
+
+  // Deterministic, LLM-independent check for delete/remove wording in raw
+  // ticket text — see call site in runExistenceGateStage() for why this
+  // exists as a backstop rather than trusting a model-populated field.
+  private static Boolean containsDeleteWording(String text) {
+    if (String.isBlank(text)) {
+      return false;
+    }
+    String lower = text.toLowerCase();
+    return Pattern.matches(
+      '(?s).*\\b(delete|deletion|deleting|remove|removal|removing|destroy|destroying)\\b.*',
+      lower
+    );
   }
 
   // ─────────────────────────────────────────────────────────────
