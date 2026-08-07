@@ -1817,6 +1817,32 @@ public class LLMResponseProcessor {
     }
 
     String summary = (String) parsed.get('summary');
+
+    // Nothing was actually deployed or executed: no files, no destructive
+    // changes, no DML operations. By the time execution reaches here, the
+    // Existence Gate (LLMService STAGE 1.6) has already handled the
+    // legitimate "everything already exists, nothing new to do" case with
+    // its own 'skipped' status — so an all-empty result reaching this point
+    // means the ticket could NOT be completed (e.g. an unresolvable named
+    // reference per the ABSOLUTE NAME-RESOLUTION RULE) and the LLM is only
+    // returning an explanatory summary. That must never be reported back to
+    // Jira as a plain success (a green checkmark implies the ticket's
+    // request was fulfilled, which it wasn't) — flag it so LLMService posts
+    // it as 'error' instead.
+    Boolean nothingWasDone =
+      (files == null || files.isEmpty()) &&
+      (destructiveFiles == null || destructiveFiles.isEmpty()) &&
+      (nonCloneOps == null || nonCloneOps.isEmpty());
+    if (nothingWasDone) {
+      FunctionHelper.hadError = true;
+      System.debug(
+        '[DEPLOY-TRACE] processXmlGenerationResponse: no files/destructiveFiles/' +
+          'dmlOperations generated — flagging hadError so this reports as ' +
+          'incomplete, not success. Summary: ' +
+          summary
+      );
+    }
+
     return String.isNotBlank(summary)
       ? summary
       : 'Changes staged for deployment.';

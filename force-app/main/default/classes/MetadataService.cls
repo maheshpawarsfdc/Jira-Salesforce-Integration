@@ -974,12 +974,21 @@ public class MetadataService {
         public String type = 'Queue';
         public String fullName;
         private String[] fullName_type_info = new String[]{'fullName',SOAP_M_URI,null,'0','1','false'};
+        // doesIncludeBosses was missing from this WSDL2Apex binding entirely —
+        // Salesforce's real Queue schema does have this field (maps to
+        // "Grant Access Using Hierarchies" in Setup UI), and it's returned by
+        // readMetadata whenever a queue has it set. Without this field defined,
+        // ANY readMetadata('Queue', ...) call throws "Apex type not found for
+        // element doesIncludeBosses" the moment a queue's value for it is
+        // non-default, breaking retrieval entirely — not just this one field.
+        public Boolean doesIncludeBosses;
         public Boolean doesSendEmailToMembers;
         public String email;
         public String name;
         public MetadataService.QueueMembers queueMembers;
         public String queueRoutingConfig;
         public MetadataService.QueueSobject[] queueSobject;
+        private String[] doesIncludeBosses_type_info = new String[]{'doesIncludeBosses',SOAP_M_URI,null,'0','1','false'};
         private String[] doesSendEmailToMembers_type_info = new String[]{'doesSendEmailToMembers',SOAP_M_URI,null,'0','1','false'};
         private String[] email_type_info = new String[]{'email',SOAP_M_URI,null,'0','1','false'};
         private String[] name_type_info = new String[]{'name',SOAP_M_URI,null,'1','1','false'};
@@ -988,7 +997,7 @@ public class MetadataService {
         private String[] queueSobject_type_info = new String[]{'queueSobject',SOAP_M_URI,null,'0','-1','false'};
         private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
         private String[] type_att_info = new String[]{'xsi:type'};
-        private String[] field_order_type_info = new String[]{'fullName', 'doesSendEmailToMembers','email','name','queueMembers','queueRoutingConfig','queueSobject'};
+        private String[] field_order_type_info = new String[]{'fullName', 'doesIncludeBosses','doesSendEmailToMembers','email','name','queueMembers','queueRoutingConfig','queueSobject'};
     }
     public class CleanDataService {
         public MetadataService.CleanRule[] cleanRules;

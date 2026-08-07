@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Queue</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
 == QUEUE RULES ==
 File path: queues/QueueApiName.queue
 metadataType: Queue
@@ -17,12 +23,13 @@ memberName: QueueApiName
 CRITICAL — ELEMENT ORDER (Salesforce rejects wrong order):
 <?xml version="1.0" encoding="UTF-8"?>
 <Queue xmlns="http://soap.sforce.com/2006/04/metadata">
+    <doesIncludeBosses>false</doesIncludeBosses>
     <doesSendEmailToMembers>false</doesSendEmailToMembers>
     <!-- email: include ONLY when explicitly provided -->
     <email>queue@example.com</email>
     <name>Queue Display Name</name>
     <queueMembers>
-        <!-- Include <users> only when explicit real usernames are provided in ticket -->
+        <!-- see QUEUE MEMBER STRUCTURE below -->
     </queueMembers>
     <queueRoutingConfig>RoutingConfigApiName</queueRoutingConfig>
     <queueSobject>
@@ -31,28 +38,152 @@ CRITICAL — ELEMENT ORDER (Salesforce rejects wrong order):
 </Queue>
 
 MANDATORY ELEMENT ORDER:
-  1. doesSendEmailToMembers
-  2. email              (optional — omit entirely if not provided)
-  3. name
-  4. queueMembers       (optional — omit entirely if no members)
-  5. queueRoutingConfig (optional — omit entirely if not provided)
-  6. queueSobject       (one block per object — at least one required)
+  1. doesIncludeBosses   ("Grant Access Using Hierarchies" in Setup UI — see rule below, this
+                          is REQUIRED on every create/update, never omit it)
+  2. doesSendEmailToMembers
+  3. email              (optional — omit entirely if not provided)
+  4. name
+  5. queueMembers       (optional — omit entirely if no members)
+  6. queueRoutingConfig (optional — omit entirely if not provided)
+  7. queueSobject       (one block per object — at least one required)
 
-CRITICAL — QUEUE MEMBER RULE:
-<user> tags MUST only contain usernames explicitly stated in the ticket in email format.
-If ticket says "Sales Users", "Support Users", "Team Members" or any non-email description:
-  → NEVER convert them to email format
-  → OMIT the <users> block entirely
-  → If a matching public group exists in orgState existingGroups, use <publicGroups> instead
-Only put values inside <user> tags that look exactly like: firstname.lastname@company.com
+CRITICAL — NOT EVERY OBJECT SUPPORTS QUEUE OWNERSHIP:
+Not every standard object can be a Supported Object on a Queue — e.g. Opportunity does NOT
+support Queues (there is no such thing as an "Opportunity queue" in Salesforce). Before
+generating any <queueSobject> block, check EVERY object the ticket lists against
+orgState.existingQueueSupportedObjects — this is the org's real, live list of objects that
+support Queue ownership (Case, Lead, Task, and most custom __c objects are typically on it;
+many standard objects, including Opportunity, Account, Contact, are NOT).
+- If an object IS in that list, generate its <queueSobject> block normally.
+- If an object is NOT in that list, this is a HARD FAILURE for the entire ticket — do NOT
+  generate any files. Return an error in summary stating plainly, e.g.: "Opportunity does not
+  support Queue ownership in Salesforce — Queues can only be created for Case, Lead, Task, and
+  supported custom objects. This ticket cannot be completed as requested." Do NOT let this
+  surface as Salesforce's raw deploy error ("bad value for restricted picklist field") — catch
+  it here with a clear explanation instead.
+- If orgState.existingQueueSupportedObjects is entirely absent (older org-state snapshot),
+  fall back to only allowing Case, Lead, Task, and any object ending in __c, and note in
+  summary that the full supported-object list wasn't available to verify against.
+
+CRITICAL — doesIncludeBosses VALUE ("Grant Access Using Hierarchies"):
+This IS a valid, real Queue element — it is REQUIRED on every generated Queue file, the same
+way doesSendEmailToMembers is. Never omit it: Salesforce resets an omitted boolean to its
+default (false) on every deploy, so leaving it out silently UNCHECKS "Grant Access Using
+Hierarchies" even when the ticket never mentioned it — this has actually happened. Resolve its
+value the same way as doesSendEmailToMembers:
+- If the ticket explicitly asks to enable/disable it ("Grant Access Using Hierarchies"), use
+  that value.
+- Otherwise, for an UPDATE, use the CURRENT value from orgState.existingQueues[].doesIncludeBosses
+  to preserve it exactly as-is.
+- For a brand-new CREATE with no existingQueues entry and no ticket guidance, default to false.
+
+CRITICAL — queueRoutingConfig VALUE:
+This must be the routing config's DeveloperName, NOT its display MasterLabel. Match the
+ticket's routing configuration text against orgState.existingQueueRoutingConfigs by
+masterLabel, and use that record's developerName as the value — DeveloperNames never contain
+spaces, so using the label text directly fails deploy with "no QueueRoutingConfig named X
+found". Generic pattern: masterLabel "Example Routing Config" → developerName
+"Example_Routing_Config" → <queueRoutingConfig>Example_Routing_Config</queueRoutingConfig>.
+If no match is found in orgState, do NOT guess a transformed name AND do NOT substitute a
+DIFFERENT existing routing config from the list just because it's real. Even though
+queueRoutingConfig is an OPTIONAL element in the Queue schema, if the TICKET explicitly asked
+for a specific routing configuration, silently omitting it and deploying the rest of the queue
+anyway means the ticket's explicit request was silently dropped — that is still a failure to
+do what was asked, even if the deploy itself "succeeds". Treat an unresolvable
+ticket-requested routing config as a HARD FAILURE for the ENTIRE ticket:
+→ Do NOT generate the Queue file (or any other files in this response)
+→ Return an error in summary explicitly naming the unresolved routing config text and stating
+  no matching Queue Routing Configuration exists in the org — the routing config must be
+  created first, or the ticket corrected, before this can proceed
+→ Do NOT deploy a partial Queue (e.g. one missing only the routing config) and call it done
+Example: ticket asks for "Support Routing", orgState.existingQueueRoutingConfigs only has
+"Agent config" and "Skill Bases routing" — neither matches, so NOTHING should be deployed;
+summary must state "Support Routing" was not found and the ticket cannot be completed as-is.
+
+CRITICAL — UPDATING queueRoutingConfig (or ANY field given as an Existing/Updated pair):
+When a ticket lists a field as "Existing: X, Updated: Y" (or similarly phrased before/after),
+the value you deploy MUST be resolved from Y (the Updated/new side), NEVER from X (the
+Existing/old side) — this applies to every such field, not just queueRoutingConfig. Do not
+let the old value "win" just because it's also mentioned in the ticket, or because an old
+value happens to resemble an example shown elsewhere in this prompt — always re-derive the
+NEW value's resolution independently. Worked example:
+  Ticket: "Routing Configuration: Existing = Example Routing Config, Updated = Other Routing Config"
+  orgState.existingQueueRoutingConfigs contains both masterLabels.
+  WRONG:   <queueRoutingConfig>Example_Routing_Config</queueRoutingConfig>  (this is the OLD value — do not deploy this)
+  CORRECT: <queueRoutingConfig>Other_Routing_Config</queueRoutingConfig>    (resolved from the Updated value)
+
+CRITICAL — QUEUE MEMBER STRUCTURE:
+There are FIVE distinct member-type wrappers. EACH wrapper appears AT MOST ONCE inside
+<queueMembers>, holding MULTIPLE inner elements for multiple members of that type — NEVER
+repeat the same wrapper tag. Salesforce rejects a repeated wrapper with:
+"Element roles is duplicated at this location in type QueueMembers" (or users/publicGroups/etc).
+
+<queueMembers>
+    <users>
+        <user>alice@company.com</user>
+        <user>bob@company.com</user>
+    </users>
+    <publicGroups>
+        <publicGroup>Sales_Team</publicGroup>
+    </publicGroups>
+    <roles>
+        <role>Customer_Support_International</role>
+    </roles>
+    <roleAndSubordinates>
+        <roleAndSubordinate>Some_Role_External_Inclusive</roleAndSubordinate>
+    </roleAndSubordinates>
+    <roleAndSubordinatesInternal>
+        <roleAndSubordinateInternal>SVP_Customer_Service_Support</roleAndSubordinateInternal>
+    </roleAndSubordinatesInternal>
+</queueMembers>
+
+MEMBER TYPE MEANINGS — pick the wrapper matching what the ticket actually asks for:
+- "Users" / named individuals            → <users><user>...</user></users>
+- "Public Groups"                        → <publicGroups><publicGroup>...</publicGroup></publicGroups>
+- "Roles" (role only, no subordinates)   → <roles><role>...</role></roles>
+- "Roles and Subordinates" (includes portal/external users in the hierarchy)
+                                          → <roleAndSubordinates><roleAndSubordinate>...</roleAndSubordinate></roleAndSubordinates>
+- "Roles and Internal Subordinates" (includes subordinates, INTERNAL users only — the
+  common case; this is what most tickets mean by "role hierarchy")
+                                          → <roleAndSubordinatesInternal><roleAndSubordinateInternal>...</roleAndSubordinateInternal></roleAndSubordinatesInternal>
+"Roles" and "Roles and Internal Subordinates" are DIFFERENT wrappers even when the ticket
+lists them near each other — never fold a "Roles and Internal Subordinates" entry into <roles>.
+
+RESOLVING DISPLAY NAMES TO REAL IDENTIFIERS:
+- Roles: match the ticket's role text (e.g. "Customer Support, International") against
+  orgState.existingRoles by Name — a comma is very often PART of a real Salesforce role
+  Name (e.g. "Customer Support, EMEA" is one role, not two), so do NOT split it. Use that
+  role's developerName as the value. If no match is found in orgState, do NOT guess a
+  transformed name — return an error in summary listing the unresolved role text instead.
+- Users: match the ticket's person name (e.g. "Mahesh Pawar") against orgState.existingUsers
+  by Name and use that user's username as the value inside <user>. If no match is found,
+  do NOT guess an email address — return an error in summary listing the unresolved name.
+- Public Groups: match against orgState.existingGroups by name/developerName the same way.
+- If orgState.existingRoles or existingUsers is entirely absent (older org-state snapshot),
+  fall back to omitting that member type and stating in summary which names could not be
+  resolved — never fabricate a DeveloperName or username.
 
 OTHER RULES:
 - <name> is the display label
 - Queue API name (DeveloperName) has no spaces — use underscores
-- ONE <queueMembers> block maximum — nest all member types inside it
-- Inside queueMembers: <users> for users, <publicGroups> for groups, <roles> for roles
-- <doesIncludeBosses> is NOT a valid Queue element — do not include it
-- For UPDATE: Start from existingQueues in org state — preserve ALL existing values unless ticket changes them
+- The Queue metadata type has NO description field at all — the "Queue Description" box
+  visible in Setup UI does not map to anything deployable via Metadata API. If a ticket
+  provides a description, do NOT invent an element for it and do NOT silently drop it —
+  generate the rest of the Queue normally, but the ticket summary MUST explicitly state:
+  "Description could not be set — the Queue metadata type has no description field
+  (this is a Salesforce platform limitation, not a pipeline gap)."
+- For UPDATE: existingQueues gives you email, doesSendEmailToMembers, doesIncludeBosses,
+  sobjectTypes, and members — preserve those unless the ticket changes them.
+  doesIncludeBosses in particular is REQUIRED on the regenerated file even when the ticket
+  says nothing about it — omitting it resets "Grant Access Using Hierarchies" to unchecked.
+  queueRoutingConfig is NOT part of existingQueues (Salesforce doesn't expose that association
+  via the same query) — it
+  lives ONLY in the separate existingQueueRoutingConfigs list. Do NOT treat "not present in
+  existingQueues" as "this queue has no routing config to update" — that field is simply
+  tracked elsewhere. If the ticket mentions a routing configuration change (old or new
+  value), you MUST include <queueRoutingConfig> in the regenerated XML, resolved via
+  existingQueueRoutingConfigs exactly as described above — never silently omit it because
+  it wasn't part of the existingQueues bundle you started from.
 - For DELETE: Use destructiveFiles with metadataType Queue and member = Queue API name]]></value>
     </values>
     <values>
@@ -69,10 +200,12 @@ OTHER RULES:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">Queue XML format, element order, and member rules</value>
+        <value
+      xsi:type="xsd:string"
+    >Queue XML format, element order, and member rules</value>
     </values>
 </CustomMetadata>

@@ -65,6 +65,32 @@ an existing Permission Set to assign to an existing user. Never infer or invent 
   empty. Getting this wrong fails the ENTIRE request with "Permission Set not found: X" before
   any deploy is attempted, even when every other part of the ticket was generated correctly.
 
+== ABSOLUTE NAME-RESOLUTION RULE — HIGHEST PRIORITY ==
+Whenever a ticket names a specific EXISTING component by its label/display text that you must
+resolve against org state — a Role, User, Public Group, Queue Routing Configuration, Auth
+Provider, Permission Set, Profile, Named/External Credential, or anything similar:
+→ If that exact name (or an unambiguous match) is NOT found in the relevant org-state list,
+  you MUST NOT substitute a different real record just because it also exists and is
+  syntactically valid. Silently picking any other real value to make the ticket "succeed" is
+  fabrication — it deploys successfully with the WRONG configuration instead of failing
+  loudly, which is worse than an obvious error because nobody notices until something breaks.
+  This has actually happened twice on the same case: a ticket asked for a Queue Routing
+  Configuration named "Support Routing" (which does not exist). First attempt: a different
+  real routing config ("Skill Bases routing") was silently substituted and deployed —
+  fabrication. Second attempt (after being told not to fabricate): the routing config
+  reference was silently OMITTED and the rest of the queue deployed anyway, reported as
+  success — this is ALSO wrong. Whether or not the underlying Salesforce field is technically
+  optional, if the TICKET explicitly asked for it, dropping it silently means an explicit part
+  of the request was never actually fulfilled, and the response gave no indication of that.
+→ The correct behavior is a HARD FAILURE of the ENTIRE ticket, not a partial success:
+  do NOT generate ANY files in this response (not just the one with the unresolved
+  reference) — return an error in summary explicitly naming the unresolved text and stating no
+  matching component exists in the org. The user must create the missing component first or
+  correct the ticket before anything is deployed. Never silently proceed with a ticket that
+  didn't get everything it explicitly asked for, even if the rest of it would deploy cleanly.
+→ This applies even when a "close enough" or similarly-named record exists. Do not guess which
+  existing record the user "probably meant" — if the name doesn't match, it doesn't match.
+
 1. NEVER create a field that already exists (check org state)
 2. NEVER create an object that already exists (check org state)
 3. For field UPDATES: read the existing field values from org state, preserve all unchanged values
