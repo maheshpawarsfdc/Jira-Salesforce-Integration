@@ -1959,6 +1959,7 @@ public class LLMXmlSanitizer {
       return xml;
     }
     String objectApi = layoutMemberName.substringBefore('-');
+    Boolean isCustomMetadataLayout = objectApi.endsWith('__mdt');
     Pattern itemPat = Pattern.compile('(?s)<layoutItems>.*?</layoutItems>');
     Matcher itemMat = itemPat.matcher(xml);
     List<String> oldItems = new List<String>();
@@ -1975,6 +1976,31 @@ public class LLMXmlSanitizer {
       String fieldName = ref.contains('.') ? ref.substringAfter('.') : ref;
 
       if (fieldName == 'Name') {
+        continue;
+      }
+      if (isCustomMetadataLayout && fieldName == 'DeveloperName') {
+        xml = xml.replace(
+          '<behavior>Readonly</behavior>\n                <field>DeveloperName</field>',
+          '<behavior>Required</behavior>\n                <field>DeveloperName</field>'
+        );
+        xml = xml.replace(
+          '<field>DeveloperName</field>\n                <behavior>Readonly</behavior>',
+          '<field>DeveloperName</field>\n                <behavior>Required</behavior>'
+        );
+        continue;
+      }
+      if (isCustomMetadataLayout && fieldName == 'MasterLabel') {
+        xml = xml.replace(
+          '<behavior>Readonly</behavior>\n                <field>MasterLabel</field>',
+          '<behavior>Required</behavior>\n                <field>MasterLabel</field>'
+        );
+        xml = xml.replace(
+          '<field>MasterLabel</field>\n                <behavior>Readonly</behavior>',
+          '<field>MasterLabel</field>\n                <behavior>Required</behavior>'
+        );
+        continue;
+      }
+      if (isCustomMetadataLayout && fieldName == 'IsProtected') {
         continue;
       }
       if (!SchemaFieldValidator.fieldExists(objectApi, fieldName)) {
