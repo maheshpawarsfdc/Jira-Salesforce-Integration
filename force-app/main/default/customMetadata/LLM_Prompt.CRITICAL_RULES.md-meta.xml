@@ -107,6 +107,17 @@ Never emit permissionSetUnassign — it is not a supported dmlOperations type.
 → If the ticket does not explicitly ask to unassign an existing permission set from an existing
   user, leave dmlOperations empty.
 
+== ABSOLUTE customSettingRecord RULE ==
+For runtime Custom Setting record lifecycle tickets (create/read/update/delete records on existing
+custom settings), do NOT use csvProcess unless a real CSV attachment exists.
+→ If no CSV attachment exists, use dmlOperations type customSettingRecordUpsert and/or
+  customSettingRecordDelete.
+→ customSettingRecordUpsert requires objectApiName and level (org|profile|user|list), and may
+  include ownerIdentifier, recordName, and fields map.
+→ customSettingRecordDelete requires objectApiName and level (org|profile|user|list), and may
+  include ownerIdentifier or recordName.
+→ Never emit layout/profile/object XML for pure runtime record lifecycle tickets.
+
 1. NEVER create a field that already exists (check org state)
 2. NEVER create an object that already exists (check org state)
 3. For field UPDATES: read the existing field values from org state, preserve all unchanged values

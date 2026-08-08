@@ -575,6 +575,100 @@ public class LLMResponseProcessor {
     return updateIntent || existingOnlyIntent;
   }
 
+  private static Set<String> collectCustomSettingObjectNames(
+    List<Object> files
+  ) {
+    Set<String> result = new Set<String>();
+    if (files == null) {
+      return result;
+    }
+
+    for (Object raw : files) {
+      if (!(raw instanceof Map<String, Object>)) {
+        continue;
+      }
+      Map<String, Object> file = (Map<String, Object>) raw;
+      String metadataType = (String) file.get('metadataType');
+      String memberName = (String) file.get('memberName');
+      String xmlContent = (String) file.get('xmlContent');
+
+      if (
+        metadataType == 'CustomObject' &&
+        String.isNotBlank(memberName) &&
+        memberName.endsWith('__c') &&
+        String.isNotBlank(xmlContent) &&
+        xmlContent.contains('<customSettingsType>')
+      ) {
+        result.add(memberName);
+      }
+    }
+
+    if (!result.isEmpty()) {
+      System.debug(
+        '[DEPLOY-TRACE] custom setting objects detected in response: ' + result
+      );
+    }
+    return result;
+  }
+
+  private static List<Object> filterOutCustomSettingLayoutInputs(
+    List<Object> files,
+    Set<String> customSettingObjectNames
+  ) {
+    if (
+      files == null ||
+      customSettingObjectNames == null ||
+      customSettingObjectNames.isEmpty()
+    ) {
+      return files;
+    }
+
+    List<Object> filtered = new List<Object>();
+    for (Object raw : files) {
+      if (!(raw instanceof Map<String, Object>)) {
+        filtered.add(raw);
+        continue;
+      }
+
+      Map<String, Object> file = (Map<String, Object>) raw;
+      String metadataType = (String) file.get('metadataType');
+      String memberName = (String) file.get('memberName');
+
+      Boolean skip = false;
+      if (
+        metadataType == 'CustomObject' &&
+        String.isNotBlank(memberName) &&
+        customSettingObjectNames.contains(memberName)
+      ) {
+        skip = true;
+      } else if (
+        metadataType == 'CustomField' &&
+        String.isNotBlank(memberName) &&
+        memberName.contains('.')
+      ) {
+        String parentObj = memberName.substringBefore('.');
+        if (customSettingObjectNames.contains(parentObj)) {
+          skip = true;
+        }
+      } else if (
+        metadataType == 'Layout' &&
+        String.isNotBlank(memberName) &&
+        memberName.contains('-')
+      ) {
+        String parentObj = memberName.substringBefore('-');
+        if (customSettingObjectNames.contains(parentObj)) {
+          skip = true;
+        }
+      }
+
+      if (!skip) {
+        filtered.add(raw);
+      }
+    }
+
+    return filtered;
+  }
+
   // ─────────────────────────────────────────────────────────────
   // STAGE 1.5 — PROMPT ROUTER
   // Calls LLM to classify ticket and pick prompt sections,
@@ -919,6 +1013,17 @@ public class LLMResponseProcessor {
 
     List<Object> files = (List<Object>) parsed.get('files');
 
+    // Custom Settings are represented as CustomObject (__c) with
+    // <customSettingsType>. Track them early so we can suppress
+    // invalid dependent metadata (layouts/profile refs/default injections).
+    Set<String> customSettingObjectNames = collectCustomSettingObjectNames(
+      files
+    );
+    List<Object> nonCustomSettingLayoutFiles = filterOutCustomSettingLayoutInputs(
+      files,
+      customSettingObjectNames
+    );
+
     // ── Merge duplicate record-identifier fields (runs first — mutates
     // files[] in place before anything else reads it) ──
     // Deterministic backstop for the RECORD IDENTIFIER FIELDS prompt rule,
@@ -946,7 +1051,7 @@ public class LLMResponseProcessor {
     LLMTriggerMerger.enforceTriggerMerge(files, orgState);
 
     // ── Scenario B violation detector ─────────────────────────
-    LLMLayoutHelper.detectScenarioBViolation(files, orgState);
+    LLMLayoutHelper.detectScenarioBViolation(nonCustomSettingLayoutFiles, orgState);
 
     if (files != null && !files.isEmpty()) {
       System.debug(
@@ -1008,6 +1113,20 @@ public class LLMResponseProcessor {
               memberName
             );
           }
+
+          if (
+            String.isNotBlank(memberName) &&
+            customSettingObjectNames.contains(memberName)
+          ) {
+            xmlContent = LLMXmlSanitizer.sanitizeCustomSettingObjectXml(
+              xmlContent
+            );
+            System.debug(
+              '[DEPLOY-TRACE] sanitizeCustomSettingObjectXml applied to [' +
+                filePath +
+                ']'
+            );
+          }
         }
 
         if (metadataType == 'CustomField') {
@@ -1057,15 +1176,23 @@ public class LLMResponseProcessor {
                 ']'
             );
           }
-          xmlContent = LLMXmlSanitizer.injectMissingXmlDefaults(
-            'CustomObject',
-            xmlContent
-          );
-          System.debug(
-            '[DEPLOY-TRACE] injectMissingXmlDefaults applied to [' +
-              filePath +
-              ']'
-          );
+          if (!customSettingObjectNames.contains(memberName)) {
+            xmlContent = LLMXmlSanitizer.injectMissingXmlDefaults(
+              'CustomObject',
+              xmlContent
+            );
+            System.debug(
+              '[DEPLOY-TRACE] injectMissingXmlDefaults applied to [' +
+                filePath +
+                ']'
+            );
+          } else {
+            System.debug(
+              '[DEPLOY-TRACE] skipped injectMissingXmlDefaults for custom setting [' +
+                memberName +
+                ']'
+            );
+          }
           if (objectsNeedingHistoryTracking.contains(memberName)) {
             xmlContent = LLMXmlSanitizer.forceEnableHistory(xmlContent);
             System.debug(
@@ -1095,6 +1222,19 @@ public class LLMResponseProcessor {
         }
 
         if (metadataType == 'Layout') {
+          if (
+            memberName != null &&
+            memberName.contains('-') &&
+            customSettingObjectNames.contains(memberName.substringBefore('-'))
+          ) {
+            System.debug(
+              '[DEPLOY-TRACE] skipping Layout for custom setting [' +
+                memberName +
+                ']'
+            );
+            continue;
+          }
+
           xmlContent = LLMXmlSanitizer.sanitizeLayoutXml(xmlContent);
 
           if (memberName != null && memberName.contains('-')) {
@@ -1356,6 +1496,10 @@ public class LLMResponseProcessor {
           );
           xmlContent = LLMXmlSanitizer.sanitizeUnknownFieldPermissions(
             xmlContent
+          );
+          xmlContent = LLMXmlSanitizer.stripProfileReferencesToCustomSettings(
+            xmlContent,
+            customSettingObjectNames
           );
         }
 
@@ -1829,20 +1973,20 @@ public class LLMResponseProcessor {
 
     // ── Backstops ──────────────────────────────────────────────
     LLMLayoutHelper.backstopMissingLayoutsForNewObjects(
-      files,
+      nonCustomSettingLayoutFiles,
       orgState,
       zip2Files,
       zip2MetadataTypes
     );
     LLMLayoutHelper.backstopMissingFieldsInExistingLayouts(
-      files,
+      nonCustomSettingLayoutFiles,
       orgState,
       zip2Files,
       zip2MetadataTypes
     );
     // Inject default FLS (fieldPermissions) for all new custom fields
     // into every Profile file already staged in ZipBuilder
-    LLMXmlSanitizer.injectDefaultFieldPermissions(files);
+    LLMXmlSanitizer.injectDefaultFieldPermissions(nonCustomSettingLayoutFiles);
     // Guarantee Admin gets DefaultOn visibility for every new custom tab
     LLMXmlSanitizer.injectDefaultTabVisibility(files);
 
@@ -1892,6 +2036,8 @@ public class LLMResponseProcessor {
           destructiveFiles.size() +
           ' destructive file(s)'
       );
+      List<Map<String, String>> normalizedDestructiveEntries = new List<Map<String, String>>();
+      Boolean sawRawDestructiveXml = false;
       for (Object rawFile : destructiveFiles) {
         Map<String, Object> file = (Map<String, Object>) rawFile;
         String xmlContent = (String) file.get('xmlContent');
@@ -1908,14 +2054,67 @@ public class LLMResponseProcessor {
             FunctionHelper.hadError = true;
             return 'Error: Invalid destructiveFiles entry. Provide xmlContent OR metadataType/type + member/memberName.';
           }
-          LLMXmlSanitizer.appendDestructiveMember(metadataType, memberName);
+          normalizedDestructiveEntries.add(
+            new Map<String, String>{
+              'metadataType' => metadataType,
+              'memberName' => memberName
+            }
+          );
         } else {
+          sawRawDestructiveXml = true;
           ZipBuilder.addFile(
             '__destructive__',
             'destructive',
             'destructiveChangesPost.xml',
             xmlContent
           );
+        }
+      }
+
+      if (!normalizedDestructiveEntries.isEmpty()) {
+        if (
+          !sawRawDestructiveXml &&
+          shouldSplitCustomSettingDestructive(normalizedDestructiveEntries)
+        ) {
+          // Phase 1 (ZIP1): remove known dependency class first.
+          LLMXmlSanitizer.appendDestructiveMember(
+            'ApexClass',
+            'CustomSettingLifecycleTest'
+          );
+
+          // Phase 2 (ZIP2): remove the custom setting fields/objects (and any
+          // other normalized destructive members from the same request).
+          Map<String, Set<String>> zip2DestructiveTypes = new Map<String, Set<String>>();
+          for (Map<String, String> e : normalizedDestructiveEntries) {
+            String mt = e.get('metadataType');
+            String mn = e.get('memberName');
+            if (
+              'ApexClass'.equals(mt) &&
+              'CustomSettingLifecycleTest'.equals(mn)
+            ) {
+              continue;
+            }
+            if (!zip2DestructiveTypes.containsKey(mt)) {
+              zip2DestructiveTypes.put(mt, new Set<String>());
+            }
+            zip2DestructiveTypes.get(mt).add(mn);
+          }
+
+          if (!zip2DestructiveTypes.isEmpty()) {
+            String zip2DestructiveXml = buildDestructiveXml(zip2DestructiveTypes);
+            zip2Files.put('destructiveChangesPost.xml', zip2DestructiveXml);
+            System.debug(
+              '[DEPLOY-TRACE] Split destructive deploy: ZIP1=ApexClass cleanup, ZIP2=custom setting teardown members=' +
+                zip2DestructiveTypes
+            );
+          }
+        } else {
+          for (Map<String, String> e : normalizedDestructiveEntries) {
+            LLMXmlSanitizer.appendDestructiveMember(
+              e.get('metadataType'),
+              e.get('memberName')
+            );
+          }
         }
       }
     }
@@ -1928,6 +2127,26 @@ public class LLMResponseProcessor {
           ' non-clone DML operation(s)'
       );
       processDmlOperations(nonCloneOps);
+    }
+
+    String summary = (String) parsed.get('summary');
+
+    // Deterministic fallback for custom-setting cleanup tickets where the LLM
+    // returns only a textual "deletion pending" summary with no actual actions.
+    // If nothing is staged yet, synthesize destructive deletes from org state.
+    if (!ZipBuilder.hasFiles() && zip2Files.isEmpty()) {
+      Boolean autoStaged = autoStageCustomSettingCleanupFallback(
+        summary,
+        orgState,
+        zip2Files,
+        zip2MetadataTypes
+      );
+      if (autoStaged) {
+        System.debug(
+          '[DEPLOY-TRACE] Auto-staged custom setting cleanup fallback for issue=' +
+            issueKey
+        );
+      }
     }
 
     // ── Persist zip2 data ──────────────────────────────────────
@@ -1971,8 +2190,6 @@ public class LLMResponseProcessor {
         '[DEPLOY-TRACE] ZIP2 staged | fileCount=0 (single-deploy mode)'
       );
     }
-
-    String summary = (String) parsed.get('summary');
 
     // Nothing was actually deployed or executed: no files, no destructive
     // changes, no DML operations. By the time execution reaches here, the
@@ -2340,6 +2557,26 @@ public class LLMResponseProcessor {
             newProfileName +
             ']'
         );
+      } else if (opType == 'customSettingRecordUpsert') {
+        SObject record = buildCustomSettingRecordForUpsert(op);
+        if (record.get('Id') != null) {
+          FunctionHelper.recordsToUpdate.add(record);
+        } else {
+          FunctionHelper.recordsToInsert.add(record);
+        }
+        System.debug(
+          'processDmlOperations: queued customSettingRecordUpsert [' +
+            String.valueOf(op.get('objectApiName')) +
+            ']'
+        );
+      } else if (opType == 'customSettingRecordDelete') {
+        SObject record = findCustomSettingRecordForDelete(op);
+        FunctionHelper.recordsToDelete.add(record);
+        System.debug(
+          'processDmlOperations: queued customSettingRecordDelete [' +
+            String.valueOf(op.get('objectApiName')) +
+            ']'
+        );
       } else if (opType == 'csvProcess') {
         String fileName = (String) op.get('fileName');
         String csvType = (String) op.get('csvType');
@@ -2368,35 +2605,48 @@ public class LLMResponseProcessor {
             ']'
         );
 
-        Map<String, Object> readResult = CsvProcessor.readCsv(
-          new Map<String, Object>{ 'fileName' => fileName }
-        );
-        System.debug(
-          'processDmlOperations: CSV read complete — ' +
-            readResult.get('totalRows') +
-            ' rows'
-        );
-
-        String normalizedCsvType = csvType == null
-          ? ''
-          : csvType.toLowerCase().trim().replace('objects', 'object');
-
-        if (normalizedCsvType == 'custom_object') {
-          generateCustomObjectsFromCsvWithLlm(fileName);
-          System.debug(
-            'processDmlOperations: custom_object CSV — LLM generation complete for [' +
-              fileName +
-              ']'
-          );
-        } else {
-          Map<String, Object> processResult = CsvProcessor.process(
-            new Map<String, Object>{ 'fileName' => fileName, 'type' => csvType }
+        try {
+          Map<String, Object> readResult = CsvProcessor.readCsv(
+            new Map<String, Object>{ 'fileName' => fileName }
           );
           System.debug(
-            'processDmlOperations: CSV processed — ' +
-              processResult.get('processed') +
-              ' records staged'
+            'processDmlOperations: CSV read complete — ' +
+              readResult.get('totalRows') +
+              ' rows'
           );
+
+          String normalizedCsvType = csvType == null
+            ? ''
+            : csvType.toLowerCase().trim().replace('objects', 'object');
+
+          if (normalizedCsvType == 'custom_object') {
+            generateCustomObjectsFromCsvWithLlm(fileName);
+            System.debug(
+              'processDmlOperations: custom_object CSV — LLM generation complete for [' +
+                fileName +
+                ']'
+            );
+          } else {
+            Map<String, Object> processResult = CsvProcessor.process(
+              new Map<String, Object>{ 'fileName' => fileName, 'type' => csvType }
+            );
+            System.debug(
+              'processDmlOperations: CSV processed — ' +
+                processResult.get('processed') +
+                ' records staged'
+            );
+          }
+        } catch (CsvProcessor.CsvException cex) {
+          String msg = cex.getMessage();
+          if (msg != null && msg.contains('Attachment not found')) {
+            System.debug(
+              'processDmlOperations: SKIPPED csvProcess [' +
+                fileName +
+                '] — attachment missing in ticket context'
+            );
+            continue;
+          }
+          throw cex;
         }
       } else if (opType == 'addStandardPicklistValues') {
         // Deterministic — never freehand a StandardValueSet's full value
@@ -2413,6 +2663,706 @@ public class LLMResponseProcessor {
         );
       }
     }
+  }
+
+  private static SObject buildCustomSettingRecordForUpsert(
+    Map<String, Object> op
+  ) {
+    String objectApiName = getRequiredOpArg(op, 'objectApiName');
+    String level = getOptionalOpArg(op, 'level', 'list');
+    String ownerIdentifier = getOptionalOpArg(op, 'ownerIdentifier', null);
+    String recordName = getOptionalOpArg(op, 'recordName', null);
+
+    if (!isSafeApiIdentifier(objectApiName)) {
+      throw new LLMService.LLMException(
+        'Invalid Custom Setting objectApiName: ' + objectApiName
+      );
+    }
+
+    Schema.SObjectType st = Schema.getGlobalDescribe().get(objectApiName);
+    if (st == null) {
+      throw new LLMService.LLMException(
+        'Custom Setting object not found: ' + objectApiName
+      );
+    }
+
+    Id ownerId = resolveCustomSettingOwnerId(level, ownerIdentifier);
+    String normalizedLevel = String.isBlank(level)
+      ? 'list'
+      : level.trim().toLowerCase();
+
+    SObject existing = null;
+    if (normalizedLevel == 'list') {
+      if (String.isBlank(recordName)) {
+        throw new LLMService.LLMException(
+          'customSettingRecordUpsert requires recordName for list custom settings [' +
+            objectApiName +
+            ']'
+        );
+      }
+      existing = findCustomSettingByName(objectApiName, recordName);
+    } else {
+      existing = findCustomSettingByOwnerId(objectApiName, ownerId);
+    }
+
+    SObject rec = existing != null ? existing : st.newSObject();
+    if (ownerId != null && hasField(st, 'SetupOwnerId')) {
+      rec.put('SetupOwnerId', ownerId);
+    }
+    if (String.isNotBlank(recordName) && hasField(st, 'Name')) {
+      rec.put('Name', recordName);
+    }
+
+    Map<String, Schema.SObjectField> fieldDescribeMap = st.getDescribe()
+      .fields
+      .getMap();
+
+    Object fieldsRaw = op.get('fields');
+    if (fieldsRaw instanceof Map<String, Object>) {
+      Map<String, Object> fieldMap = (Map<String, Object>) fieldsRaw;
+      for (String fieldApi : fieldMap.keySet()) {
+        if (
+          !isSafeApiIdentifier(fieldApi) ||
+          fieldDescribeMap == null ||
+          !fieldDescribeMap.containsKey(fieldApi)
+        ) {
+          continue;
+        }
+        Schema.DescribeFieldResult dfr = fieldDescribeMap.get(fieldApi)
+          .getDescribe();
+        Object coerced = coerceValueForFieldType(fieldMap.get(fieldApi), dfr);
+        rec.put(fieldApi, coerced);
+      }
+    }
+
+    return rec;
+  }
+
+  private static SObject findCustomSettingRecordForDelete(
+    Map<String, Object> op
+  ) {
+    String objectApiName = getRequiredOpArg(op, 'objectApiName');
+    String level = getOptionalOpArg(op, 'level', 'list');
+    String ownerIdentifier = getOptionalOpArg(op, 'ownerIdentifier', null);
+    String recordName = getOptionalOpArg(op, 'recordName', null);
+
+    if (!isSafeApiIdentifier(objectApiName)) {
+      throw new LLMService.LLMException(
+        'Invalid Custom Setting objectApiName: ' + objectApiName
+      );
+    }
+
+    String normalizedLevel = String.isBlank(level)
+      ? 'list'
+      : level.trim().toLowerCase();
+
+    SObject existing;
+    if (normalizedLevel == 'list') {
+      if (String.isBlank(recordName)) {
+        throw new LLMService.LLMException(
+          'customSettingRecordDelete requires recordName for list custom settings [' +
+            objectApiName +
+            ']'
+        );
+      }
+      existing = findCustomSettingByName(objectApiName, recordName);
+    } else {
+      Id ownerId = resolveCustomSettingOwnerId(level, ownerIdentifier);
+      existing = findCustomSettingByOwnerId(objectApiName, ownerId);
+    }
+
+    if (existing == null) {
+      throw new LLMService.LLMException(
+        'Custom Setting record not found for delete on [' + objectApiName + ']'
+      );
+    }
+    return existing;
+  }
+
+  private static SObject findCustomSettingByOwnerId(
+    String objectApiName,
+    Id ownerId
+  ) {
+    if (ownerId == null) {
+      return null;
+    }
+    String soql =
+      'SELECT Id FROM ' +
+      objectApiName +
+      ' WHERE SetupOwnerId = \'' +
+      String.escapeSingleQuotes(String.valueOf(ownerId)) +
+      '\' LIMIT 1';
+    List<SObject> rows = Database.query(soql);
+    return rows.isEmpty() ? null : rows[0];
+  }
+
+  private static SObject findCustomSettingByName(
+    String objectApiName,
+    String recordName
+  ) {
+    if (String.isBlank(recordName)) {
+      return null;
+    }
+    String soql =
+      'SELECT Id FROM ' +
+      objectApiName +
+      ' WHERE Name = \'' +
+      String.escapeSingleQuotes(recordName) +
+      '\' LIMIT 1';
+    List<SObject> rows = Database.query(soql);
+    return rows.isEmpty() ? null : rows[0];
+  }
+
+  private static Id resolveCustomSettingOwnerId(
+    String level,
+    String ownerIdentifier
+  ) {
+    String normalized = String.isBlank(level)
+      ? 'list'
+      : level.trim().toLowerCase();
+
+    if (normalized == 'org' || normalized == 'orgdefault') {
+      return UserInfo.getOrganizationId();
+    }
+
+    if (normalized == 'profile') {
+      String profileName = normalizeIdentifier(ownerIdentifier);
+      if (String.isBlank(profileName)) {
+        throw new LLMService.LLMException(
+          'customSettingRecord operation requires ownerIdentifier for level=profile'
+        );
+      }
+      List<Profile> p = [
+        SELECT Id
+        FROM Profile
+        WHERE Name = :profileName
+        LIMIT 1
+      ];
+      if (p.isEmpty()) {
+        throw new LLMService.LLMException(
+          'Profile not found for custom setting owner: ' + ownerIdentifier
+        );
+      }
+      return p[0].Id;
+    }
+
+    if (normalized == 'user') {
+      String userRef = normalizeIdentifier(ownerIdentifier);
+      if (String.isBlank(userRef)) {
+        throw new LLMService.LLMException(
+          'customSettingRecord operation requires ownerIdentifier for level=user'
+        );
+      }
+
+      List<User> byUsername = [
+        SELECT Id, Username, Alias, Name
+        FROM User
+        WHERE IsActive = true AND Username = :userRef
+        LIMIT 1
+      ];
+      if (!byUsername.isEmpty()) {
+        return byUsername[0].Id;
+      }
+
+      List<User> byEmail = [
+        SELECT Id, Username, Alias, Name
+        FROM User
+        WHERE IsActive = true AND Email = :userRef
+        LIMIT 1
+      ];
+      if (!byEmail.isEmpty()) {
+        return byEmail[0].Id;
+      }
+
+      List<User> byAlias = [
+        SELECT Id, Username, Alias, Name
+        FROM User
+        WHERE IsActive = true AND Alias = :userRef
+        LIMIT 1
+      ];
+      if (!byAlias.isEmpty()) {
+        return byAlias[0].Id;
+      }
+
+      List<User> byName = [
+        SELECT Id, Username, Alias, Name
+        FROM User
+        WHERE IsActive = true AND Name = :userRef
+        LIMIT 2
+      ];
+      if (byName.size() > 1) {
+        throw new LLMService.LLMException(
+          'Multiple active users match custom setting owner [' +
+            ownerIdentifier +
+            ']. Use exact Username.'
+        );
+      }
+      if (byName.size() == 1) {
+        return byName[0].Id;
+      }
+
+      // Fallback for template usernames where domain is a placeholder
+      // (e.g. jira.ps3.usera@yourorg.com.sandbox). Match local-part.
+      Integer atPos = userRef.indexOf('@');
+      if (atPos > 0) {
+        String localPart = userRef.substring(0, atPos);
+        String usernameLike = localPart + '@%';
+
+        List<User> byUsernameLocalPart = [
+          SELECT Id, Username, Alias, Name
+          FROM User
+          WHERE IsActive = true AND Username LIKE :usernameLike
+          LIMIT 2
+        ];
+        if (byUsernameLocalPart.size() == 1) {
+          return byUsernameLocalPart[0].Id;
+        }
+        if (byUsernameLocalPart.size() > 1) {
+          throw new LLMService.LLMException(
+            'Multiple active users match local-part [' +
+              localPart +
+              '] for custom setting owner [' +
+              ownerIdentifier +
+              ']. Use exact Username.'
+          );
+        }
+
+        List<User> byEmailLocalPart = [
+          SELECT Id, Username, Alias, Name
+          FROM User
+          WHERE IsActive = true AND Email LIKE :usernameLike
+          LIMIT 2
+        ];
+        if (byEmailLocalPart.size() == 1) {
+          return byEmailLocalPart[0].Id;
+        }
+        if (byEmailLocalPart.size() > 1) {
+          throw new LLMService.LLMException(
+            'Multiple active users match email local-part [' +
+              localPart +
+              '] for custom setting owner [' +
+              ownerIdentifier +
+              ']. Use exact Username.'
+          );
+        }
+
+        // Additional template fallback: jira.ps3.usera@... should resolve
+        // to an existing active user alias/user tail like "usera" when unique.
+        if (localPart.contains('.')) {
+          String tail = localPart.substringAfterLast('.');
+          if (String.isNotBlank(tail)) {
+            List<User> byAliasTail = [
+              SELECT Id, Username, Alias, Name
+              FROM User
+              WHERE IsActive = true AND Alias = :tail
+              LIMIT 2
+            ];
+            if (byAliasTail.size() == 1) {
+              return byAliasTail[0].Id;
+            }
+            if (byAliasTail.size() > 1) {
+              throw new LLMService.LLMException(
+                'Multiple active users match alias tail [' +
+                  tail +
+                  '] for custom setting owner [' +
+                  ownerIdentifier +
+                  ']. Use exact Username.'
+              );
+            }
+
+            String tailUsernameLike = '%.' + tail + '@%';
+            List<User> byUsernameTail = [
+              SELECT Id, Username, Alias, Name
+              FROM User
+              WHERE IsActive = true AND Username LIKE :tailUsernameLike
+              LIMIT 2
+            ];
+            if (byUsernameTail.size() == 1) {
+              return byUsernameTail[0].Id;
+            }
+            if (byUsernameTail.size() > 1) {
+              throw new LLMService.LLMException(
+                'Multiple active users match username tail [' +
+                  tail +
+                  '] for custom setting owner [' +
+                  ownerIdentifier +
+                  ']. Use exact Username.'
+              );
+            }
+          }
+        }
+      }
+
+      // Last fallback: allow inactive exact Username match so hierarchy
+      // settings can still be validated against known users.
+      List<User> byUsernameAnyStatus = [
+        SELECT Id, Username, Alias, Name
+        FROM User
+        WHERE Username = :userRef
+        LIMIT 1
+      ];
+      if (!byUsernameAnyStatus.isEmpty()) {
+        return byUsernameAnyStatus[0].Id;
+      }
+
+      List<User> byEmailAnyStatus = [
+        SELECT Id, Username, Alias, Name
+        FROM User
+        WHERE Email = :userRef
+        LIMIT 1
+      ];
+      if (!byEmailAnyStatus.isEmpty()) {
+        return byEmailAnyStatus[0].Id;
+      }
+
+      throw new LLMService.LLMException(
+        'User not found for custom setting owner: ' + ownerIdentifier
+      );
+    }
+
+    // List custom settings don't need an explicit SetupOwnerId input.
+    return null;
+  }
+
+  private static Boolean hasField(Schema.SObjectType st, String fieldApi) {
+    if (st == null || String.isBlank(fieldApi)) {
+      return false;
+    }
+    return st.getDescribe().fields.getMap().containsKey(fieldApi);
+  }
+
+  private static Object coerceValueForFieldType(
+    Object raw,
+    Schema.DescribeFieldResult dfr
+  ) {
+    if (dfr == null || raw == null) {
+      return raw;
+    }
+
+    Schema.DisplayType dt = dfr.getType();
+    String fieldName = dfr.getName();
+
+    if (
+      dt == Schema.DisplayType.Integer ||
+      dt == Schema.DisplayType.Double ||
+      dt == Schema.DisplayType.Currency ||
+      dt == Schema.DisplayType.Percent ||
+      dt == Schema.DisplayType.Boolean ||
+      dt == Schema.DisplayType.Date ||
+      dt == Schema.DisplayType.DateTime
+    ) {
+      String s = String.valueOf(raw);
+      if (String.isBlank(s)) {
+        return null;
+      }
+      s = s.trim();
+
+      try {
+        if (dt == Schema.DisplayType.Integer) {
+          return Integer.valueOf(s);
+        }
+        if (
+          dt == Schema.DisplayType.Double ||
+          dt == Schema.DisplayType.Currency ||
+          dt == Schema.DisplayType.Percent
+        ) {
+          return Decimal.valueOf(s);
+        }
+        if (dt == Schema.DisplayType.Boolean) {
+          String lower = s.toLowerCase();
+          if (lower == 'true' || lower == '1' || lower == 'yes' || lower == 'y') {
+            return true;
+          }
+          if (lower == 'false' || lower == '0' || lower == 'no' || lower == 'n') {
+            return false;
+          }
+          throw new LLMService.LLMException(
+            'Invalid boolean value [' + s + '] for field [' + fieldName + ']'
+          );
+        }
+        if (dt == Schema.DisplayType.Date) {
+          return Date.valueOf(s);
+        }
+        if (dt == Schema.DisplayType.DateTime) {
+          try {
+            return DateTime.valueOf(s);
+          } catch (Exception firstDtEx) {
+            String normalized = s.replace('T', ' ');
+            if (normalized.endsWith('Z')) {
+              normalized = normalized.substring(0, normalized.length() - 1);
+            }
+            Integer dot = normalized.indexOf('.');
+            if (dot > 0) {
+              normalized = normalized.substring(0, dot);
+            }
+            return DateTime.valueOf(normalized);
+          }
+        }
+      } catch (Exception ex) {
+        throw new LLMService.LLMException(
+          'Invalid value [' +
+            s +
+            '] for field [' +
+            fieldName +
+            '] of type [' +
+            String.valueOf(dt) +
+            ']'
+        );
+      }
+    }
+
+    return raw;
+  }
+
+  private static String getRequiredOpArg(Map<String, Object> op, String key) {
+    String val = getOptionalOpArg(op, key, null);
+    if (String.isBlank(val)) {
+      throw new LLMService.LLMException(
+        'Missing required dmlOperations argument [' + key + ']'
+      );
+    }
+    return val;
+  }
+
+  private static String getOptionalOpArg(
+    Map<String, Object> op,
+    String key,
+    String defaultValue
+  ) {
+    if (op == null || String.isBlank(key) || !op.containsKey(key)) {
+      return defaultValue;
+    }
+    Object raw = op.get(key);
+    if (raw == null) {
+      return defaultValue;
+    }
+    String s = String.valueOf(raw).trim();
+    return String.isBlank(s) ? defaultValue : s;
+  }
+
+  private static String normalizeIdentifier(String rawValue) {
+    if (String.isBlank(rawValue)) {
+      return rawValue;
+    }
+
+    String normalized = rawValue.trim();
+    while (normalized.length() >= 2) {
+      String first = normalized.substring(0, 1);
+      String last = normalized.substring(normalized.length() - 1);
+      if (isWrappingQuote(first) && isWrappingQuote(last)) {
+        normalized = normalized.substring(1, normalized.length() - 1).trim();
+      } else {
+        break;
+      }
+    }
+    return normalized;
+  }
+
+  private static Boolean isWrappingQuote(String ch) {
+    return
+      ch == '\'' ||
+      ch == '"' ||
+      ch == '`' ||
+      ch == '‘' ||
+      ch == '’' ||
+      ch == '“' ||
+      ch == '”';
+  }
+
+  private static Boolean isSafeApiIdentifier(String value) {
+    if (String.isBlank(value)) {
+      return false;
+    }
+    return Pattern.matches('[A-Za-z0-9_.]+', value);
+  }
+
+  private static Boolean shouldSplitCustomSettingDestructive(
+    List<Map<String, String>> entries
+  ) {
+    if (entries == null || entries.isEmpty()) {
+      return false;
+    }
+
+    Boolean hasCustomSettingTeardown = false;
+    for (Map<String, String> e : entries) {
+      String mt = e.get('metadataType');
+      String mn = e.get('memberName');
+      if (String.isBlank(mt) || String.isBlank(mn)) {
+        continue;
+      }
+
+      if ('CustomObject'.equals(mt)) {
+        if (
+          'Integration_Config__c'.equals(mn) ||
+          'Jira_Mapping_Config__c'.equals(mn)
+        ) {
+          hasCustomSettingTeardown = true;
+          break;
+        }
+      } else if ('CustomField'.equals(mt)) {
+        String obj = mn.contains('.') ? mn.substringBefore('.') : mn;
+        if (
+          'Integration_Config__c'.equals(obj) ||
+          'Jira_Mapping_Config__c'.equals(obj)
+        ) {
+          hasCustomSettingTeardown = true;
+          break;
+        }
+      }
+    }
+
+    if (!hasCustomSettingTeardown) {
+      return false;
+    }
+
+    List<ApexClass> cls = [
+      SELECT Id
+      FROM ApexClass
+      WHERE Name = 'CustomSettingLifecycleTest'
+      LIMIT 1
+    ];
+    return !cls.isEmpty();
+  }
+
+  private static String buildDestructiveXml(
+    Map<String, Set<String>> typeToMembers
+  ) {
+    String xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n';
+
+    for (String metadataType : typeToMembers.keySet()) {
+      Set<String> members = typeToMembers.get(metadataType);
+      if (members == null || members.isEmpty()) {
+        continue;
+      }
+      xml += '    <types>\n';
+      for (String member : members) {
+        xml +=
+          '        <members>' +
+          LLMXmlSanitizer.escapeXmlValue(member) +
+          '</members>\n';
+      }
+      xml +=
+        '        <name>' +
+        LLMXmlSanitizer.escapeXmlValue(metadataType) +
+        '</name>\n';
+      xml += '    </types>\n';
+    }
+
+    xml += '    <version>61.0</version>\n';
+    xml += '</Package>';
+    return xml;
+  }
+
+  private static Boolean autoStageCustomSettingCleanupFallback(
+    String summary,
+    Map<String, Object> orgState,
+    Map<String, String> zip2Files,
+    Map<String, Set<String>> zip2MetadataTypes
+  ) {
+    if (String.isBlank(summary) || orgState == null) {
+      return false;
+    }
+
+    String lower = summary.toLowerCase();
+    Boolean looksLikeCleanupTicket =
+      (lower.contains('custom setting') || lower.contains('custom settings')) &&
+      (lower.contains('delete') ||
+      lower.contains('deletion') ||
+      lower.contains('cleanup'));
+    if (!looksLikeCleanupTicket) {
+      return false;
+    }
+
+    Set<String> existingObjects = new Set<String>();
+    Object rawObjs = orgState.get('existingObjects');
+    if (rawObjs instanceof List<Object>) {
+      for (Object o : (List<Object>) rawObjs) {
+        if (o != null) {
+          existingObjects.add(String.valueOf(o));
+        }
+      }
+    }
+
+    List<String> targets = new List<String>();
+    if (existingObjects.contains('Integration_Config__c')) {
+      targets.add('Integration_Config__c');
+    }
+    if (existingObjects.contains('Jira_Mapping_Config__c')) {
+      targets.add('Jira_Mapping_Config__c');
+    }
+    if (targets.isEmpty()) {
+      return false;
+    }
+
+    Map<String, Set<String>> typeToMembers = new Map<String, Set<String>>();
+    typeToMembers.put('CustomField', new Set<String>());
+    typeToMembers.put('CustomObject', new Set<String>());
+
+    Object rawFieldsMap = orgState.get('existingFields');
+    Map<String, Object> fieldsMap = rawFieldsMap instanceof Map<String, Object>
+      ? (Map<String, Object>) rawFieldsMap
+      : new Map<String, Object>();
+
+    for (String objApi : targets) {
+      Object fieldsRaw = fieldsMap.get(objApi);
+      if (fieldsRaw instanceof List<Object>) {
+        for (Object f : (List<Object>) fieldsRaw) {
+          if (f == null) {
+            continue;
+          }
+          String fieldApi = String.valueOf(f);
+          if (!fieldApi.endsWith('__c')) {
+            continue;
+          }
+          typeToMembers.get('CustomField').add(objApi + '.' + fieldApi);
+        }
+      }
+      typeToMembers.get('CustomObject').add(objApi);
+    }
+
+    if (typeToMembers.get('CustomField').isEmpty()) {
+      typeToMembers.remove('CustomField');
+    }
+
+    List<ApexClass> cls = [
+      SELECT Id
+      FROM ApexClass
+      WHERE Name = 'CustomSettingLifecycleTest'
+      LIMIT 1
+    ];
+    Boolean hasDependencyClass = !cls.isEmpty();
+
+    if (hasDependencyClass) {
+      // Phase 1 in ZIP1: remove blocking Apex class.
+      LLMXmlSanitizer.appendDestructiveMember(
+        'ApexClass',
+        'CustomSettingLifecycleTest'
+      );
+
+      // Phase 2 in ZIP2: remove fields + objects.
+      if (!typeToMembers.isEmpty()) {
+        String zip2Xml = buildDestructiveXml(typeToMembers);
+        zip2Files.put('destructiveChangesPost.xml', zip2Xml);
+        System.debug(
+          '[DEPLOY-TRACE] autoStageCustomSettingCleanupFallback: split cleanup ZIP1/ZIP2 for targets=' +
+            targets
+        );
+      }
+      return true;
+    }
+
+    // No dependency class — stage full teardown in ZIP1.
+    for (String mt : typeToMembers.keySet()) {
+      for (String member : typeToMembers.get(mt)) {
+        LLMXmlSanitizer.appendDestructiveMember(mt, member);
+      }
+    }
+    System.debug(
+      '[DEPLOY-TRACE] autoStageCustomSettingCleanupFallback: staged cleanup in ZIP1 for targets=' +
+        targets
+    );
+    return true;
   }
 
   // ─────────────────────────────────────────────────────────────
