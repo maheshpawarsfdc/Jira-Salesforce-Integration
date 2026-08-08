@@ -3,6 +3,7 @@ public class FunctionHelper {
   // Records queued here during XML processing. DML runs AFTER all
   // callouts finish in LLMService (callout-after-DML restriction).
   public static List<SObject> recordsToInsert = new List<SObject>();
+  public static List<SObject> recordsToUpdate = new List<SObject>();
   public static List<SObject> recordsToDelete = new List<SObject>();
   public static List<String> permissionSetsToDelete = new List<String>();
   public static Boolean hadError = false;
@@ -10,6 +11,7 @@ public class FunctionHelper {
 
   public static void clearQueues() {
     recordsToInsert.clear();
+    recordsToUpdate.clear();
     recordsToDelete.clear();
     permissionSetsToDelete.clear();
   }
@@ -39,6 +41,31 @@ public class FunctionHelper {
         }
       }
       recordsToInsert.clear();
+    }
+    if (!recordsToUpdate.isEmpty()) {
+      List<Database.SaveResult> updateResults = Database.update(
+        recordsToUpdate,
+        false
+      );
+      for (Integer i = 0; i < updateResults.size(); i++) {
+        if (!updateResults[i].isSuccess()) {
+          String recLabel = recordsToUpdate[i].getSObjectType() + '[' + i + ']';
+          for (Database.Error err : updateResults[i].getErrors()) {
+            System.debug(
+              'flushNonMetadataDmlQueues: UPDATE failed for [' +
+                recLabel +
+                ']: ' +
+                err.getStatusCode() +
+                ' — ' +
+                err.getMessage() +
+                ' | fields=' +
+                err.getFields()
+            );
+          }
+          hadError = true;
+        }
+      }
+      recordsToUpdate.clear();
     }
     if (!recordsToDelete.isEmpty()) {
       List<Database.DeleteResult> deleteResults = Database.delete(

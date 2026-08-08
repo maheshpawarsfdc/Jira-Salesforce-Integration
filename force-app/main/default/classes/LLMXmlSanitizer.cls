@@ -708,6 +708,92 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // CUSTOM SETTING OBJECT XML SANITIZER
+  // Strips elements invalid/unsafe for Custom Settings in this pipeline.
+  // ─────────────────────────────────────────────────────────────
+  public static String sanitizeCustomSettingObjectXml(String xml) {
+    if (String.isBlank(xml)) {
+      return xml;
+    }
+
+    Integer removedCount = 0;
+    List<String> forbiddenTags = new List<String>{
+      'deploymentStatus',
+      'sharingModel',
+      'nameField',
+      'pluralLabel',
+      'customSettingsVisibility'
+    };
+
+    for (String tag : forbiddenTags) {
+      Pattern p = Pattern.compile('(?s)\\s*<' + tag + '>.*?</' + tag + '>');
+      Matcher m = p.matcher(xml);
+      String cleaned = m.replaceAll('');
+      if (cleaned != xml) {
+        removedCount++;
+        xml = cleaned;
+      }
+    }
+
+    if (removedCount > 0) {
+      System.debug(
+        '[DEPLOY-TRACE] sanitizeCustomSettingObjectXml: removed ' +
+          removedCount +
+          ' forbidden element(s) from custom setting object XML'
+      );
+    }
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // PROFILE CUSTOM-SETTING REFERENCE SANITIZER
+  // Removes Profile sections that reference Custom Settings in the same
+  // response, because layout/object/field profile refs are invalid for
+  // Custom Settings and can fail deploy if parent object creation fails.
+  // ─────────────────────────────────────────────────────────────
+  public static String stripProfileReferencesToCustomSettings(
+    String xml,
+    Set<String> customSettingObjectNames
+  ) {
+    if (
+      String.isBlank(xml) ||
+      customSettingObjectNames == null ||
+      customSettingObjectNames.isEmpty()
+    ) {
+      return xml;
+    }
+
+    String original = xml;
+    for (String objApi : customSettingObjectNames) {
+      if (String.isBlank(objApi)) {
+        continue;
+      }
+      xml = removeBlocksContaining(
+        xml,
+        'fieldPermissions',
+        '<field>' + objApi + '.'
+      );
+      xml = removeBlocksContaining(
+        xml,
+        'objectPermissions',
+        '<object>' + objApi + '</object>'
+      );
+      xml = removeBlocksContaining(
+        xml,
+        'layoutAssignments',
+        '<layout>' + objApi + '-'
+      );
+    }
+
+    if (xml != original) {
+      System.debug(
+        '[DEPLOY-TRACE] stripProfileReferencesToCustomSettings: removed custom-setting references from Profile XML'
+      );
+    }
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // EXISTING CUSTOM OBJECT XML SANITIZER
   // ─────────────────────────────────────────────────────────────
   public static String sanitizeExistingCustomObjectXml(String xml) {

@@ -43,7 +43,38 @@ RULES:
 - Element order inside <fields>: fullName, then type-specific elements, then label, then required/defaultValue, then type
 - For ADDING fields to existing setting: include ALL existing fields from org state plus the new one
 - For DELETING a field: use destructiveFiles with type CustomField, member = SettingName__c.FieldName__c
-- For DELETING the entire setting: use destructiveFiles with type CustomObject, member = SettingName__c]]></value>
+- For DELETING the entire setting: use destructiveFiles with type CustomObject, member = SettingName__c
+
+== RUNTIME RECORD LIFECYCLE (NO METADATA CHANGES) ==
+When a ticket asks to create/update/delete Hierarchy or List Custom Setting records
+(Org Default, Profile-level, User-level, or List rows), use dmlOperations:
+
+1) customSettingRecordUpsert
+{
+    "type": "customSettingRecordUpsert",
+    "objectApiName": "Integration_Config__c",
+    "level": "org|profile|user|list",
+    "ownerIdentifier": "Standard User or username (for profile/user levels)",
+    "recordName": "RowName (for list settings)",
+    "fields": {
+        "Endpoint_URL__c": "https://org.default.example",
+        "Retry_Count__c": 1
+    }
+}
+
+2) customSettingRecordDelete
+{
+    "type": "customSettingRecordDelete",
+    "objectApiName": "Integration_Config__c",
+    "level": "org|profile|user|list",
+    "ownerIdentifier": "Standard User or username (for profile/user levels)",
+    "recordName": "RowName (for list settings)"
+}
+
+Rules:
+- Use csvProcess ONLY when an actual CSV attachment exists.
+- For runtime record lifecycle tickets with no attachment, do not emit csvProcess.
+- For runtime-only tickets, keep files[] empty and use only dmlOperations.]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>
