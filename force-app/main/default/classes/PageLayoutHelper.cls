@@ -39,6 +39,10 @@ public class PageLayoutHelper {
     'RecordTypeId'
   };
 
+  private static final Set<String> CMDT_LAYOUT_REQUIRED_FIELDS = new Set<String>{
+    'IsProtected'
+  };
+
   // ─────────────────────────────────────────────────────────────
   // LIST LAYOUTS
   // ─────────────────────────────────────────────────────────────
@@ -469,12 +473,19 @@ public class PageLayoutHelper {
           }
         }
       }
+
+      if (objectApiName != null && objectApiName.endsWith('__mdt')) {
+        required.addAll(CMDT_LAYOUT_REQUIRED_FIELDS);
+      }
     } catch (Exception e) {
       System.debug(
         'PageLayoutHelper.getRequiredFields() failed: ' + e.getMessage()
       );
       ErrorLogger.log(e);
       required.add('Name');
+      if (objectApiName != null && objectApiName.endsWith('__mdt')) {
+        required.addAll(CMDT_LAYOUT_REQUIRED_FIELDS);
+      }
     }
     return required;
   }

@@ -402,12 +402,28 @@ public class LLMLayoutHelper {
     Map<String, Object> layoutStructure,
     List<String> newFields
   ) {
-    //String fullName = (String) layoutStructure.get('fullName');
+    String fullName = (String) layoutStructure.get('fullName');
+    String parentObject = null;
+    if (String.isNotBlank(fullName) && fullName.contains('-')) {
+      parentObject = fullName.substringBefore('-');
+    }
+    if (newFields == null) {
+      newFields = new List<String>();
+    }
+    if (
+      String.isNotBlank(parentObject) &&
+      parentObject.endsWith('__mdt') &&
+      !containsFieldIgnoreCase(newFields, 'IsProtected')
+    ) {
+      newFields.add('IsProtected');
+    }
     Object rawSections = layoutStructure.get('sections');
     if (!(rawSections instanceof List<Object>)) {
       return null;
     }
     List<Object> sections = (List<Object>) rawSections;
+    Boolean isCustomMetadataLayout = String.isNotBlank(parentObject) && parentObject.endsWith('__mdt');
+    String requiredPrimaryField = isCustomMetadataLayout ? 'MasterLabel' : 'Name';
 
     Set<String> alreadyOnLayout = new Set<String>();
     for (Object rawSecScan : sections) {
@@ -442,24 +458,24 @@ public class LLMLayoutHelper {
       List<String> rightBehaviors = toStringList(sec.get('rightBehaviors'));
 
       if (!injected && label == 'Information') {
-        // Ensure Name field is present at the start of Information section (Salesforce requirement)
-        Boolean nameAlreadyPresent = false;
+        // Ensure the required primary field is present at the start of the Information section.
+        Boolean primaryFieldAlreadyPresent = false;
         for (String f : leftFields) {
-          if ('Name'.equalsIgnoreCase(f)) {
-            nameAlreadyPresent = true;
+          if (requiredPrimaryField.equalsIgnoreCase(f)) {
+            primaryFieldAlreadyPresent = true;
             break;
           }
         }
-        if (!nameAlreadyPresent) {
+        if (!primaryFieldAlreadyPresent) {
           for (String f : rightFields) {
-            if ('Name'.equalsIgnoreCase(f)) {
-              nameAlreadyPresent = true;
+            if (requiredPrimaryField.equalsIgnoreCase(f)) {
+              primaryFieldAlreadyPresent = true;
               break;
             }
           }
         }
-        if (!nameAlreadyPresent) {
-          leftFields.add(0, 'Name');
+        if (!primaryFieldAlreadyPresent) {
+          leftFields.add(0, requiredPrimaryField);
           leftBehaviors.add(0, 'Edit'); // Will be corrected below based on object type
         }
 
@@ -546,20 +562,29 @@ public class LLMLayoutHelper {
 
     xml += '</Layout>';
 
-    // Fix Name field behavior per object's nameField type before returning
-    // (AutoNumber → Readonly, Text → Required)
-    String fullName = (String) layoutStructure.get('fullName');
+    // Fix primary field behavior per object type before returning.
     if (String.isNotBlank(fullName) && fullName.contains('-')) {
       try {
-        String parentObj = fullName.substringBefore('-');
-        String nameFieldType = resolveNameFieldType(parentObj);
-        xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(xml, nameFieldType);
+        if (isCustomMetadataLayout) {
+          xml = xml.replace('<field>Name</field>', '<field>MasterLabel</field>');
+          xml = xml.replace(
+            '<behavior>Readonly</behavior>\n                <field>MasterLabel</field>',
+            '<behavior>Required</behavior>\n                <field>MasterLabel</field>'
+          );
+          xml = xml.replace(
+            '<field>MasterLabel</field>\n                <behavior>Readonly</behavior>',
+            '<field>MasterLabel</field>\n                <behavior>Required</behavior>'
+          );
+        } else {
+          String nameFieldType = resolveNameFieldType(parentObject);
+          xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(xml, nameFieldType);
+        }
 
         Set<String> autoNumberFields = collectAutoNumberFieldNames(
-          parentObj,
+          parentObject,
           null
         );
-        autoNumberFields.remove('Name'); // already handled above
+        autoNumberFields.remove(isCustomMetadataLayout ? 'MasterLabel' : 'Name');
         if (!autoNumberFields.isEmpty()) {
           xml = LLMXmlSanitizer.forceReadonlyForAutoNumberFields(
             xml,
@@ -600,25 +625,41 @@ public class LLMLayoutHelper {
     s += '        <layoutColumns>\n';
     s += '            <layoutItems>\n';
 
-    // Determine correct Name field behavior based on object's nameField type
-    String nameBehavior = 'Edit';
+    // Determine correct primary field behavior based on object type.
+    String primaryField = 'Name';
+    String primaryBehavior = 'Edit';
     if (String.isNotBlank(objectApiName)) {
       try {
-        String nameFieldType = resolveNameFieldType(objectApiName);
-        nameBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
+        if (objectApiName.endsWith('__mdt')) {
+          primaryField = 'MasterLabel';
+          primaryBehavior = 'Required';
+        } else {
+          String nameFieldType = resolveNameFieldType(objectApiName);
+          primaryBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
           ? 'Readonly'
           : 'Required';
+        }
       } catch (Exception ex) {
         System.debug(
-          '[DEPLOY-TRACE] buildDefaultLayoutXml: could not determine Name behavior: ' +
+          '[DEPLOY-TRACE] buildDefaultLayoutXml: could not determine primary field behavior: ' +
           ex.getMessage()
         );
       }
     }
 
-    s += '                <behavior>' + nameBehavior + '</behavior>\n';
-    s += '                <field>Name</field>\n';
+    s += '                <behavior>' + primaryBehavior + '</behavior>\n';
+    s += '                <field>' + primaryField + '</field>\n';
     s += '            </layoutItems>\n';
+    if (String.isNotBlank(objectApiName) && objectApiName.endsWith('__mdt')) {
+      s += '            <layoutItems>\n';
+      s += '                <behavior>Required</behavior>\n';
+      s += '                <field>DeveloperName</field>\n';
+      s += '            </layoutItems>\n';
+      s += '            <layoutItems>\n';
+      s += '                <behavior>Edit</behavior>\n';
+      s += '                <field>IsProtected</field>\n';
+      s += '            </layoutItems>\n';
+    }
     if (fieldInfos != null) {
       for (Map<String, String> fi : fieldInfos) {
         String f = fi.get('name');
@@ -701,7 +742,15 @@ public class LLMLayoutHelper {
     xml += '        <layoutColumns>\n';
     xml += '            <layoutItems>\n';
     xml += '                <behavior>Required</behavior>\n';
-    xml += '                <field>Name</field>\n';
+    xml += '                <field>MasterLabel</field>\n';
+    xml += '            </layoutItems>\n';
+    xml += '            <layoutItems>\n';
+    xml += '                <behavior>Required</behavior>\n';
+    xml += '                <field>DeveloperName</field>\n';
+    xml += '            </layoutItems>\n';
+    xml += '            <layoutItems>\n';
+    xml += '                <behavior>Edit</behavior>\n';
+    xml += '                <field>IsProtected</field>\n';
     xml += '            </layoutItems>\n';
     for (String f : newFields) {
       xml += '            <layoutItems>\n';
@@ -870,6 +919,22 @@ public class LLMLayoutHelper {
     }
     return fields;
   }
+
+  private static Boolean containsFieldIgnoreCase(
+    List<String> fields,
+    String target
+  ) {
+    if (fields == null || fields.isEmpty() || String.isBlank(target)) {
+      return false;
+    }
+    for (String fieldName : fields) {
+      if (fieldName != null && fieldName.equalsIgnoreCase(target)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ─────────────────────────────────────────────────────────────
   // RESOLVE NAME FIELD TYPE
   //

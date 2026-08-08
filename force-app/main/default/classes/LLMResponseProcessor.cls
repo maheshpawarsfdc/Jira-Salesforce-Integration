@@ -1342,6 +1342,52 @@ public class LLMResponseProcessor {
             }
           }
 
+          if (
+            memberName != null &&
+            memberName.contains('-') &&
+            memberName.substringBefore('-').endsWith('__mdt') &&
+            !xmlContent.contains('<field>MasterLabel</field>')
+          ) {
+            if (xmlContent.contains('<field>Name</field>')) {
+              xmlContent = xmlContent.replace(
+                '<field>Name</field>',
+                '<field>MasterLabel</field>'
+              );
+            }
+            xmlContent = LLMLayoutHelper.injectNewFieldsIntoLayoutXml(
+              xmlContent,
+              new List<String>{ 'MasterLabel', 'DeveloperName', 'IsProtected' }
+            );
+            System.debug(
+              '[DEPLOY-TRACE] CMDT layout guard: normalized primary field and injected IsProtected into [' +
+                memberName +
+                ']'
+            );
+          }
+
+          if (
+            memberName != null &&
+            memberName.contains('-') &&
+            memberName.substringBefore('-').endsWith('__mdt')
+          ) {
+            xmlContent = xmlContent.replace(
+              '<behavior>Readonly</behavior>\n                <field>DeveloperName</field>',
+              '<behavior>Required</behavior>\n                <field>DeveloperName</field>'
+            );
+            xmlContent = xmlContent.replace(
+              '<field>DeveloperName</field>\n                <behavior>Readonly</behavior>',
+              '<field>DeveloperName</field>\n                <behavior>Required</behavior>'
+            );
+            xmlContent = xmlContent.replace(
+              '<behavior>Readonly</behavior>\n                <field>MasterLabel</field>',
+              '<behavior>Required</behavior>\n                <field>MasterLabel</field>'
+            );
+            xmlContent = xmlContent.replace(
+              '<field>MasterLabel</field>\n                <behavior>Readonly</behavior>',
+              '<field>MasterLabel</field>\n                <behavior>Required</behavior>'
+            );
+          }
+
           // Force Readonly on all formula/rollup/autonumber fields — runs
           // after merge/injection so behavior is safe for final layout XML.
           if (memberName != null && memberName.contains('-')) {
