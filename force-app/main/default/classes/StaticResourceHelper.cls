@@ -1,13 +1,9 @@
 /**
  * StaticResourceHelper.cls
  *
- * Handles Static Resource operations via ZIP deploy.
- *
- * MDAPI facts:
- * - Content file:  staticresources/{ApiName}                    (binary, no extension)
- * - Metadata file: staticresources/{ApiName}.resource-meta.xml  (text XML)
- * - Package type:  StaticResource
- * - Member name:   ApiName (no __c, no extension)
+ * Handles Static Resource operations via the Tooling API (see
+ * StaticResourceToolingQueueable for why this doesn't go through the
+ * Metadata-API zip-deploy path everything else in this project uses).
  *
  * Files come from Jira ticket attachments.
  * currentAttachments is populated by JiraInboundController
@@ -25,9 +21,36 @@ public class StaticResourceHelper {
   public static Map<String, Map<String, String>> currentAttachments = new Map<String, Map<String, String>>();
 
   // ─────────────────────────────────────────────────────────────
+  // PENDING TOOLING OPS
+  // Count of StaticResourceToolingQueueable jobs enqueued this
+  // transaction but not yet executed (Queueable execution is genuinely
+  // async — it hasn't run by the time this same transaction finishes).
+  // LLMService checks this to skip its own immediate synchronous
+  // "success"/"error" post-back-to-Jira when the only work done was a
+  // pending Tooling API static resource op — otherwise Jira would see a
+  // premature "success" before the actual create/update/delete callout
+  // has even happened, followed by a second (possibly contradicting)
+  // status once the queueable really finishes. Reset per ticket in
+  // LLMService.processJiraTicket()'s hard-reset block.
+  // ─────────────────────────────────────────────────────────────
+  public static Integer pendingToolingOps = 0;
+
+  // ─────────────────────────────────────────────────────────────
   // DEPLOY (create or update)
-  // Stages both the binary content file and the metadata XML sidecar
-  // into ZipBuilder for a single deploy.
+  // Enqueues a Tooling API callout (StaticResourceToolingQueueable)
+  // instead of going through ZipBuilder/Zippex's Metadata-API zip-deploy
+  // path. Zippex represents binary content as a hex string internally
+  // (2x the byte size) and copies it several times while assembling the
+  // archive — for a real ~1.2MB attachment this was directly reproduced
+  // to throw "System.LimitException: Apex heap size too large" (up to
+  // ~24MB peak), nowhere near Salesforce's actual 5MB static-resource
+  // cap. The Tooling API needs the file in memory as base64 text only
+  // ONCE, so it survives dramatically larger attachments on the same
+  // governor budget — verified directly up to ~4.2MB. (Files much closer
+  // to 5MB hit a separate, unconditional Apex limit — String length
+  // exceeds maximum: 6,000,000 characters — which no packaging change on
+  // this side can route around; see StaticResourceToolingQueueable's
+  // class comment.)
   // ─────────────────────────────────────────────────────────────
   public static void deployStaticResource(Map<String, Object> args) {
     String apiName = getRequired(args, 'apiName');
@@ -57,46 +80,33 @@ public class StaticResourceHelper {
     String mimeType = att.get('mimeType');
     String base64Data = att.get('base64Content');
 
-    // 1 — Binary content file (no extension in path)
-    ZipBuilder.addBinaryFile(
-      'StaticResource',
-      apiName,
-      'staticresources/' + apiName + '.resource',
-      base64Data
+    System.enqueueJob(
+      new StaticResourceToolingQueueable(
+        ErrorLogger.currentJiraKey,
+        apiName,
+        fileName,
+        mimeType,
+        cacheControl,
+        base64Data
+      )
     );
-
-    // 2 — Metadata XML sidecar
-    String metaXml =
-      '<?xml version="1.0" encoding="UTF-8"?>' +
-      '<StaticResource xmlns="' +
-      NAMESPACE +
-      '">' +
-      '<cacheControl>' +
-      cacheControl +
-      '</cacheControl>' +
-      '<contentType>' +
-      escapeXml(mimeType) +
-      '</contentType>' +
-      '</StaticResource>';
-
-    ZipBuilder.addFile(
-      'StaticResource',
-      apiName,
-      'staticresources/' + apiName + '.resource-meta.xml',
-      metaXml
-    );
+    pendingToolingOps++;
 
     System.debug(
       'StaticResourceHelper.deployStaticResource(): [' +
         apiName +
-        '] staged for deploy'
+        '] queued for Tooling API deploy'
     );
   }
 
   // ─────────────────────────────────────────────────────────────
   // DELETE
-  // Adds the static resource to destructiveChangesPost.xml.
-  // Follows the same pattern as CustomLabelHelper, NamedCredentialHelper etc.
+  // Enqueues a Tooling API DELETE (StaticResourceToolingQueueable) —
+  // same rationale as deployStaticResource() above. This also sidesteps
+  // whatever Metadata-API-specific delete quirks other metadata types
+  // have (see the AssignmentRules delete investigation elsewhere in this
+  // project): the Tooling API's StaticResource endpoint supports a plain
+  // HTTP DELETE against the record's Id, which actually removes it.
   // ─────────────────────────────────────────────────────────────
   public static void deleteStaticResource(Map<String, Object> args) {
     String apiName = getRequired(args, 'apiName');
@@ -105,51 +115,15 @@ public class StaticResourceHelper {
       'StaticResourceHelper.deleteStaticResource() called: apiName=' + apiName
     );
 
-    String nameTag = '<name>StaticResource</name>';
-    String existing = ZipBuilder.files.get('destructiveChangesPost.xml');
-    String xml;
-
-    if (existing != null && existing.contains(nameTag)) {
-      xml = existing.replace(
-        nameTag,
-        '<members>' + apiName + '</members>' + nameTag
-      );
-    } else if (existing != null) {
-      xml = existing.replace(
-        '</Package>',
-        '<types><members>' +
-          apiName +
-          '</members>' +
-          nameTag +
-          '</types></Package>'
-      );
-    } else {
-      xml =
-        '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<Package xmlns="' +
-        NAMESPACE +
-        '">' +
-        '<types>' +
-        '<members>' +
-        apiName +
-        '</members>' +
-        nameTag +
-        '</types>' +
-        '<version>61.0</version>' +
-        '</Package>';
-    }
-
-    ZipBuilder.addFile(
-      '__destructive__',
-      apiName,
-      'destructiveChangesPost.xml',
-      xml
+    System.enqueueJob(
+      new StaticResourceToolingQueueable(ErrorLogger.currentJiraKey, apiName)
     );
+    pendingToolingOps++;
 
     System.debug(
       'StaticResourceHelper.deleteStaticResource(): [' +
         apiName +
-        '] queued for destructive deploy'
+        '] queued for Tooling API delete'
     );
   }
 

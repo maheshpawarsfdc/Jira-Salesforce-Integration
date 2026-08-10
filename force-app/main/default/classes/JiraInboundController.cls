@@ -107,6 +107,21 @@ global class JiraInboundController {
         System.debug('JiraInbound: No attachments in payload');
       }
 
+      // Release the raw request body / parsed payload now — everything
+      // needed from them (issueKey, summary, description, attachments)
+      // has already been extracted into StaticResourceHelper.currentAttachments
+      // and the locals above. For an attachment-bearing ticket, `body` and
+      // `payload` are still holding a full base64 copy of every attachment
+      // (on top of the copy now sitting in currentAttachments) for no
+      // reason — and STAGE 1-2 below (org state + up to 3 LLM calls) is
+      // heap-hungry on its own. Dropping the references here lets the GC
+      // reclaim that memory before the heavy part of the transaction runs,
+      // instead of carrying a dead ~1.3x-inflated copy of the attachment
+      // through the whole request.
+      body = null;
+      payload = null;
+      rawAttachments = null;
+
       // ── STEP 4: Let the AI read the story and execute ──
       llmResponse = LLMService.processJiraTicket(
         issueKey,

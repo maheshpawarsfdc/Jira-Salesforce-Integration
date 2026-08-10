@@ -140,6 +140,26 @@ public class LLMResponseProcessor {
           // Routing assignment rule" got skipped with summary text that
           // itself said deletion was still required, because the boolean
           // this loop actually acts on didn't get inverted for delete.
+          // StaticResource is a THIRD special case, distinct from delete.
+          // verifyItemExists('StaticResource', ...) can only check whether
+          // a resource with this NAME exists — org state has no record of
+          // file CONTENT, so it can never confirm "already has the new
+          // attachment's bytes". Every StaticResource ticket this pipeline
+          // handles is "deploy/update from this specific attached file"
+          // (see the STATIC_RESOURCE prompt), so a name match is exactly
+          // as unable to prove "satisfied" here as it is for a delete —
+          // it only proves the resource exists, never that it already
+          // matches the NEW file. Confirming a claimed "true" via name
+          // match alone caused a real incident: ticket "update zipStatic
+          // with this new file" got marked already-satisfied and skipped,
+          // with a summary that itself said "not yet satisfied" — because
+          // the boolean this loop actually enforces disagreed with the
+          // LLM's own prose. Treat a claimed "true" here the same as an
+          // unconfirmable claim: never let it stand. Costs at most an
+          // unnecessary redeploy (idempotent, cheap); the alternative is
+          // silently never applying a real file update.
+          Boolean isUnverifiableContentType = 'StaticResource'
+            .equalsIgnoreCase(itype);
           Boolean verifiedExists;
           if (!claimedExists) {
             verifiedExists = false;
@@ -151,6 +171,8 @@ public class LLMResponseProcessor {
               claimedExists
             );
             verifiedExists = !stillPresent;
+          } else if (isUnverifiableContentType) {
+            verifiedExists = false;
           } else {
             verifiedExists = verifyItemExists(
               itype,
@@ -201,8 +223,7 @@ public class LLMResponseProcessor {
         !allSatisfied &&
         shouldForcePermissionSetUpdateWork(summary, description, verifiedItems)
       ) {
-        gateSummary =
-          'Existing Permission Set detected, but ticket requests pending permission updates/verification — proceeding with update workflow.';
+        gateSummary = 'Existing Permission Set detected, but ticket requests pending permission updates/verification — proceeding with update workflow.';
       }
 
       System.debug(
@@ -1051,7 +1072,10 @@ public class LLMResponseProcessor {
     LLMTriggerMerger.enforceTriggerMerge(files, orgState);
 
     // ── Scenario B violation detector ─────────────────────────
-    LLMLayoutHelper.detectScenarioBViolation(nonCustomSettingLayoutFiles, orgState);
+    LLMLayoutHelper.detectScenarioBViolation(
+      nonCustomSettingLayoutFiles,
+      orgState
+    );
 
     if (files != null && !files.isEmpty()) {
       System.debug(
@@ -2135,8 +2159,7 @@ public class LLMResponseProcessor {
             String mt = e.get('metadataType');
             String mn = e.get('memberName');
             if (
-              'ApexClass'.equals(mt) &&
-              'CustomSettingLifecycleTest'.equals(mn)
+              'ApexClass'.equals(mt) && 'CustomSettingLifecycleTest'.equals(mn)
             ) {
               continue;
             }
@@ -2147,11 +2170,13 @@ public class LLMResponseProcessor {
           }
 
           if (!zip2DestructiveTypes.isEmpty()) {
-            String zip2DestructiveXml = buildDestructiveXml(zip2DestructiveTypes);
+            String zip2DestructiveXml = buildDestructiveXml(
+              zip2DestructiveTypes
+            );
             zip2Files.put('destructiveChangesPost.xml', zip2DestructiveXml);
             System.debug(
               '[DEPLOY-TRACE] Split destructive deploy: ZIP1=ApexClass cleanup, ZIP2=custom setting teardown members=' +
-                zip2DestructiveTypes
+              zip2DestructiveTypes
             );
           }
         } else {
@@ -2190,7 +2215,7 @@ public class LLMResponseProcessor {
       if (autoStaged) {
         System.debug(
           '[DEPLOY-TRACE] Auto-staged custom setting cleanup fallback for issue=' +
-            issueKey
+          issueKey
         );
       }
     }
@@ -2674,7 +2699,10 @@ public class LLMResponseProcessor {
             );
           } else {
             Map<String, Object> processResult = CsvProcessor.process(
-              new Map<String, Object>{ 'fileName' => fileName, 'type' => csvType }
+              new Map<String, Object>{
+                'fileName' => fileName,
+                'type' => csvType
+              }
             );
             System.debug(
               'processDmlOperations: CSV processed — ' +
@@ -2903,7 +2931,7 @@ public class LLMResponseProcessor {
       List<User> byUsername = [
         SELECT Id, Username, Alias, Name
         FROM User
-        WHERE IsActive = true AND Username = :userRef
+        WHERE IsActive = TRUE AND Username = :userRef
         LIMIT 1
       ];
       if (!byUsername.isEmpty()) {
@@ -2913,7 +2941,7 @@ public class LLMResponseProcessor {
       List<User> byEmail = [
         SELECT Id, Username, Alias, Name
         FROM User
-        WHERE IsActive = true AND Email = :userRef
+        WHERE IsActive = TRUE AND Email = :userRef
         LIMIT 1
       ];
       if (!byEmail.isEmpty()) {
@@ -2923,7 +2951,7 @@ public class LLMResponseProcessor {
       List<User> byAlias = [
         SELECT Id, Username, Alias, Name
         FROM User
-        WHERE IsActive = true AND Alias = :userRef
+        WHERE IsActive = TRUE AND Alias = :userRef
         LIMIT 1
       ];
       if (!byAlias.isEmpty()) {
@@ -2933,7 +2961,7 @@ public class LLMResponseProcessor {
       List<User> byName = [
         SELECT Id, Username, Alias, Name
         FROM User
-        WHERE IsActive = true AND Name = :userRef
+        WHERE IsActive = TRUE AND Name = :userRef
         LIMIT 2
       ];
       if (byName.size() > 1) {
@@ -2957,7 +2985,7 @@ public class LLMResponseProcessor {
         List<User> byUsernameLocalPart = [
           SELECT Id, Username, Alias, Name
           FROM User
-          WHERE IsActive = true AND Username LIKE :usernameLike
+          WHERE IsActive = TRUE AND Username LIKE :usernameLike
           LIMIT 2
         ];
         if (byUsernameLocalPart.size() == 1) {
@@ -2976,7 +3004,7 @@ public class LLMResponseProcessor {
         List<User> byEmailLocalPart = [
           SELECT Id, Username, Alias, Name
           FROM User
-          WHERE IsActive = true AND Email LIKE :usernameLike
+          WHERE IsActive = TRUE AND Email LIKE :usernameLike
           LIMIT 2
         ];
         if (byEmailLocalPart.size() == 1) {
@@ -3000,7 +3028,7 @@ public class LLMResponseProcessor {
             List<User> byAliasTail = [
               SELECT Id, Username, Alias, Name
               FROM User
-              WHERE IsActive = true AND Alias = :tail
+              WHERE IsActive = TRUE AND Alias = :tail
               LIMIT 2
             ];
             if (byAliasTail.size() == 1) {
@@ -3020,7 +3048,7 @@ public class LLMResponseProcessor {
             List<User> byUsernameTail = [
               SELECT Id, Username, Alias, Name
               FROM User
-              WHERE IsActive = true AND Username LIKE :tailUsernameLike
+              WHERE IsActive = TRUE AND Username LIKE :tailUsernameLike
               LIMIT 2
             ];
             if (byUsernameTail.size() == 1) {
@@ -3116,10 +3144,20 @@ public class LLMResponseProcessor {
         }
         if (dt == Schema.DisplayType.Boolean) {
           String lower = s.toLowerCase();
-          if (lower == 'true' || lower == '1' || lower == 'yes' || lower == 'y') {
+          if (
+            lower == 'true' ||
+            lower == '1' ||
+            lower == 'yes' ||
+            lower == 'y'
+          ) {
             return true;
           }
-          if (lower == 'false' || lower == '0' || lower == 'no' || lower == 'n') {
+          if (
+            lower == 'false' ||
+            lower == '0' ||
+            lower == 'no' ||
+            lower == 'n'
+          ) {
             return false;
           }
           throw new LLMService.LLMException(
@@ -3205,8 +3243,7 @@ public class LLMResponseProcessor {
   }
 
   private static Boolean isWrappingQuote(String ch) {
-    return
-      ch == '\'' ||
+    return ch == '\'' ||
       ch == '"' ||
       ch == '`' ||
       ch == '‘' ||
@@ -3392,7 +3429,7 @@ public class LLMResponseProcessor {
         zip2Files.put('destructiveChangesPost.xml', zip2Xml);
         System.debug(
           '[DEPLOY-TRACE] autoStageCustomSettingCleanupFallback: split cleanup ZIP1/ZIP2 for targets=' +
-            targets
+          targets
         );
       }
       return true;
@@ -3406,7 +3443,7 @@ public class LLMResponseProcessor {
     }
     System.debug(
       '[DEPLOY-TRACE] autoStageCustomSettingCleanupFallback: staged cleanup in ZIP1 for targets=' +
-        targets
+      targets
     );
     return true;
   }

@@ -218,6 +218,19 @@ public class ZipBuilder {
           .replace('\t', '');
 
         Blob fileBlob = EncodingUtil.base64Decode(cleanBase64);
+        // Drop the base64 text now that we have the decoded Blob — both
+        // the map's copy (binaryFiles still holds it, and won't be
+        // cleared until well after this whole method returns) and this
+        // method's own local copies are otherwise held alive for the rest
+        // of zip assembly below, on top of the Blob, the hex-string
+        // representation Zippex builds internally, and the final base64
+        // re-encode of the whole archive. For a ~1.2MB file those
+        // redundant copies are what pushes a Queueable execution past the
+        // heap limit (System.LimitException: Apex heap size too large) —
+        // this was reproduced directly, not theoretical.
+        binaryFiles.put(filePath, null);
+        base64Content = null;
+        cleanBase64 = null;
         System.debug(
           'ZipBuilder: adding binary file [' +
             filePath +

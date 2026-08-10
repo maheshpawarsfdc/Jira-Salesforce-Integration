@@ -17,6 +17,7 @@ public class LLMService {
     LLMResponseProcessor.pendingTestClassNames = null;
     LLMResponseProcessor.pendingTestClassContents = null;
     ZipBuilder.clear();
+    StaticResourceHelper.pendingToolingOps = 0;
     FunctionHelper.clearQueues();
 
     // Ambient ticket context so any ErrorLogger.log() in deep helpers tags this key.
@@ -270,18 +271,36 @@ if(!review.approved){
     // storeDeploymentStatus makes an HTTP callout.
     // Salesforce forbids callouts after DML in the same transaction,
     // so the callout MUST happen before flushDmlQueues().
-    try {
-      JiraCallbackService.storeDeploymentStatus(
-        issueKey,
-        FunctionHelper.hadError ? 'error' : 'success',
-        result,
-        'sync-' + DateTime.now().getTime()
-      );
-    } catch (Exception e) {
+    //
+    // Skip this immediate post if a StaticResourceToolingQueueable is
+    // pending — that queueable hasn't actually run yet (Queueable
+    // execution is genuinely async, not "later in this same
+    // transaction"), so posting "success" here would tell Jira the
+    // static resource op finished before the real Tooling API callout
+    // even happened. The queueable posts its own status once it
+    // actually completes; let that be the one true answer instead of
+    // racing it with a premature — and possibly wrong — one here.
+    if (StaticResourceHelper.pendingToolingOps == 0) {
+      try {
+        JiraCallbackService.storeDeploymentStatus(
+          issueKey,
+          FunctionHelper.hadError ? 'error' : 'success',
+          result,
+          'sync-' + DateTime.now().getTime()
+        );
+      } catch (Exception e) {
+        System.debug(
+          'LLMService: storeDeploymentStatus FAILED — ' + e.getMessage()
+        );
+        ErrorLogger.log(e);
+      }
+    } else {
       System.debug(
-        'LLMService: storeDeploymentStatus FAILED — ' + e.getMessage()
+        'LLMService: skipping sync storeDeploymentStatus — ' +
+          StaticResourceHelper.pendingToolingOps +
+          ' StaticResourceToolingQueueable job(s) pending; they will ' +
+          'post the real status once they actually run'
       );
-      ErrorLogger.log(e);
     }
 
     // DML flush comes AFTER the callout — safe now
