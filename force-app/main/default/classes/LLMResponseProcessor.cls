@@ -2800,7 +2800,7 @@ public class LLMResponseProcessor {
         } catch (LLMService.LLMException le) {
           System.debug(
             'processDmlOperations: SKIPPED groupMemberAssign - ' +
-            le.getMessage()
+              le.getMessage()
           );
         }
       } else if (opType == 'csvProcess') {
@@ -3090,58 +3090,133 @@ public class LLMResponseProcessor {
     }
 
     String username = extractFirstEmailToken(text);
-    if (String.isBlank(username)) {
-      return;
-    }
+    String nestedGroupRef = extractIdentifierByLabel(
+      text,
+      new List<String>{
+        'nestedGroupDeveloperName',
+        'nested group developer name',
+        'nested group',
+        'member group',
+        'child group'
+      }
+    );
 
-    String groupRef = null;
-    Object filesRaw = parsed != null ? parsed.get('files') : null;
-    if (filesRaw instanceof List<Object>) {
-      for (Object fRaw : (List<Object>) filesRaw) {
-        if (!(fRaw instanceof Map<String, Object>)) {
-          continue;
+    String groupRef = extractIdentifierByLabel(
+      text,
+      new List<String>{
+        'groupDeveloperName',
+        'group developer name',
+        'parentGroupDeveloperName',
+        'parent group developer name',
+        'parent public group',
+        'parent group'
+      }
+    );
+
+    if (String.isBlank(groupRef)) {
+      Object filesRaw = parsed != null ? parsed.get('files') : null;
+      List<String> groupMembers = new List<String>();
+      if (filesRaw instanceof List<Object>) {
+        for (Object fRaw : (List<Object>) filesRaw) {
+          if (!(fRaw instanceof Map<String, Object>)) {
+            continue;
+          }
+          Map<String, Object> f = (Map<String, Object>) fRaw;
+          String mt = (String) f.get('metadataType');
+          String mn = (String) f.get('memberName');
+          if (
+            ('Group'.equalsIgnoreCase(mt) ||
+            'PublicGroup'.equalsIgnoreCase(mt)) &&
+            String.isNotBlank(mn)
+          ) {
+            groupMembers.add(mn);
+          }
         }
-        Map<String, Object> f = (Map<String, Object>) fRaw;
-        String mt = (String) f.get('metadataType');
-        String mn = (String) f.get('memberName');
-        if (
-          ('Group'.equalsIgnoreCase(mt) || 'PublicGroup'.equalsIgnoreCase(mt)) &&
-          String.isNotBlank(mn)
-        ) {
-          groupRef = mn;
-          break;
+      }
+
+      // Only auto-select from files[] when unambiguous.
+      if (groupMembers.size() == 1) {
+        groupRef = groupMembers[0];
+      } else if (groupMembers.size() > 1 && String.isNotBlank(nestedGroupRef)) {
+        for (String gm : groupMembers) {
+          if (!gm.equalsIgnoreCase(nestedGroupRef)) {
+            groupRef = gm;
+            break;
+          }
         }
       }
     }
 
     if (String.isBlank(groupRef)) {
+      return;
+    }
+
+    if (
+      String.isNotBlank(nestedGroupRef) &&
+      groupRef.equalsIgnoreCase(nestedGroupRef)
+    ) {
+      // Do not create self-referential nested assignments.
+      return;
+    }
+
+    if (String.isNotBlank(username)) {
+      nonCloneOps.add(
+        new Map<String, Object>{
+          'type' => 'groupMemberAssign',
+          'groupDeveloperName' => groupRef,
+          'username' => username,
+          'memberType' => 'user'
+        }
+      );
+      System.debug(
+        'processXmlGenerationResponse: auto-injected user groupMemberAssign from ticket text [' +
+          groupRef +
+          '] -> [' +
+          username +
+          ']'
+      );
+      return;
+    }
+
+    if (String.isNotBlank(nestedGroupRef)) {
+      nonCloneOps.add(
+        new Map<String, Object>{
+          'type' => 'groupMemberAssign',
+          'groupDeveloperName' => groupRef,
+          'nestedGroupDeveloperName' => nestedGroupRef,
+          'memberType' => 'group'
+        }
+      );
+      System.debug(
+        'processXmlGenerationResponse: auto-injected nested groupMemberAssign from ticket text [' +
+          groupRef +
+          '] -> [' +
+          nestedGroupRef +
+          ']'
+      );
+    }
+  }
+
+  private static String extractIdentifierByLabel(
+    String text,
+    List<String> labels
+  ) {
+    if (String.isBlank(text) || labels == null || labels.isEmpty()) {
+      return null;
+    }
+    for (String label : labels) {
+      if (String.isBlank(label)) {
+        continue;
+      }
+      String escaped = Pattern.quote(label);
       Matcher m = Pattern.compile(
-        '(?i)(?:groupDeveloperName|public\\s+group|group\\s+name)\\s*[:\\-]\\s*([A-Za-z0-9_]+)'
+        '(?im)\\b' + escaped + '\\b\\s*[:\\-]\\s*([A-Za-z0-9_]+)'
       ).matcher(text);
       if (m.find()) {
-        groupRef = m.group(1);
+        return m.group(1);
       }
     }
-
-    if (String.isBlank(groupRef)) {
-      return;
-    }
-
-    nonCloneOps.add(
-      new Map<String, Object>{
-        'type' => 'groupMemberAssign',
-        'groupDeveloperName' => groupRef,
-        'username' => username,
-        'memberType' => 'user'
-      }
-    );
-    System.debug(
-      'processXmlGenerationResponse: auto-injected groupMemberAssign from ticket text [' +
-        groupRef +
-        '] -> [' +
-        username +
-        ']'
-    );
+    return null;
   }
 
   private static String extractFirstEmailToken(String text) {
