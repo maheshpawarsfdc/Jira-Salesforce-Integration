@@ -212,6 +212,22 @@ public class LLMResponseProcessor {
         }
       }
 
+      // Public Group metadata existence does not imply member assignments
+      // (including nested groups/roles/users) are satisfied. Those are
+      // runtime GroupMember DML operations and must not be short-circuited.
+      if (
+        allSatisfied &&
+        shouldForcePublicGroupMemberWork(summary, description, verifiedItems)
+      ) {
+        allSatisfied = false;
+        for (Map<String, Object> vi : verifiedItems) {
+          String vt = (String) vi.get('type');
+          if ('PublicGroup'.equalsIgnoreCase(vt)) {
+            vi.put('existsAlready', false);
+          }
+        }
+      }
+
       String gateSummary = (String) parsed.get('summary');
       if (String.isBlank(gateSummary)) {
         gateSummary = allSatisfied
@@ -224,6 +240,13 @@ public class LLMResponseProcessor {
         shouldForcePermissionSetUpdateWork(summary, description, verifiedItems)
       ) {
         gateSummary = 'Existing Permission Set detected, but ticket requests pending permission updates/verification — proceeding with update workflow.';
+      }
+
+      if (
+        !allSatisfied &&
+        shouldForcePublicGroupMemberWork(summary, description, verifiedItems)
+      ) {
+        gateSummary = 'The Public Group exists, but assigning members is runtime work that is not yet satisfied.';
       }
 
       System.debug(
@@ -596,6 +619,55 @@ public class LLMResponseProcessor {
     return updateIntent || existingOnlyIntent;
   }
 
+  private static Boolean shouldForcePublicGroupMemberWork(
+    String summary,
+    String description,
+    List<Map<String, Object>> verifiedItems
+  ) {
+    Boolean hasPublicGroupItem = false;
+    if (verifiedItems != null) {
+      for (Map<String, Object> it : verifiedItems) {
+        String t = (String) it.get('type');
+        if ('PublicGroup'.equalsIgnoreCase(t)) {
+          hasPublicGroupItem = true;
+          break;
+        }
+      }
+    }
+    if (!hasPublicGroupItem) {
+      return false;
+    }
+
+    String text =
+      (String.isBlank(summary) ? '' : summary + ' ') +
+      (String.isBlank(description) ? '' : description);
+    String lower = text.toLowerCase();
+
+    Boolean mentionsMemberWork =
+      lower.contains('member') ||
+      lower.contains('groupmember') ||
+      lower.contains('user') ||
+      lower.contains('role') ||
+      lower.contains('nested group') ||
+      lower.contains('public group');
+
+    if (!mentionsMemberWork) {
+      return false;
+    }
+
+    Boolean runtimeIntent =
+      lower.contains('assign') ||
+      lower.contains('add') ||
+      lower.contains('include') ||
+      lower.contains('remove') ||
+      lower.contains('unassign') ||
+      lower.contains('nested') ||
+      lower.contains('not yet satisfied') ||
+      lower.contains('pending');
+
+    return runtimeIntent;
+  }
+
   private static Set<String> collectCustomSettingObjectNames(
     List<Object> files
   ) {
@@ -864,7 +936,13 @@ public class LLMResponseProcessor {
     }
 
     try {
-      return processXmlGenerationResponse(content, issueKey, orgState);
+      return processXmlGenerationResponse(
+        content,
+        issueKey,
+        orgState,
+        summary,
+        description
+      );
     } catch (ApexCodeValidator.ValidationException ve) {
       System.debug(
         '[APEX-VALIDATOR] Caught ValidationException — requesting targeted repair: ' +
@@ -908,7 +986,13 @@ public class LLMResponseProcessor {
         '[APEX-VALIDATOR] Repair response received — re-processing.'
       );
       try {
-        return processXmlGenerationResponse(content, issueKey, orgState);
+        return processXmlGenerationResponse(
+          content,
+          issueKey,
+          orgState,
+          summary,
+          description
+        );
       } catch (ApexCodeValidator.ValidationException ve2) {
         System.debug(
           '[APEX-VALIDATOR] Repair attempt still failed validation: ' +
@@ -928,7 +1012,9 @@ public class LLMResponseProcessor {
   public static String processXmlGenerationResponse(
     String llmResponse,
     String issueKey,
-    Map<String, Object> orgState
+    Map<String, Object> orgState,
+    String ticketSummary,
+    String ticketDescription
   ) {
     String cleaned = LLMGroqClient.cleanJsonResponse(llmResponse);
 
@@ -963,6 +1049,14 @@ public class LLMResponseProcessor {
         }
       }
     }
+
+    injectPublicGroupMemberOpFromTicket(
+      ticketSummary,
+      ticketDescription,
+      parsed,
+      nonCloneOps
+    );
+
     if (!cloneOps.isEmpty()) {
       System.debug(
         'processXmlGenerationResponse: processing ' +
@@ -1583,6 +1677,25 @@ public class LLMResponseProcessor {
           );
         }
 
+        if (metadataType == 'Group' || metadataType == 'PublicGroup') {
+          filePath = 'groups/' + memberName + '.group';
+          String beforeGroupSanitize = xmlContent;
+          // Public Group member assignment is runtime GroupMember DML.
+          // Group metadata deploy should contain only valid Group fields.
+          // The model sometimes emits member fragments like <type>User</type>,
+          // which are invalid in Group metadata and cause parser failures.
+          // Normalize to canonical Group XML instead of trying to salvage
+          // arbitrary mixed content.
+          xmlContent = sanitizeGroupXmlForDeploy(memberName, xmlContent);
+          if (beforeGroupSanitize != xmlContent) {
+            System.debug(
+              '[DEPLOY-TRACE] Group XML sanitized to canonical schema for [' +
+                filePath +
+                ']'
+            );
+          }
+        }
+
         // ── Track Apex classes and their test classes ───────────
         if (
           metadataType == 'ApexClass' &&
@@ -1824,6 +1937,13 @@ public class LLMResponseProcessor {
             '[DEPLOY-TRACE] LWC file — normalising metadataType [' +
               metadataType +
               '] → [LightningComponentBundle] for package.xml'
+          );
+        }
+
+        if (metadataType == 'PublicGroup') {
+          effectiveType = 'Group';
+          System.debug(
+            '[DEPLOY-TRACE] PublicGroup file — normalising metadataType [PublicGroup] → [Group] for package.xml'
           );
         }
 
@@ -2648,6 +2768,41 @@ public class LLMResponseProcessor {
             String.valueOf(op.get('objectApiName')) +
             ']'
         );
+      } else if (
+        opType == 'groupMemberAssign' ||
+        opType == 'publicGroupMemberAssign'
+      ) {
+        try {
+          GroupMember assignment = buildGroupMemberAssignment(op);
+
+          List<GroupMember> existingMembers = [
+            SELECT Id
+            FROM GroupMember
+            WHERE GroupId = :assignment.GroupId
+            AND UserOrGroupId = :assignment.UserOrGroupId
+            LIMIT 1
+          ];
+
+          if (existingMembers.isEmpty()) {
+            FunctionHelper.recordsToInsert.add(assignment);
+            System.debug(
+              'processDmlOperations: queued Public Group member assignment groupId=[' +
+                assignment.GroupId +
+                '] memberId=[' +
+                assignment.UserOrGroupId +
+                ']'
+            );
+          } else {
+            System.debug(
+              'processDmlOperations: SKIPPED groupMemberAssign - member already assigned.'
+            );
+          }
+        } catch (LLMService.LLMException le) {
+          System.debug(
+            'processDmlOperations: SKIPPED groupMemberAssign - ' +
+            le.getMessage()
+          );
+        }
       } else if (opType == 'csvProcess') {
         String fileName = (String) op.get('fileName');
         String csvType = (String) op.get('csvType');
@@ -2737,6 +2892,301 @@ public class LLMResponseProcessor {
         );
       }
     }
+  }
+
+  private static GroupMember buildGroupMemberAssignment(
+    Map<String, Object> op
+  ) {
+    String groupReference = getOptionalOpArg(
+      op,
+      'groupDeveloperName',
+      getOptionalOpArg(op, 'groupName', null)
+    );
+    if (String.isBlank(groupReference)) {
+      throw new LLMService.LLMException(
+        'groupMemberAssign requires groupDeveloperName or groupName.'
+      );
+    }
+
+    List<Group> targetGroups = [
+      SELECT Id, Name, DeveloperName
+      FROM Group
+      WHERE Type = 'Regular'
+      AND (DeveloperName = :groupReference OR Name = :groupReference)
+      LIMIT 2
+    ];
+    if (targetGroups.isEmpty()) {
+      throw new LLMService.LLMException(
+        'Public Group not found: ' + groupReference
+      );
+    }
+    if (targetGroups.size() > 1) {
+      throw new LLMService.LLMException(
+        'Multiple Public Groups match [' +
+          groupReference +
+          ']. Use the exact Developer Name.'
+      );
+    }
+
+    Id memberId = resolveGroupMemberId(op);
+
+    return new GroupMember(
+      GroupId = targetGroups[0].Id,
+      UserOrGroupId = memberId
+    );
+  }
+
+  private static Id resolveGroupMemberId(Map<String, Object> op) {
+    String memberType = getOptionalOpArg(op, 'memberType', null);
+    String memberReference = getOptionalOpArg(
+      op,
+      'memberIdentifier',
+      getOptionalOpArg(
+        op,
+        'username',
+        getOptionalOpArg(
+          op,
+          'roleName',
+          getOptionalOpArg(op, 'nestedGroupDeveloperName', null)
+        )
+      )
+    );
+    if (String.isBlank(memberReference)) {
+      throw new LLMService.LLMException(
+        'groupMemberAssign requires memberIdentifier, username, roleName, or nestedGroupDeveloperName.'
+      );
+    }
+
+    // Some model outputs append prose after the email (e.g. "to Public Group...").
+    // Keep only the email token when present.
+    if (memberReference.contains('@')) {
+      String firstEmail = extractFirstEmailToken(memberReference);
+      if (String.isNotBlank(firstEmail)) {
+        memberReference = firstEmail;
+      }
+    }
+
+    String normalizedType = String.isBlank(memberType)
+      ? ''
+      : memberType.trim().toLowerCase();
+
+    if (normalizedType == '' || normalizedType == 'user') {
+      List<User> users = [
+        SELECT Id
+        FROM User
+        WHERE IsActive = true
+        AND (Username = :memberReference OR Email = :memberReference)
+        LIMIT 2
+      ];
+      if (users.size() == 1) {
+        return users[0].Id;
+      }
+      if (users.size() > 1) {
+        throw new LLMService.LLMException(
+          'Multiple active users match [' +
+            memberReference +
+            ']. Use the exact Username.'
+        );
+      }
+
+      Integer atPosition = memberReference.indexOf('@');
+      if (atPosition > 0) {
+        String usernamePattern = memberReference.substring(0, atPosition) +
+          '@%';
+        users = [
+          SELECT Id
+          FROM User
+          WHERE IsActive = true
+          AND Username LIKE :usernamePattern
+          LIMIT 2
+        ];
+        if (users.size() == 1) {
+          return users[0].Id;
+        }
+        if (users.size() > 1) {
+          throw new LLMService.LLMException(
+            'Multiple active users match [' +
+              memberReference +
+              ']. Use the exact Username.'
+          );
+        }
+      }
+
+      if (normalizedType == 'user') {
+        throw new LLMService.LLMException(
+          'Active user not found: ' + memberReference
+        );
+      }
+    }
+
+    List<Group> memberGroups = [
+      SELECT Id, Name, DeveloperName, Type
+      FROM Group
+      WHERE (DeveloperName = :memberReference OR Name = :memberReference)
+      AND Type IN (
+        'Regular',
+        'Role',
+        'RoleAndSubordinates',
+        'RoleAndSubordinatesInternal'
+      )
+      LIMIT 2
+    ];
+    if (memberGroups.isEmpty()) {
+      throw new LLMService.LLMException(
+        'Public Group member not found: ' + memberReference
+      );
+    }
+    if (memberGroups.size() > 1) {
+      throw new LLMService.LLMException(
+        'Multiple group or role members match [' +
+          memberReference +
+          ']. Use the exact Developer Name.'
+      );
+    }
+
+    return memberGroups[0].Id;
+  }
+
+  private static void injectPublicGroupMemberOpFromTicket(
+    String summary,
+    String description,
+    Map<String, Object> parsed,
+    List<Object> nonCloneOps
+  ) {
+    if (nonCloneOps == null) {
+      return;
+    }
+
+    for (Object rawOp : nonCloneOps) {
+      if (!(rawOp instanceof Map<String, Object>)) {
+        continue;
+      }
+      String opType = (String) ((Map<String, Object>) rawOp).get('type');
+      if (
+        'groupMemberAssign'.equalsIgnoreCase(opType) ||
+        'publicGroupMemberAssign'.equalsIgnoreCase(opType)
+      ) {
+        return;
+      }
+    }
+
+    String text =
+      (String.isBlank(summary) ? '' : summary + ' ') +
+      (String.isBlank(description) ? '' : description);
+    String lower = text.toLowerCase();
+
+    if (
+      !(lower.contains('public group') ||
+      lower.contains('groupdevelopername') ||
+      lower.contains('group member'))
+    ) {
+      return;
+    }
+
+    if (
+      !(lower.contains('assign') || lower.contains('add') || lower.contains('member'))
+    ) {
+      return;
+    }
+
+    String username = extractFirstEmailToken(text);
+    if (String.isBlank(username)) {
+      return;
+    }
+
+    String groupRef = null;
+    Object filesRaw = parsed != null ? parsed.get('files') : null;
+    if (filesRaw instanceof List<Object>) {
+      for (Object fRaw : (List<Object>) filesRaw) {
+        if (!(fRaw instanceof Map<String, Object>)) {
+          continue;
+        }
+        Map<String, Object> f = (Map<String, Object>) fRaw;
+        String mt = (String) f.get('metadataType');
+        String mn = (String) f.get('memberName');
+        if (
+          ('Group'.equalsIgnoreCase(mt) || 'PublicGroup'.equalsIgnoreCase(mt)) &&
+          String.isNotBlank(mn)
+        ) {
+          groupRef = mn;
+          break;
+        }
+      }
+    }
+
+    if (String.isBlank(groupRef)) {
+      Matcher m = Pattern.compile(
+        '(?i)(?:groupDeveloperName|public\\s+group|group\\s+name)\\s*[:\\-]\\s*([A-Za-z0-9_]+)'
+      ).matcher(text);
+      if (m.find()) {
+        groupRef = m.group(1);
+      }
+    }
+
+    if (String.isBlank(groupRef)) {
+      return;
+    }
+
+    nonCloneOps.add(
+      new Map<String, Object>{
+        'type' => 'groupMemberAssign',
+        'groupDeveloperName' => groupRef,
+        'username' => username,
+        'memberType' => 'user'
+      }
+    );
+    System.debug(
+      'processXmlGenerationResponse: auto-injected groupMemberAssign from ticket text [' +
+        groupRef +
+        '] -> [' +
+        username +
+        ']'
+    );
+  }
+
+  private static String extractFirstEmailToken(String text) {
+    if (String.isBlank(text)) {
+      return null;
+    }
+    Matcher m = Pattern.compile(
+      '([A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,})'
+    ).matcher(text);
+    return m.find() ? m.group(1) : null;
+  }
+
+  private static String sanitizeGroupXmlForDeploy(
+    String memberName,
+    String xmlContent
+  ) {
+    String safeName = String.isBlank(memberName)
+      ? 'Generated_Public_Group'
+      : memberName;
+    Boolean includeBosses = extractGroupFlag(xmlContent, 'doesIncludeBosses');
+
+    return
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<Group xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
+      '    <doesIncludeBosses>' +
+      String.valueOf(includeBosses).toLowerCase() +
+      '</doesIncludeBosses>\n' +
+      '    <name>' +
+      LLMXmlSanitizer.escapeXmlValue(safeName) +
+      '</name>\n' +
+      '</Group>';
+  }
+
+  private static Boolean extractGroupFlag(String xmlContent, String tagName) {
+    if (String.isBlank(xmlContent) || String.isBlank(tagName)) {
+      return false;
+    }
+    Matcher m = Pattern.compile(
+      '(?is)<' +
+      tagName +
+      '>\\s*(true|false)\\s*</' +
+      tagName +
+      '>'
+    ).matcher(xmlContent);
+    return m.find() && 'true'.equalsIgnoreCase(m.group(1));
   }
 
   private static SObject buildCustomSettingRecordForUpsert(
