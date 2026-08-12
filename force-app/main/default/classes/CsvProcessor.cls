@@ -250,7 +250,10 @@ public class CsvProcessor {
         'Unknown type: [' +
           type +
           ']. ' +
-          'Supported: translation, custom_label, custom_metadata, validation_rule, custom_setting_field'
+          'Supported: translation, custom_label, custom_metadata, custom_metadata_type, ' +
+          'validation_rule, custom_setting_field, custom_setting, group_member ' +
+          '(custom_object is also supported, handled via a separate LLM-generation path ' +
+          'before reaching this dispatch).'
       );
     }
 
@@ -709,12 +712,22 @@ public class CsvProcessor {
       Boolean isProtected =
         getRowValueDefault(row, 'protected', 'false') == 'true';
 
+      // Column headers name the field the way the type-creation CSV named
+      // it (e.g. "Priority") — but CustomMetadataHelper.addFieldToCustomMetadataType()
+      // always deploys CMDT fields with a __c suffix (Priority__c). Without
+      // normalizing here, the <field> reference in the record XML points at
+      // a field that was never actually created, and the deploy fails with
+      // "could not find fields: ...". Apply the same suffix rule so a
+      // records CSV using the same column names as the type-creation CSV
+      // (the natural thing to do) resolves to the real field API names.
       Map<String, String> fieldValues = new Map<String, String>();
       for (String col : row.keySet()) {
         if (!reservedColumns.contains(col.toLowerCase())) {
           String val = getRowValue(row, col);
-          if (String.isNotBlank(val))
-            fieldValues.put(col, val);
+          if (String.isNotBlank(val)) {
+            String fieldApiName = col.endsWith('__c') ? col : col + '__c';
+            fieldValues.put(fieldApiName, val);
+          }
         }
       }
 

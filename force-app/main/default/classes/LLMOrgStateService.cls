@@ -1728,11 +1728,32 @@ public class LLMOrgStateService {
           names
       );
 
-      MetadataService.IReadResult readResult = metaPort.readMetadata(
-        'NamedCredential',
-        names
-      );
-      MetadataService.Metadata[] records = readResult.getRecords();
+      // readMetadata() has a hard Metadata API limit of 10 names per call —
+      // exceeding it throws EXCEEDED_ID_LIMIT and (since the caller wraps
+      // this whole method in a try/catch) silently returns null, meaning
+      // orgState.existingNamedCredentials never gets set at all. In an org
+      // with more than 10 Named Credentials this was failing on EVERY
+      // ticket, unconditionally — every prompt that needs to check whether
+      // a named credential already exists was working from an empty list.
+      // Batch into chunks of 10 so this scales past that limit instead of
+      // failing outright the moment an 11th credential gets created.
+      List<MetadataService.Metadata> records = new List<MetadataService.Metadata>();
+      Integer batchSize = 10;
+      for (Integer i = 0; i < names.size(); i += batchSize) {
+        Integer endIdx = Math.min(i + batchSize, names.size());
+        List<String> batch = new List<String>();
+        for (Integer j = i; j < endIdx; j++) {
+          batch.add(names[j]);
+        }
+        MetadataService.IReadResult readResult = metaPort.readMetadata(
+          'NamedCredential',
+          batch
+        );
+        MetadataService.Metadata[] batchRecords = readResult.getRecords();
+        if (batchRecords != null) {
+          records.addAll(batchRecords);
+        }
+      }
 
       if (records == null || records.isEmpty()) {
         System.debug(

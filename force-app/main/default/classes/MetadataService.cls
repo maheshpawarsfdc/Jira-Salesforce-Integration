@@ -1601,6 +1601,12 @@ public class MetadataService {
         public String externalCredential;
         public Boolean generateAuthorizationHeader;
         public String label;
+        // Enhanced Named Credential parameter rows (e.g. per-credential
+        // custom headers/settings) — same class of missing-field parse
+        // failure as awsAccessKey/externalCredential above: any NC using
+        // this element ("Apex type not found for element
+        // namedCredentialParameters") failed the whole readMetadata batch.
+        public MetadataService.NamedCredentialParameter[] namedCredentialParameters;
         public String namedCredentialType;
         public String oauthRefreshToken;
         public String oauthScope;
@@ -1622,6 +1628,7 @@ public class MetadataService {
         private String[] externalCredential_type_info = new String[]{'externalCredential',SOAP_M_URI,null,'0','1','false'};
         private String[] generateAuthorizationHeader_type_info = new String[]{'generateAuthorizationHeader',SOAP_M_URI,null,'0','1','false'};
         private String[] label_type_info = new String[]{'label',SOAP_M_URI,null,'1','1','false'};
+        private String[] namedCredentialParameters_type_info = new String[]{'namedCredentialParameters',SOAP_M_URI,null,'0','-1','false'};
         private String[] namedCredentialType_type_info = new String[]{'namedCredentialType',SOAP_M_URI,null,'0','1','false'};
         private String[] oauthRefreshToken_type_info = new String[]{'oauthRefreshToken',SOAP_M_URI,null,'0','1','false'};
         private String[] oauthScope_type_info = new String[]{'oauthScope',SOAP_M_URI,null,'0','1','false'};
@@ -1632,7 +1639,17 @@ public class MetadataService {
         private String[] username_type_info = new String[]{'username',SOAP_M_URI,null,'0','1','false'};
         private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
         private String[] type_att_info = new String[]{'xsi:type'};
-        private String[] field_order_type_info = new String[]{'fullName', 'allowMergeFieldsInBody','allowMergeFieldsInHeader','authProvider','awsAccessKey','awsRegion','awsSecretKey','awsService','calloutStatus','certificate','endpoint','externalCredential','generateAuthorizationHeader','label','namedCredentialType','oauthRefreshToken','oauthScope','oauthToken','password','principalType','protocol','username'};
+        private String[] field_order_type_info = new String[]{'fullName', 'allowMergeFieldsInBody','allowMergeFieldsInHeader','authProvider','awsAccessKey','awsRegion','awsSecretKey','awsService','calloutStatus','certificate','endpoint','externalCredential','generateAuthorizationHeader','label','namedCredentialParameters','namedCredentialType','oauthRefreshToken','oauthScope','oauthToken','password','principalType','protocol','username'};
+    }
+    public class NamedCredentialParameter {
+        public String parameterName;
+        public String parameterType;
+        public String parameterValue;
+        private String[] parameterName_type_info = new String[]{'parameterName',SOAP_M_URI,null,'0','1','false'};
+        private String[] parameterType_type_info = new String[]{'parameterType',SOAP_M_URI,null,'0','1','false'};
+        private String[] parameterValue_type_info = new String[]{'parameterValue',SOAP_M_URI,null,'0','1','false'};
+        private String[] apex_schema_type_info = new String[]{SOAP_M_URI,'true','false'};
+        private String[] field_order_type_info = new String[]{'parameterName','parameterType','parameterValue'};
     }
     public class QuickAction extends Metadata {
         public String type = 'QuickAction';
