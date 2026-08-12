@@ -21,6 +21,32 @@ public class LLMResponseProcessor {
     Map<String, Object> orgState
   ) {
     try {
+      // CSV bulk-import tickets name their components ONLY inside the
+      // attached file (fileName, columns, rows — see CsvProcessor's
+      // server-side row cache), which this stage never receives; it only
+      // gets ticket summary/description, by design, to avoid burning
+      // tokens on row data. When the ticket text itself doesn't spell out
+      // the real component names ("Create the custom labels listed in the
+      // attached CSV"), the gate model still has to return *some* name to
+      // satisfy its required JSON shape — it guesses, and if the guess
+      // happens to match an unrelated org-state record (e.g. a label
+      // created for an earlier, different ticket), the hard cross-check
+      // below confirms that guessed name is real and wrongly reports the
+      // ticket as fully satisfied, skipping real work. Same failure shape
+      // as the StaticResource/delete-wording incidents documented further
+      // down — a name match can't prove the *requested* content already
+      // exists when the gate never saw what was actually requested. Skip
+      // the gate outright for these tickets and let the real CSV pipeline
+      // run; csv_bulk_process is safe to re-run (create/merge is
+      // idempotent), so the cost is at most a harmless redeploy.
+      if (mentionsCsvBulkImport(summary, description)) {
+        System.debug(
+          '[EXISTENCE-GATE] ticket references CSV bulk import — skipping gate ' +
+          '(component names live only in the attachment, not the ticket text).'
+        );
+        return new Map<String, Object>{ 'allSatisfied' => false };
+      }
+
       String gateSystemPrompt = PromptService.getPromptByKey('EXISTENCE_GATE');
       if (String.isBlank(gateSystemPrompt)) {
         System.debug(
@@ -270,6 +296,26 @@ public class LLMResponseProcessor {
       // Fail-safe: any error in the gate must NOT block real work.
       return new Map<String, Object>{ 'allSatisfied' => false };
     }
+  }
+
+  // Deterministic, LLM-independent check for "this ticket's real component
+  // names live in an attached CSV, not the ticket text" — see call site in
+  // runExistenceGateStage() for why the gate cannot be trusted here.
+  private static Boolean mentionsCsvBulkImport(
+    String summary,
+    String description
+  ) {
+    String combined = ((summary == null ? '' : summary) +
+      ' ' +
+      (description == null ? '' : description))
+      .toLowerCase();
+    if (!combined.contains('csv')) {
+      return false;
+    }
+    return combined.contains('.csv') ||
+      combined.contains('bulk') ||
+      combined.contains('attach') ||
+      combined.contains('import');
   }
 
   // Deterministic, LLM-independent check for delete/remove wording in raw
