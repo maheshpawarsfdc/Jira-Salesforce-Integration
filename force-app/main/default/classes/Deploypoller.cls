@@ -39,6 +39,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   public Integer attempt;
   public String pendingZip2DataJson;
   public String apexTestContextJson;
+  public String deploySummaryNote;
   public Integer queueableHops = 0;
 
   // ─────────────────────────────────────────────────────────────
@@ -138,14 +139,20 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
               '[DEPLOY-TRACE] ZIP1 SUCCESS -> enqueuing ZIP2 for issue=' +
               issueKey
             );
-            System.enqueueJob(
-              ZipDeployQueueable.forZip2(issueKey, pendingZip2DataJson)
+            ZipDeployQueueable zip2Job = ZipDeployQueueable.forZip2(
+              issueKey,
+              pendingZip2DataJson
             );
+            zip2Job.deploySummaryNote = deploySummaryNote;
+            System.enqueueJob(zip2Job);
           } else {
             String successMsg =
               'Successfully deployed! ' +
               result.numberComponentsDeployed +
               ' component(s) deployed.';
+            if (String.isNotBlank(deploySummaryNote)) {
+              successMsg += '\n\n' + deploySummaryNote;
+            }
             System.debug(
               'DeployPoller: deploy SUCCESS. Posting to Jira: ' + successMsg
             );
@@ -228,6 +235,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           );
           nextPoller.pendingZip2DataJson = pendingZip2DataJson;
           nextPoller.apexTestContextJson = apexTestContextJson;
+          nextPoller.deploySummaryNote = deploySummaryNote;
           nextPoller.queueableHops = nextHops;
           System.enqueueJob(nextPoller);
         } else {
@@ -247,6 +255,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
             pendingZip2DataJson
           );
           sched.apexTestContextJson = apexTestContextJson;
+          sched.deploySummaryNote = deploySummaryNote;
           System.schedule(jobName, cronExp, sched);
         }
       }
