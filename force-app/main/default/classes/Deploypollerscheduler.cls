@@ -20,6 +20,7 @@ public class Deploypollerscheduler implements Schedulable {
   private Integer attempt;
   private String pendingZip2DataJson;
   public String apexTestContextJson;
+  public String deploySummaryNote;
 
   public DeployPollerScheduler(String jobId, String issueKey, Integer attempt) {
     this.jobId = jobId;
@@ -62,6 +63,7 @@ public class Deploypollerscheduler implements Schedulable {
     DeployPoller poller = new DeployPoller(jobId, issueKey, attempt);
     poller.pendingZip2DataJson = pendingZip2DataJson;
     poller.apexTestContextJson = apexTestContextJson;
+    poller.deploySummaryNote = deploySummaryNote;
     // Fresh transaction — reset the fast-path hop budget for the next segment.
     poller.queueableHops = 0;
     System.enqueueJob(poller);

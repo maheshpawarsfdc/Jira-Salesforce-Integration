@@ -6,6 +6,50 @@ public class LLMResponseProcessor {
   public static List<String> pendingApexClassContents;
   public static List<String> pendingTestClassNames;
   public static List<String> pendingTestClassContents;
+  // ── What-was-created summary — one line per metadata type actually
+  // staged this deploy (object, field, record type, permission set, LWC,
+  // etc.) plus LWC page-placement outcome — appended to whichever Jira
+  // status message ends up being the ticket's final one (plain deploy,
+  // Apex-first, or chained). Set once here, threaded through LLMService. ──
+  public static String pendingDeploySummary;
+
+  // Metadata types intentionally left OUT of the deploy summary: automatic
+  // backstop plumbing that touches nearly every ticket regardless of what
+  // was actually asked for (Profile FLS injection, backstop Layout updates),
+  // plus types already covered by their own dedicated summary line (LWC
+  // bundle + FlexiPage are covered by the LWC-specific note below).
+  private static final Set<String> DEPLOY_SUMMARY_EXCLUDED_TYPES = new Set<String>{
+    'Profile',
+    'Layout',
+    'LightningComponentBundle',
+    'FlexiPage'
+  };
+
+  // Friendly labels for the deploy summary. Anything staged under a type
+  // not listed here still shows up — just under its raw metadataType name
+  // — so a type nobody thought to add a label for is never silently dropped.
+  private static final Map<String, String> DEPLOY_SUMMARY_LABELS = new Map<String, String>{
+    'CustomObject' => 'Custom Object',
+    'CustomField' => 'Custom Field',
+    'RecordType' => 'Record Type',
+    'PermissionSet' => 'Permission Set',
+    'ValidationRule' => 'Validation Rule',
+    'ApexClass' => 'Apex Class',
+    'ApexTrigger' => 'Trigger',
+    'Flow' => 'Flow',
+    'Queue' => 'Queue',
+    'CustomMetadata' => 'Custom Metadata Record',
+    'CustomSetting' => 'Custom Setting',
+    'CustomLabels' => 'Custom Label',
+    'NamedCredential' => 'Named Credential',
+    'AuthProvider' => 'Auth Provider',
+    'Group' => 'Public Group',
+    'CustomTab' => 'Custom Tab',
+    'StaticResource' => 'Static Resource',
+    'Translations' => 'Translation',
+    'AssignmentRules' => 'Assignment Rule',
+    'ExternalCredential' => 'External Credential'
+  };
 
   // ─────────────────────────────────────────────────────────────
   // STAGE 1.6 — EXISTENCE GATE
@@ -1172,6 +1216,9 @@ public class LLMResponseProcessor {
     List<String> detectedTestNames = new List<String>();
     List<String> detectedTestContents = new List<String>();
 
+    // ── LWC bundles staged this run — fed to the FlexiPage backstop ──
+    Set<String> detectedLwcNames = new Set<String>();
+
     List<Object> files = (List<Object>) parsed.get('files');
 
     // Custom Settings are represented as CustomObject (__c) with
@@ -1979,6 +2026,7 @@ public class LLMResponseProcessor {
 
         if (isLwcFile) {
           effectiveType = 'LightningComponentBundle';
+          detectedLwcNames.add(memberName);
           System.debug(
             '[DEPLOY-TRACE] LWC file — normalising metadataType [' +
               metadataType +
@@ -2225,6 +2273,40 @@ public class LLMResponseProcessor {
     LLMXmlSanitizer.injectDefaultFieldPermissions(nonCustomSettingLayoutFiles);
     // Guarantee Admin gets DefaultOn visibility for every new custom tab
     LLMXmlSanitizer.injectDefaultTabVisibility(files);
+    // Append generated LWCs to an existing record page when the ticket asks.
+    // No-op unless the ticket explicitly requests placement; never throws.
+    FlexiPageHelper.backstopLwcPagePlacement(
+      issueKey,
+      ticketSummary,
+      ticketDescription,
+      new List<String>(detectedLwcNames)
+    );
+
+    // ── Compose the deploy summary for the Jira status message ─────────────
+    // One line per metadata type actually staged (object, field, record
+    // type, permission set, etc. — from ZipBuilder.metadataTypes, the same
+    // registry every helper already writes to), plus the LWC-specific line
+    // (creation + placement outcome), which needs FlexiPageHelper's own
+    // reasoning and isn't derivable from the registry alone.
+    List<String> deploySummaryParts = new List<String>();
+    String genericSummary = buildGenericDeploySummary();
+    if (String.isNotBlank(genericSummary)) {
+      deploySummaryParts.add(genericSummary);
+    }
+    if (!detectedLwcNames.isEmpty()) {
+      String lwcNote =
+        '✅ LWC component(s) created: ' +
+        String.join(new List<String>(detectedLwcNames), ', ') +
+        '.';
+      if (String.isNotBlank(FlexiPageHelper.lastPlacementNote)) {
+        lwcNote += '\n' + FlexiPageHelper.lastPlacementNote;
+      }
+      deploySummaryParts.add(lwcNote);
+    }
+    pendingDeploySummary = deploySummaryParts.isEmpty()
+      ? null
+      : String.join(deploySummaryParts, '\n');
+    FlexiPageHelper.lastPlacementNote = null;
 
     // ── Promote backstop layout files into ZIP1 for single deploys ─────────
     // When adding fields to an existing object (deployScenario='single'),
@@ -2824,8 +2906,9 @@ public class LLMResponseProcessor {
           List<GroupMember> existingMembers = [
             SELECT Id
             FROM GroupMember
-            WHERE GroupId = :assignment.GroupId
-            AND UserOrGroupId = :assignment.UserOrGroupId
+            WHERE
+              GroupId = :assignment.GroupId
+              AND UserOrGroupId = :assignment.UserOrGroupId
             LIMIT 1
           ];
 
@@ -2846,7 +2929,7 @@ public class LLMResponseProcessor {
         } catch (LLMService.LLMException le) {
           System.debug(
             'processDmlOperations: SKIPPED groupMemberAssign - ' +
-              le.getMessage()
+            le.getMessage()
           );
         }
       } else if (opType == 'csvProcess') {
@@ -2957,8 +3040,10 @@ public class LLMResponseProcessor {
     List<Group> targetGroups = [
       SELECT Id, Name, DeveloperName
       FROM Group
-      WHERE Type = 'Regular'
-      AND (DeveloperName = :groupReference OR Name = :groupReference)
+      WHERE
+        Type = 'Regular'
+        AND (DeveloperName = :groupReference
+        OR Name = :groupReference)
       LIMIT 2
     ];
     if (targetGroups.isEmpty()) {
@@ -3020,8 +3105,10 @@ public class LLMResponseProcessor {
       List<User> users = [
         SELECT Id
         FROM User
-        WHERE IsActive = true
-        AND (Username = :memberReference OR Email = :memberReference)
+        WHERE
+          IsActive = TRUE
+          AND (Username = :memberReference
+          OR Email = :memberReference)
         LIMIT 2
       ];
       if (users.size() == 1) {
@@ -3037,13 +3124,12 @@ public class LLMResponseProcessor {
 
       Integer atPosition = memberReference.indexOf('@');
       if (atPosition > 0) {
-        String usernamePattern = memberReference.substring(0, atPosition) +
-          '@%';
+        String usernamePattern =
+          memberReference.substring(0, atPosition) + '@%';
         users = [
           SELECT Id
           FROM User
-          WHERE IsActive = true
-          AND Username LIKE :usernamePattern
+          WHERE IsActive = TRUE AND Username LIKE :usernamePattern
           LIMIT 2
         ];
         if (users.size() == 1) {
@@ -3068,13 +3154,15 @@ public class LLMResponseProcessor {
     List<Group> memberGroups = [
       SELECT Id, Name, DeveloperName, Type
       FROM Group
-      WHERE (DeveloperName = :memberReference OR Name = :memberReference)
-      AND Type IN (
-        'Regular',
-        'Role',
-        'RoleAndSubordinates',
-        'RoleAndSubordinatesInternal'
-      )
+      WHERE
+        (DeveloperName = :memberReference
+        OR Name = :memberReference)
+        AND Type IN (
+          'Regular',
+          'Role',
+          'RoleAndSubordinates',
+          'RoleAndSubordinatesInternal'
+        )
       LIMIT 2
     ];
     if (memberGroups.isEmpty()) {
@@ -3130,7 +3218,9 @@ public class LLMResponseProcessor {
     }
 
     if (
-      !(lower.contains('assign') || lower.contains('add') || lower.contains('member'))
+      !(lower.contains('assign') ||
+      lower.contains('add') ||
+      lower.contains('member'))
     ) {
       return;
     }
@@ -3172,8 +3262,7 @@ public class LLMResponseProcessor {
           String mn = (String) f.get('memberName');
           if (
             ('Group'.equalsIgnoreCase(mt) ||
-            'PublicGroup'.equalsIgnoreCase(mt)) &&
-            String.isNotBlank(mn)
+            'PublicGroup'.equalsIgnoreCase(mt)) && String.isNotBlank(mn)
           ) {
             groupMembers.add(mn);
           }
@@ -3256,8 +3345,9 @@ public class LLMResponseProcessor {
       }
       String escaped = Pattern.quote(label);
       Matcher m = Pattern.compile(
-        '(?im)\\b' + escaped + '\\b\\s*[:\\-]\\s*([A-Za-z0-9_]+)'
-      ).matcher(text);
+          '(?im)\\b' + escaped + '\\b\\s*[:\\-]\\s*([A-Za-z0-9_]+)'
+        )
+        .matcher(text);
       if (m.find()) {
         return m.group(1);
       }
@@ -3270,8 +3360,9 @@ public class LLMResponseProcessor {
       return null;
     }
     Matcher m = Pattern.compile(
-      '([A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,})'
-    ).matcher(text);
+        '([A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,})'
+      )
+      .matcher(text);
     return m.find() ? m.group(1) : null;
   }
 
@@ -3284,8 +3375,7 @@ public class LLMResponseProcessor {
       : memberName;
     Boolean includeBosses = extractGroupFlag(xmlContent, 'doesIncludeBosses');
 
-    return
-      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' +
       '<Group xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
       '    <doesIncludeBosses>' +
       String.valueOf(includeBosses).toLowerCase() +
@@ -3301,12 +3391,9 @@ public class LLMResponseProcessor {
       return false;
     }
     Matcher m = Pattern.compile(
-      '(?is)<' +
-      tagName +
-      '>\\s*(true|false)\\s*</' +
-      tagName +
-      '>'
-    ).matcher(xmlContent);
+        '(?is)<' + tagName + '>\\s*(true|false)\\s*</' + tagName + '>'
+      )
+      .matcher(xmlContent);
     return m.find() && 'true'.equalsIgnoreCase(m.group(1));
   }
 
@@ -4323,5 +4410,48 @@ public class LLMResponseProcessor {
   ) {
     String v = csvStr(row, key);
     return String.isBlank(v) ? defaultVal : v;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // DEPLOY SUMMARY — one line per metadata type actually staged
+  //
+  // Reads ZipBuilder.metadataTypes (Map<String, Set<String>>) — populated
+  // by every helper in the pipeline (this class's own per-file loop,
+  // LLMLayoutHelper, FlexiPageHelper, LLMXmlSanitizer, etc.) as files get
+  // staged. Building the summary from this single registry, rather than
+  // hand-tracking "was an object created" / "was a field created" / etc.
+  // separately, is what makes this generic across every feature type
+  // without new code needed per feature.
+  // ─────────────────────────────────────────────────────────────
+  private static String buildGenericDeploySummary() {
+    if (
+      ZipBuilder.metadataTypes == null || ZipBuilder.metadataTypes.isEmpty()
+    ) {
+      return null;
+    }
+
+    List<String> sortedTypes = new List<String>(
+      ZipBuilder.metadataTypes.keySet()
+    );
+    sortedTypes.sort();
+
+    List<String> lines = new List<String>();
+    for (String metaType : sortedTypes) {
+      if (DEPLOY_SUMMARY_EXCLUDED_TYPES.contains(metaType)) {
+        continue;
+      }
+      Set<String> members = ZipBuilder.metadataTypes.get(metaType);
+      if (members == null || members.isEmpty()) {
+        continue;
+      }
+      List<String> memberList = new List<String>(members);
+      memberList.sort();
+      String label = DEPLOY_SUMMARY_LABELS.containsKey(metaType)
+        ? DEPLOY_SUMMARY_LABELS.get(metaType)
+        : metaType;
+      lines.add('✅ ' + label + ': ' + String.join(memberList, ', '));
+    }
+
+    return lines.isEmpty() ? null : String.join(lines, '\n');
   }
 }

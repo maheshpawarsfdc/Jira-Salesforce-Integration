@@ -48,7 +48,7 @@ public class DeployService {
   // Returns jobId for tracking
   // ─────────────────────────────────────────────────────────────
   public static String deploy(String base64Zip, String issueKey) {
-    return deploy(base64Zip, issueKey, null, null);
+    return deploy(base64Zip, issueKey, null, null, null);
   }
 
   public static String deploy(
@@ -56,7 +56,7 @@ public class DeployService {
     String issueKey,
     String pendingZip2DataJson
   ) {
-    return deploy(base64Zip, issueKey, pendingZip2DataJson, null);
+    return deploy(base64Zip, issueKey, pendingZip2DataJson, null, null);
   }
 
   public static String deploy(
@@ -64,6 +64,22 @@ public class DeployService {
     String issueKey,
     String pendingZip2DataJson,
     String apexTestContextJson
+  ) {
+    return deploy(
+      base64Zip,
+      issueKey,
+      pendingZip2DataJson,
+      apexTestContextJson,
+      null
+    );
+  }
+
+  public static String deploy(
+    String base64Zip,
+    String issueKey,
+    String pendingZip2DataJson,
+    String apexTestContextJson,
+    String deploySummaryNote
   ) {
     System.debug('DeployService.deploy() called for issue: ' + issueKey);
 
@@ -99,6 +115,7 @@ public class DeployService {
     poller.attempt = 1;
     poller.pendingZip2DataJson = pendingZip2DataJson;
     poller.apexTestContextJson = apexTestContextJson;
+    poller.deploySummaryNote = deploySummaryNote;
     System.enqueueJob(poller);
     System.debug('DeployService: DeployPoller enqueued for jobId = ' + jobId);
 

@@ -351,7 +351,10 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
 - Never skip the lightning-spinner in Tier 2 components
 - Never use innerHTML — it is not supported in LWC
 - Never forget the key={uniqueField} attribute on for:each items
-- Never generate a FlexiPage XML file — out of scope; tell the user to add via App Builder manually
+- Never generate a FlexiPage XML file — the pipeline handles page placement itself.
+  When the ticket asks for the component to go on a record page, FlexiPageHelper appends it
+  to the existing page in Apex, working from the page's real deployed XML. Emitting your own
+  FlexiPage would overwrite that page and destroy every component already on it.
 - Never generate a CSS file — out of scope for now
 ]]></value>
     </values>

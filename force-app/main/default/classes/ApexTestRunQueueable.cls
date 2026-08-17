@@ -10,6 +10,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
   public Integer pollAttempt; // 0..MAX_POLL_ATTS
   public String asyncApexJobId; // AsyncApexJob Id (set after SUBMIT, polled in POLL)
   public String zip2DataJson; // held-back metadata — deployed after tests pass
+  public String deploySummaryNote; // what was created — object/field/record type/LWC/etc. — for the Jira message
 
   // Parallel arrays: index N of names matches index N of contents
   public List<String> apexClassNames; // production class names
@@ -337,6 +338,9 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
         '[APEX-TEST] Coverage PASSED — chaining to ZIP2 or final success'
       );
       String successMsg = 'Apex test validation PASSED.\n' + report;
+      if (String.isNotBlank(deploySummaryNote)) {
+        successMsg += '\n\n' + deploySummaryNote;
+      }
       if (String.isNotBlank(zip2DataJson)) {
         try {
           JiraCallbackService.storeDeploymentStatus(
@@ -350,7 +354,12 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
             '[APEX-TEST] Interim status post failed: ' + e.getMessage()
           );
         }
-        System.enqueueJob(ZipDeployQueueable.forZip2(issueKey, zip2DataJson));
+        ZipDeployQueueable zip2Job = ZipDeployQueueable.forZip2(
+          issueKey,
+          zip2DataJson
+        );
+        zip2Job.deploySummaryNote = deploySummaryNote;
+        System.enqueueJob(zip2Job);
       } else {
         abortApexTestPollerJobs();
         postStatus('success', successMsg);

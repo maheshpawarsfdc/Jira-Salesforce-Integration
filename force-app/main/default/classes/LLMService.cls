@@ -221,6 +221,7 @@ if(!review.approved){
       List<String> apxCont = LLMResponseProcessor.pendingApexClassContents;
       List<String> tstNames = LLMResponseProcessor.pendingTestClassNames;
       List<String> tstCont = LLMResponseProcessor.pendingTestClassContents;
+      String deploySummary = LLMResponseProcessor.pendingDeploySummary;
 
       System.debug(
         '[LLM-TRACE] deploy-handoff | +' +
@@ -243,6 +244,9 @@ if(!review.approved){
           tstCont,
           zip2Json
         );
+        // Set before toJson() so the note survives the round-trip through
+        // ZipDeployQueueable's apexTestContextJson and back out again.
+        testJob.deploySummaryNote = deploySummary;
         System.debug(
           'LLMService: Apex-first deploy detected — chaining to ApexTestRunQueueable'
         );
@@ -253,7 +257,9 @@ if(!review.approved){
         System.debug(
           'LLMService: standard deploy — enqueueing ZipDeployQueueable'
         );
-        System.enqueueJob(new ZipDeployQueueable(issueKey, zip2Json));
+        ZipDeployQueueable zdq = new ZipDeployQueueable(issueKey, zip2Json);
+        zdq.deploySummaryNote = deploySummary;
+        System.enqueueJob(zdq);
       }
 
       LLMResponseProcessor.pendingZip2DataJson = null;
@@ -261,6 +267,7 @@ if(!review.approved){
       LLMResponseProcessor.pendingApexClassContents = null;
       LLMResponseProcessor.pendingTestClassNames = null;
       LLMResponseProcessor.pendingTestClassContents = null;
+      LLMResponseProcessor.pendingDeploySummary = null;
       ZipBuilder.clear();
       LLMGroqClient.logTokenSummary();
       LLMGroqClient.resetTokenCounters();

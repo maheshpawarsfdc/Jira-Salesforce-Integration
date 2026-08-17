@@ -12,6 +12,12 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
   private String issueKey;
   private String pendingZip2DataJson;
   private String apexTestContextJson;
+  // What was created — object/field/record type/LWC/etc. — for the Jira
+  // message. Set directly by the caller (LLMService or ApexTestRunQueueable)
+  // after construction, not via a constructor arg, since it's optional and
+  // adding another same-arity overload would collide with the 3-arg
+  // constructor below.
+  public String deploySummaryNote;
 
   // ── Constructor for ZIP 1: snapshot ZipBuilder state, no chained data
   public ZipDeployQueueable(String issueKey) {
@@ -137,7 +143,8 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
         base64Zip,
         issueKey,
         pendingZip2DataJson,
-        apexTestContextJson
+        apexTestContextJson,
+        deploySummaryNote
       );
       System.debug('ZipDeployQueueable: deploy started. jobId = ' + jobId);
       System.debug('[4] Deploy submitted to Metadata API: ' + Datetime.now());

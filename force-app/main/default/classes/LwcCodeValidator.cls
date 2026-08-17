@@ -8,11 +8,66 @@
  * same way it already handles Apex failures, with no changes needed there.
  */
 public class LwcCodeValidator {
+  // ECMAScript reserved words most likely to collide with Salesforce object/
+  // field names lowercased into a variable name by the LLM — "case" (the
+  // Case object) being the one that actually broke a deploy. Full reserved
+  // list kept rather than just "case" so the same generation habit doesn't
+  // resurface under a different object/field name later (Lead → fine,
+  // "Default" flag → default, a Delete action → delete, etc.).
+  private static final Set<String> JS_RESERVED_WORDS = new Set<String>{
+    'break',
+    'case',
+    'catch',
+    'class',
+    'const',
+    'continue',
+    'debugger',
+    'default',
+    'delete',
+    'do',
+    'else',
+    'enum',
+    'export',
+    'extends',
+    'false',
+    'finally',
+    'for',
+    'function',
+    'if',
+    'implements',
+    'import',
+    'in',
+    'instanceof',
+    'interface',
+    'let',
+    'new',
+    'null',
+    'package',
+    'private',
+    'protected',
+    'public',
+    'return',
+    'static',
+    'super',
+    'switch',
+    'this',
+    'throw',
+    'true',
+    'try',
+    'typeof',
+    'var',
+    'void',
+    'while',
+    'with',
+    'yield'
+  };
+
   public static void validate(String fileName, String content) {
     validateNotBlank(fileName, content);
     validateTemplateBindingExpressions(fileName, content);
     validateNoHtmlEntitiesInJs(fileName, content);
     validateTodoComments(fileName, content);
+    validateNoReservedWordIdentifiers(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -124,5 +179,211 @@ public class LwcCodeValidator {
           '] Placeholder or TODO comments found. Code is incomplete and must not be deployed.'
       );
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: JS RESERVED WORDS USED AS DECLARED IDENTIFIERS
+  // catches: LWC1211 "X is a reserved keyword and cannot be used as an
+  // identifier" — a compile-time failure Salesforce only reports at deploy,
+  // not something the pipeline caught before. Most common trigger in this
+  // pipeline specifically: Salesforce object names lowercase directly into
+  // exactly this trap — "Case" → "case" being the one that actually broke
+  // a deploy (a loop/arrow-param variable named after the object it holds).
+  //
+  // Scoped to DECLARATION/BINDING positions only — let/const/var and
+  // arrow-function parameters (which also covers for-of/for-in, since
+  // "for (const case of cases)" still matches the let/const/var pattern).
+  // A reserved word appearing anywhere else — a string, a comment, a
+  // property access like record.case, or inside a longer identifier like
+  // caseId — is completely legal JS and must never be flagged.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateNoReservedWordIdentifiers(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    // let/const/var IDENT — variable declarations, including for-of/for-in
+    // loop bindings ("for (const case of cases)" still starts with "const ").
+    Pattern declPat = Pattern.compile(
+      '\\b(?:let|const|var)\\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\\b'
+    );
+    Matcher declMatcher = declPat.matcher(content);
+    while (declMatcher.find()) {
+      String ident = declMatcher.group(1);
+      if (JS_RESERVED_WORDS.contains(ident)) {
+        throwReservedWordError(
+          fileName,
+          ident,
+          'a variable name (let/const/var)'
+        );
+      }
+    }
+
+    // Arrow-function parameter lists: case => ...  or  (a, case, b) => ...
+    // Every parameter in the list is checked, not just the first, so a
+    // reserved word in the middle or at the end is still caught.
+    Pattern arrowPat = Pattern.compile(
+      '(\\([^()]*\\)|\\b[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*=>'
+    );
+    Matcher arrowMatcher = arrowPat.matcher(content);
+    while (arrowMatcher.find()) {
+      String paramBlock = arrowMatcher.group(1);
+      String paramList = paramBlock.startsWith('(')
+        ? paramBlock.substring(1, paramBlock.length() - 1)
+        : paramBlock;
+      for (String rawParam : paramList.split(',')) {
+        String param = rawParam.trim();
+        // Strip a default value (param = default) — only plain identifier
+        // params are checked; destructured params ({ Id, Status }) are
+        // skipped rather than risk a false positive on their contents.
+        Integer eqIdx = param.indexOf('=');
+        if (eqIdx >= 0) {
+          param = param.substring(0, eqIdx).trim();
+        }
+        if (
+          Pattern.matches('[a-zA-Z_$][a-zA-Z0-9_$]*', param) &&
+          JS_RESERVED_WORDS.contains(param)
+        ) {
+          throwReservedWordError(
+            fileName,
+            param,
+            'an arrow-function parameter name'
+          );
+        }
+      }
+    }
+
+    // Function/method declarations and catch clauses:
+    //   function name(params) { ...      handleClick(case) { ...
+    //   async loadData(case) { ...       catch (case) { ...
+    // All of these share the shape IDENTIFIER(params){ — including
+    // if/while/for/switch, which is why those four are excluded below:
+    // they're control flow, not a declaration, and their parenthesized
+    // content (especially a C-style "for (let i=0; i<10; i++)") isn't even
+    // a comma-separated param list, so parsing it as one would misfire.
+    Set<String> nonDeclarationKeywords = new Set<String>{
+      'if',
+      'while',
+      'for',
+      'switch'
+    };
+    Pattern funcPat = Pattern.compile(
+      '\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(([^()]*)\\)\\s*\\{'
+    );
+    Matcher funcMatcher = funcPat.matcher(content);
+    while (funcMatcher.find()) {
+      if (nonDeclarationKeywords.contains(funcMatcher.group(1))) {
+        continue;
+      }
+      for (String rawParam : funcMatcher.group(2).split(',')) {
+        String param = rawParam.trim();
+        Integer eqIdx = param.indexOf('=');
+        if (eqIdx >= 0) {
+          param = param.substring(0, eqIdx).trim();
+        }
+        if (
+          Pattern.matches('[a-zA-Z_$][a-zA-Z0-9_$]*', param) &&
+          JS_RESERVED_WORDS.contains(param)
+        ) {
+          throwReservedWordError(
+            fileName,
+            param,
+            'a function/method parameter name'
+          );
+        }
+      }
+    }
+
+    // Destructured declarations: const { case } = obj;
+    // Only bare shorthand fields are a real conflict — "const { case: x }"
+    // binds the identifier "x", not "case", so a colon means skip that field.
+    Pattern destructurePat = Pattern.compile(
+      '\\b(?:let|const|var)\\s*\\{([^}]*)\\}'
+    );
+    Matcher destructureMatcher = destructurePat.matcher(content);
+    while (destructureMatcher.find()) {
+      for (String rawField : destructureMatcher.group(1).split(',')) {
+        String field = rawField.trim();
+        if (field.contains(':')) {
+          continue;
+        }
+        Integer eqIdx = field.indexOf('=');
+        if (eqIdx >= 0) {
+          field = field.substring(0, eqIdx).trim();
+        }
+        if (
+          Pattern.matches('[a-zA-Z_$][a-zA-Z0-9_$]*', field) &&
+          JS_RESERVED_WORDS.contains(field)
+        ) {
+          throwReservedWordError(
+            fileName,
+            field,
+            'a destructured variable name'
+          );
+        }
+      }
+    }
+
+    // Class field declarations — LWC's most common reactive-property form:
+    //   case = [];         @track case = [];        @api case;
+    // No let/const/var precedes a class field, so none of the checks above
+    // catch it. Scoped to a small set of words that plausibly come from a
+    // Salesforce object/action name lowercased into a property name (case,
+    // default, delete, new, class, switch) — deliberately NOT the full
+    // reserved-word list, because that list also contains ordinary bare
+    // statement keywords (return; break; continue;) that legitimately open
+    // a line followed by nothing or a semicolon; flagging those would be a
+    // false positive on completely normal code.
+    //
+    // "^IDENT[=;]" (only whitespace / an optional decorator before it) is
+    // what distinguishes a field DECLARATION from a property ASSIGNMENT —
+    // "this.case = []" or "obj.case = []" never match, because "." isn't
+    // whitespace and isn't consumed by this pattern, so the character
+    // right after the captured word is never "=" or ";" in that case.
+    Set<String> classFieldRiskWords = new Set<String>{
+      'case',
+      'default',
+      'delete',
+      'new',
+      'class',
+      'switch'
+    };
+    Pattern classFieldPat = Pattern.compile(
+      '(?m)^\\s*(?:@track\\s+|@api\\s+|@wire\\([^)]*\\)\\s*)?' +
+      '([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*[=;]'
+    );
+    Matcher classFieldMatcher = classFieldPat.matcher(content);
+    while (classFieldMatcher.find()) {
+      String ident = classFieldMatcher.group(1);
+      if (classFieldRiskWords.contains(ident)) {
+        throwReservedWordError(fileName, ident, 'a class field name');
+      }
+    }
+  }
+
+  private static void throwReservedWordError(
+    String fileName,
+    String reservedWord,
+    String usedAs
+  ) {
+    throw new ApexCodeValidator.ValidationException(
+      '[' +
+        fileName +
+        '] "' +
+        reservedWord +
+        '" is a reserved JavaScript keyword and cannot be used as ' +
+        usedAs +
+        ' — Salesforce will reject this at deploy with LWC1211. Rename it, ' +
+        'e.g. "' +
+        reservedWord +
+        '" → "' +
+        reservedWord +
+        'Record" or "' +
+        reservedWord +
+        'Item".'
+    );
   }
 }
