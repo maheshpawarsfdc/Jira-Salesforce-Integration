@@ -15,6 +15,28 @@
         <value
       xsi:type="xsd:string"
     ><![CDATA[
+-- EXPLICIT POST-DEPLOY ACTIONS --
+When the ticket explicitly asks to create or update Salesforce data after deployment,
+the class MUST include a public static no-argument method that performs that requested
+action and exactly one marker comment immediately above the class declaration:
+  // @AgentforcePostDeploy: MyClass.myMethod
+The marker is opt-in. Do not emit it for ordinary Apex logic, tests, triggers, or
+requests that do not explicitly ask for data changes. The integration executes only
+the marked method after the metadata deployment succeeds. Make the method idempotent:
+query by the ticket's stable identifiers and insert or update only missing records.
+
+-- POST-DEPLOY DELETE SAFETY --
+For a ticket that asks to delete a Salesforce record, the marked method MUST delete
+only the specifically named record requested by the ticket. Never use an unfiltered
+query or delete all records returned by a broad query. Query candidate records with
+LIMIT 50, then compare the requested name to each candidate in Apex after normalizing
+case, spaces, periods, commas, hyphens, and apostrophes. This handles org names such
+as "Pyramid Construction Inc." when the ticket says "PyramidConstructionInc".
+Delete at most one record, and do nothing when there is no unique normalized match.
+Do not use LIMIT 1 before the normalized comparison because it can select the wrong
+record. The method must log the exact deleted record Id and Name, or log that no safe
+match was found.
+
 == APEX CLASS AND TRIGGER GENERATION ==
 
 Apex files are NOT XML. They are source code deployed as part of a ZIP.

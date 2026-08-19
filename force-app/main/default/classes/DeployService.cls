@@ -81,6 +81,24 @@ public class DeployService {
     String apexTestContextJson,
     String deploySummaryNote
   ) {
+    return deploy(
+      base64Zip,
+      issueKey,
+      pendingZip2DataJson,
+      apexTestContextJson,
+      deploySummaryNote,
+      null
+    );
+  }
+
+  public static String deploy(
+    String base64Zip,
+    String issueKey,
+    String pendingZip2DataJson,
+    String apexTestContextJson,
+    String deploySummaryNote,
+    String postDeployActionsJson
+  ) {
     System.debug('DeployService.deploy() called for issue: ' + issueKey);
 
     // Build deploy options
@@ -116,6 +134,7 @@ public class DeployService {
     poller.pendingZip2DataJson = pendingZip2DataJson;
     poller.apexTestContextJson = apexTestContextJson;
     poller.deploySummaryNote = deploySummaryNote;
+    poller.postDeployActionsJson = postDeployActionsJson;
     System.enqueueJob(poller);
     System.debug('DeployService: DeployPoller enqueued for jobId = ' + jobId);
 
