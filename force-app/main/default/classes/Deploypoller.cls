@@ -40,6 +40,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   public String pendingZip2DataJson;
   public String apexTestContextJson;
   public String deploySummaryNote;
+  public String postDeployActionsJson;
   public Integer queueableHops = 0;
 
   // ─────────────────────────────────────────────────────────────
@@ -144,6 +145,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
               pendingZip2DataJson
             );
             zip2Job.deploySummaryNote = deploySummaryNote;
+            zip2Job.postDeployActionsJson = postDeployActionsJson;
             System.enqueueJob(zip2Job);
           } else {
             String successMsg =
@@ -173,6 +175,12 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
                 '[DEPLOY-TRACE] Verification warnings found: ' +
                 verificationWarning
               );
+            }
+            String postDeployResult = PostDeployApexExecutor.execute(
+              postDeployActionsJson
+            );
+            if (String.isNotBlank(postDeployResult)) {
+              successMsg += '\n\nPost-deploy actions:\n' + postDeployResult;
             }
             // ── END VERIFICATION ──────────────────────────────────
 
@@ -236,6 +244,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           nextPoller.pendingZip2DataJson = pendingZip2DataJson;
           nextPoller.apexTestContextJson = apexTestContextJson;
           nextPoller.deploySummaryNote = deploySummaryNote;
+          nextPoller.postDeployActionsJson = postDeployActionsJson;
           nextPoller.queueableHops = nextHops;
           System.enqueueJob(nextPoller);
         } else {
@@ -256,6 +265,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           );
           sched.apexTestContextJson = apexTestContextJson;
           sched.deploySummaryNote = deploySummaryNote;
+          sched.postDeployActionsJson = postDeployActionsJson;
           System.schedule(jobName, cronExp, sched);
         }
       }

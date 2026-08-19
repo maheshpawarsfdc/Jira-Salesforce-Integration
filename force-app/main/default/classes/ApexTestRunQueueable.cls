@@ -11,6 +11,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
   public String asyncApexJobId; // AsyncApexJob Id (set after SUBMIT, polled in POLL)
   public String zip2DataJson; // held-back metadata — deployed after tests pass
   public String deploySummaryNote; // what was created — object/field/record type/LWC/etc. — for the Jira message
+  public String postDeployActionsJson;
 
   // Parallel arrays: index N of names matches index N of contents
   public List<String> apexClassNames; // production class names
@@ -35,7 +36,8 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
     List<String> apexClassContents,
     List<String> testClassNames,
     List<String> testClassContents,
-    String zip2DataJson
+    String zip2DataJson,
+    String postDeployActionsJson
   ) {
     ApexTestRunQueueable q = new ApexTestRunQueueable();
     q.issueKey = issueKey;
@@ -47,6 +49,7 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
     q.testClassNames = testClassNames;
     q.testClassContents = testClassContents;
     q.zip2DataJson = zip2DataJson;
+    q.postDeployActionsJson = postDeployActionsJson;
     return q;
   }
 
@@ -359,9 +362,16 @@ public class ApexTestRunQueueable implements Queueable, Database.AllowsCallouts 
           zip2DataJson
         );
         zip2Job.deploySummaryNote = deploySummaryNote;
+        zip2Job.postDeployActionsJson = postDeployActionsJson;
         System.enqueueJob(zip2Job);
       } else {
         abortApexTestPollerJobs();
+        String postDeployResult = PostDeployApexExecutor.execute(
+          postDeployActionsJson
+        );
+        if (String.isNotBlank(postDeployResult)) {
+          successMsg += '\n\nPost-deploy actions:\n' + postDeployResult;
+        }
         postStatus('success', successMsg);
       }
     } else {

@@ -16,6 +16,7 @@ public class LLMService {
     LLMResponseProcessor.pendingApexClassContents = null;
     LLMResponseProcessor.pendingTestClassNames = null;
     LLMResponseProcessor.pendingTestClassContents = null;
+    LLMResponseProcessor.pendingPostDeployActionsJson = null;
     ZipBuilder.clear();
     StaticResourceHelper.pendingToolingOps = 0;
     FunctionHelper.clearQueues();
@@ -221,6 +222,7 @@ if(!review.approved){
       List<String> apxCont = LLMResponseProcessor.pendingApexClassContents;
       List<String> tstNames = LLMResponseProcessor.pendingTestClassNames;
       List<String> tstCont = LLMResponseProcessor.pendingTestClassContents;
+      String postDeployActionsJson = LLMResponseProcessor.pendingPostDeployActionsJson;
       String deploySummary = LLMResponseProcessor.pendingDeploySummary;
 
       System.debug(
@@ -242,7 +244,8 @@ if(!review.approved){
           apxCont,
           tstNames,
           tstCont,
-          zip2Json
+          zip2Json,
+          postDeployActionsJson
         );
         // Set before toJson() so the note survives the round-trip through
         // ZipDeployQueueable's apexTestContextJson and back out again.
@@ -257,7 +260,12 @@ if(!review.approved){
         System.debug(
           'LLMService: standard deploy — enqueueing ZipDeployQueueable'
         );
-        ZipDeployQueueable zdq = new ZipDeployQueueable(issueKey, zip2Json);
+        ZipDeployQueueable zdq = new ZipDeployQueueable(
+          issueKey,
+          zip2Json,
+          null,
+          postDeployActionsJson
+        );
         zdq.deploySummaryNote = deploySummary;
         System.enqueueJob(zdq);
       }
@@ -267,6 +275,7 @@ if(!review.approved){
       LLMResponseProcessor.pendingApexClassContents = null;
       LLMResponseProcessor.pendingTestClassNames = null;
       LLMResponseProcessor.pendingTestClassContents = null;
+      LLMResponseProcessor.pendingPostDeployActionsJson = null;
       LLMResponseProcessor.pendingDeploySummary = null;
       ZipBuilder.clear();
       LLMGroqClient.logTokenSummary();

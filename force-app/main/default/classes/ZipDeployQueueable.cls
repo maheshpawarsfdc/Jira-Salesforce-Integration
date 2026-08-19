@@ -12,6 +12,7 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
   private String issueKey;
   private String pendingZip2DataJson;
   private String apexTestContextJson;
+  public String postDeployActionsJson;
   // What was created — object/field/record type/LWC/etc. — for the Jira
   // message. Set directly by the caller (LLMService or ApexTestRunQueueable)
   // after construction, not via a constructor arg, since it's optional and
@@ -41,6 +42,16 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
       ZipBuilder.extraPackageMembers
     );
     this.pendingZip2DataJson = pendingZip2DataJson;
+  }
+
+  public ZipDeployQueueable(
+    String issueKey,
+    String pendingZip2DataJson,
+    String apexTestContextJson,
+    String postDeployActionsJson
+  ) {
+    this(issueKey, pendingZip2DataJson, apexTestContextJson);
+    this.postDeployActionsJson = postDeployActionsJson;
   }
 
   // ── Constructor for Apex-first deploy: snapshot ZipBuilder + carry test context
@@ -144,7 +155,8 @@ public class ZipDeployQueueable implements Queueable, Database.AllowsCallouts {
         issueKey,
         pendingZip2DataJson,
         apexTestContextJson,
-        deploySummaryNote
+        deploySummaryNote,
+        postDeployActionsJson
       );
       System.debug('ZipDeployQueueable: deploy started. jobId = ' + jobId);
       System.debug('[4] Deploy submitted to Metadata API: ' + Datetime.now());

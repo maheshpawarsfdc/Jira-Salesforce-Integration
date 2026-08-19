@@ -6,6 +6,7 @@ public class LLMResponseProcessor {
   public static List<String> pendingApexClassContents;
   public static List<String> pendingTestClassNames;
   public static List<String> pendingTestClassContents;
+  public static String pendingPostDeployActionsJson;
   // ── What-was-created summary — one line per metadata type actually
   // staged this deploy (object, field, record type, permission set, LWC,
   // etc.) plus LWC page-placement outcome — appended to whichever Jira
@@ -1215,6 +1216,7 @@ public class LLMResponseProcessor {
     List<String> detectedApexContents = new List<String>();
     List<String> detectedTestNames = new List<String>();
     List<String> detectedTestContents = new List<String>();
+    List<Map<String, String>> detectedPostDeployActions = new List<Map<String, String>>();
 
     // ── LWC bundles staged this run — fed to the FlexiPage backstop ──
     Set<String> detectedLwcNames = new Set<String>();
@@ -2195,6 +2197,16 @@ public class LLMResponseProcessor {
           }
         }
 
+        if (metadataType == 'ApexClass') {
+          Map<String, String> postDeployAction = extractPostDeployAction(
+            memberName,
+            xmlContent
+          );
+          if (postDeployAction != null) {
+            detectedPostDeployActions.add(postDeployAction);
+          }
+        }
+
         ZipBuilder.addFile(effectiveType, memberName, filePath, xmlContent);
 
         if (metadataType == 'CustomObject') {
@@ -2232,6 +2244,9 @@ public class LLMResponseProcessor {
     pendingApexClassContents = null;
     pendingTestClassNames = null;
     pendingTestClassContents = null;
+    pendingPostDeployActionsJson = detectedPostDeployActions.isEmpty()
+      ? null
+      : JSON.serialize(detectedPostDeployActions);
     if (!detectedApexNames.isEmpty()) {
       pendingApexClassNames = detectedApexNames;
       pendingApexClassContents = detectedApexContents;
@@ -4453,5 +4468,43 @@ public class LLMResponseProcessor {
     }
 
     return lines.isEmpty() ? null : String.join(lines, '\n');
+  }
+  private static Map<String, String> extractPostDeployAction(
+    String memberName,
+    String apexSource
+  ) {
+    if (String.isBlank(apexSource)) {
+      return null;
+    }
+    for (String line : apexSource.split('\n')) {
+      String trimmed = line.trim();
+      String prefix = '// @AgentforcePostDeploy:';
+      if (!trimmed.startsWith(prefix)) {
+        continue;
+      }
+      String target = trimmed.substring(prefix.length()).trim();
+      if (!target.contains('.')) {
+        throw new LLMService.LLMException(
+          'Invalid @AgentforcePostDeploy marker in ' + memberName +
+          ': expected ClassName.methodName'
+        );
+      }
+      String className = target.substringBefore('.').trim();
+      String methodName = target.substringAfter('.').trim();
+      if (
+        className != memberName ||
+        !Pattern.matches('[A-Za-z][A-Za-z0-9_]*', className) ||
+        !Pattern.matches('[A-Za-z][A-Za-z0-9_]*', methodName)
+      ) {
+        throw new LLMService.LLMException(
+          'Invalid @AgentforcePostDeploy marker in ' + memberName
+        );
+      }
+      return new Map<String, String>{
+        'className' => className,
+        'methodName' => methodName
+      };
+    }
+    return null;
   }
 }
