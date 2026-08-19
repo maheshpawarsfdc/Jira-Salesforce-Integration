@@ -259,6 +259,306 @@ The @wire FUNCTION HANDLER pattern also produces a plain array and has the same 
 If you are confused about which pattern to use: use the imperative .then().catch() pattern
 (no @wire at all) — it is always safe and unambiguous for Tier 2.
 
+== TIER 3 — COMPONENT COMMUNICATION ==
+Use when: the ticket describes more than one component that must share data or
+coordinate — parent+child, siblings, or a publish/subscribe relationship.
+
+-- STEP ZERO (MULTI-COMPONENT) — EXTENDS MERGE MODE vs CREATE MODE --
+A Tier 3 ticket usually names 2+ components. orgState.existingLwcComponent only
+ever resolves ONE of them — this is a known v1 limitation, not a bug.
+  1. For the ONE component name orgState.existingLwcComponent matches (if any)
+     → MERGE MODE for that component only, following the MERGE MODE steps above.
+  2. For every OTHER component name mentioned in the ticket → CREATE MODE
+     (generate it fresh).
+  3. Never invent an @api property/event name for a component the ticket implies
+     already exists but that is NOT in orgState.existingLwcComponent. There is no
+     way to ask the user for clarification — instead, generate that component
+     fresh in this same response using the naming conventions in this section,
+     rather than guessing at an undocumented existing contract.
+
+-- PATTERN 1: PARENT → CHILD --
+Child exposes state/behavior via @api properties and @api methods. The parent
+sets properties via template attribute binding, and calls methods via lwc:ref.
+
+Child JS (contactTile.js):
+  import { LightningElement, api } from 'lwc';
+
+  export default class ContactTile extends LightningElement {
+      @api contactName;
+      @api recordId;
+
+      @api
+      focusInput() {
+          this.template.querySelector('input')?.focus();
+      }
+  }
+
+Parent HTML (contactPanel.html):
+  <template>
+      <c-contact-tile
+          contact-name={selectedContactName}
+          record-id={recordId}
+          lwc:ref="tile"
+      ></c-contact-tile>
+      <lightning-button label="Focus Child" onclick={handleFocusChild}></lightning-button>
+  </template>
+
+Parent JS (contactPanel.js):
+  import { LightningElement } from 'lwc';
+
+  export default class ContactPanel extends LightningElement {
+      selectedContactName = 'Jane Doe';
+
+      handleFocusChild() {
+          this.refs.tile.focusInput();
+      }
+  }
+
+CRITICAL NAMING RULE — kebab-case (HTML) vs camelCase (JS):
+  CORRECT:                                  WRONG:
+  JS:   @api contactName;                   JS:   @api contactName;
+  HTML: contact-name={selectedContactName}  HTML: contactName={selectedContactName}
+  (kebab-case attribute maps to the         (camelCase attribute in HTML does NOT
+   camelCase @api property automatically)    bind to the @api property — LWC's
+                                              template compiler requires kebab-case
+                                              for every custom-element attribute)
+
+PATTERN 1 RULES:
+- Child @api properties: declare with @api propertyName — camelCase, no exceptions.
+- Parent template attribute for that property: identical name in kebab-case,
+  e.g. contactName → contact-name={value}.
+- To call an @api METHOD on a child from the parent, put lwc:ref="someRef" on the
+  child's tag in the parent's HTML, then call this.refs.someRef.methodName() in
+  the parent's JS. Do NOT use this.template.querySelector to reach into a CHILD
+  custom element — reserve querySelector for elements native to the component's
+  OWN template (e.g. this.template.querySelector('input') inside the child itself).
+- @api methods are declared with @api methodName() { ... } — not an arrow
+  function class field.
+- Passing a value down: field-name={parentPropertyOrGetter} — the same
+  {...} binding rules from Tier 1/Tier 2 apply (bare identifier or dot-path only).
+
+-- PATTERN 2: CHILD → PARENT (CustomEvent) --
+Child fires a CustomEvent; parent listens with an on{eventname} template handler.
+
+Child JS (contactTile.js):
+  import { LightningElement, api } from 'lwc';
+
+  export default class ContactTile extends LightningElement {
+      @api contactId;
+
+      handleSelect() {
+          const selectEvent = new CustomEvent('contactselect', {
+              detail: { contactId: this.contactId }
+          });
+          this.dispatchEvent(selectEvent);
+      }
+  }
+
+Child HTML (contactTile.html):
+  <template>
+      <lightning-button label="Select" onclick={handleSelect}></lightning-button>
+  </template>
+
+Parent HTML (contactPanel.html):
+  <template>
+      <c-contact-tile contact-id={rowId} oncontactselect={handleContactSelect}></c-contact-tile>
+  </template>
+
+Parent JS (contactPanel.js):
+  handleContactSelect(event) {
+      this.selectedContactId = event.detail.contactId;
+  }
+
+CRITICAL — EVENT NAMES MUST BE ALL LOWERCASE:
+  CORRECT:                                   WRONG:
+  new CustomEvent('contactselect', {...})    new CustomEvent('contactSelect', {...})
+  oncontactselect={handleContactSelect}      oncontactSelect={handleContactSelect}
+This is a real LWC platform constraint, not a style preference: the engine
+silently lowercases mixed-case event names at dispatch time, so a handler bound
+with any uppercase letter in its name NEVER fires — no error, no warning, the
+click just appears to do nothing.
+
+PATTERN 2 RULES:
+- Event name string passed to new CustomEvent(...) MUST be entirely lowercase —
+  no camelCase, no PascalCase, no hyphens, no underscores.
+- Parent's handler attribute is "on" + the exact lowercase event name.
+- Always pass data through the detail property: new CustomEvent('name', { detail: {...} }).
+- Do NOT set { bubbles: true, composed: true } unless the ticket explicitly
+  requires the event to escape this component's shadow DOM into a non-ancestor
+  listener — plain parent/child listening needs neither.
+- CustomEvent always flows child → parent (upward). Never have a parent
+  dispatchEvent expecting a child to receive it — a child cannot listen for
+  events on itself dispatched by its own parent this way.
+
+-- PATTERN 3: SIBLING COMMUNICATION VIA SHARED PARENT --
+Two unrelated components under the SAME parent: the parent owns the shared
+state, receives a Pattern-2 event from one child, and re-passes the value as a
+Pattern-1 @api property to the other child. No new API beyond Patterns 1+2.
+
+Parent HTML (contactPanel.html):
+  <template>
+      <c-contact-list onselectcontact={handleSelectContact}></c-contact-list>
+      <c-contact-detail contact-id={selectedContactId}></c-contact-detail>
+  </template>
+
+Parent JS (contactPanel.js):
+  import { LightningElement } from 'lwc';
+
+  export default class ContactPanel extends LightningElement {
+      selectedContactId;
+
+      handleSelectContact(event) {
+          this.selectedContactId = event.detail.contactId;
+      }
+  }
+
+WHEN TO USE LMS (PATTERN 4) INSTEAD:
+Use Pattern 3 whenever a shared parent already exists or is being generated in
+this same ticket. Switch to Pattern 4 (LMS) only when the components do NOT
+share a common parent in the same DOM subtree — e.g. one lives on a record page
+and the other lives in the utility bar, or an admin places them independently
+on different regions of an App Page / different FlexiPages entirely, so there
+is no single component you could add these props/listeners to.
+
+PATTERN 3 RULES:
+- Prefer shared-parent re-broadcast whenever a parent component already exists
+  or is being generated in the same ticket — it is simpler and needs no new
+  metadata file.
+- Never reach for LMS when a shared parent already owns both children.
+- The shared parent's re-broadcast property is a plain reactive class field —
+  no special decorator is required on the parent; only the receiving CHILD's
+  property needs @api.
+
+-- PATTERN 4: LIGHTNING MESSAGE SERVICE (LMS) --
+Use when: components do not share a common ancestor, OR the ticket explicitly
+says "message channel" / "LMS" / "publish/subscribe" / "loosely coupled".
+
+STEP A — Generate the message channel metadata file. This is ONE file, NOT a
+3-file bundle like LwcHtml/LwcJs/LwcMeta:
+  metadataType: "LightningMessageChannel"
+  memberName:   channel DeveloperName, PascalCase, e.g. "RecordSelected"
+  filePath:     "messageChannels/RecordSelected.messageChannel-meta.xml"
+  xmlContent:
+    <?xml version="1.0" encoding="UTF-8"?>
+    <LightningMessageChannel xmlns="http://soap.sforce.com/2006/04/metadata">
+        <masterLabel>Record Selected</masterLabel>
+        <isExposed>true</isExposed>
+        <description>Publishes the selected record Id across components.</description>
+        <lightningMessageFields>
+            <fieldName>recordId</fieldName>
+            <description>Id of the selected record.</description>
+        </lightningMessageFields>
+    </LightningMessageChannel>
+
+Channel naming: PascalCase DeveloperName (e.g. RecordSelected) — NOT camelCase
+like a component name. Add one <lightningMessageFields> block per field the
+payload carries.
+
+STEP B — Import path ALWAYS appends "__c", even though the file name, the
+memberName, and <masterLabel> do NOT have it. This is a real platform rule:
+  CORRECT:
+    import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected__c';
+  WRONG:
+    import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected';
+    import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/recordSelected__c';
+
+STEP C — Publisher component JS:
+  import { LightningElement, wire } from 'lwc';
+  import { publish, MessageContext } from 'lightning/messageService';
+  import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected__c';
+
+  export default class RecordPicker extends LightningElement {
+      @wire(MessageContext)
+      messageContext;
+
+      handleRowSelect(event) {
+          publish(this.messageContext, RECORD_SELECTED_CHANNEL, {
+              recordId: event.detail.recordId
+          });
+      }
+  }
+
+STEP D — Subscriber component JS, with mandatory cleanup:
+  import { LightningElement, wire } from 'lwc';
+  import {
+      subscribe,
+      unsubscribe,
+      MessageContext
+  } from 'lightning/messageService';
+  import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected__c';
+
+  export default class RecordDetailPanel extends LightningElement {
+      subscription = null;
+      recordId;
+
+      @wire(MessageContext)
+      messageContext;
+
+      connectedCallback() {
+          this.subscribeToChannel();
+      }
+
+      subscribeToChannel() {
+          if (this.subscription) {
+              return;
+          }
+          this.subscription = subscribe(
+              this.messageContext,
+              RECORD_SELECTED_CHANNEL,
+              (message) => this.handleMessage(message)
+          );
+      }
+
+      handleMessage(message) {
+          this.recordId = message.recordId;
+      }
+
+      disconnectedCallback() {
+          unsubscribe(this.subscription);
+          this.subscription = null;
+      }
+  }
+
+WRONG (memory leak — missing cleanup):
+  connectedCallback() {
+      subscribe(this.messageContext, RECORD_SELECTED_CHANNEL, (message) => {
+          this.recordId = message.recordId;
+      });
+  }
+  // No disconnectedCallback, no unsubscribe, no stored subscription reference —
+  // every mount/unmount cycle (for:each re-render, navigation away and back)
+  // stacks a new listener on top of the last one that is never released.
+
+PATTERN 4 RULES:
+- ALWAYS import MessageContext and declare @wire(MessageContext) messageContext;
+  in BOTH publisher and subscriber — publish() and subscribe() both require it
+  as their first argument and fail at runtime without it.
+- ALWAYS store subscribe()'s return value in a class field (this.subscription).
+- ALWAYS call unsubscribe(this.subscription) inside disconnectedCallback() and
+  reset the field to null. Every subscribe() needs a matching unsubscribe().
+- Guard against double-subscription: if (this.subscription) return; before
+  calling subscribe() again.
+- The publish() payload's keys must match the channel XML's own
+  <lightningMessageFields><fieldName> entries exactly — never invent a field on
+  publish that the channel XML does not declare, and never read a field on
+  subscribe that was not actually published.
+- One message channel per distinct pub/sub topic — do not overload a single
+  channel with unrelated payloads for unrelated ticket requirements.
+- orgState has no existing-message-channel lookup in v1 — if a ticket refers to
+  an existing channel by name, generate it fresh with the field shape implied by
+  the ticket's own wording; do not fabricate unrelated fields.
+
+== FILE STRUCTURE (Tier 3 addition) ==
+The == FILE STRUCTURE == section above covers the 3 files every LWC component
+needs. Tier 3 tickets ADD a 4th possible file type, used ONLY for Pattern 4 (LMS):
+
+  4. metadataType: LightningMessageChannel   filePath: messageChannels/{ChannelName}.messageChannel-meta.xml
+     → XML only, exactly ONE file, no html/js/meta split.
+
+Parent→Child, Child→Parent, and Sibling (Pattern 1–3) tickets need ONLY the
+standard 3-file LWC bundle per component — never emit a LightningMessageChannel
+file unless the ticket requires LMS-based communication.
+
 == APEX CONTROLLER FOR LWC ==
 
 -- WHEN TO READ AN EXISTING CONTROLLER --
@@ -356,6 +656,26 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
   to the existing page in Apex, working from the page's real deployed XML. Emitting your own
   FlexiPage would overwrite that page and destroy every component already on it.
 - Never generate a CSS file — out of scope for now
+- Never use an uppercase letter anywhere in a CustomEvent name — new CustomEvent('contactSelect', ...)
+  will silently fail to fire the parent's handler; all event names must be entirely lowercase.
+- Never call this.dispatchEvent from a PARENT expecting a CHILD to receive it — CustomEvent from a
+  child's own dispatchEvent always flows upward (child→parent) only.
+- Never bind a child's @api property using the same casing in HTML as in JS — HTML custom attributes
+  are kebab-case (contact-id={x}), JS class properties are camelCase (@api contactId).
+- Never use this.template.querySelector to call a method or read a property on a CHILD custom element
+  across a component boundary — use lwc:ref="name" on the child tag and this.refs.name in JS instead.
+- Never subscribe() to a Lightning Message Channel without also unsubscribing in disconnectedCallback —
+  this leaks a stale listener on every re-render/navigation cycle.
+- Never call publish() or subscribe() without a wired @wire(MessageContext) messageContext in the same class.
+- Never split a LightningMessageChannel into multiple file entries — it is always exactly one XML file,
+  unlike the 3-file LwcHtml/LwcJs/LwcMeta bundle.
+- Never invent a message channel field name that isn't declared in that channel's own
+  <lightningMessageFields> — publish() payload keys and subscribe() handler reads must match the channel XML.
+- Never reach for Lightning Message Service when a shared parent component already exists (or is being
+  generated in the same ticket) — use the shared-parent pattern instead; LMS is for components with no
+  shared ancestor.
+- Never guess at an existing child component's @api contract when a multi-component ticket references a
+  child not covered by orgState.existingLwcComponent — generate that child fresh in this response.
 ]]></value>
     </values>
     <values>
@@ -378,6 +698,6 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
         <field>Description__c</field>
         <value
       xsi:type="xsd:string"
-    >LWC 3-file bundle, Tier 1 wire, Tier 2 Apex, merge mode, controller generation</value>
+    >LWC 3-file bundle, Tier 1 wire, Tier 2 Apex, Tier 3 component communication (parent-child @api, CustomEvent, sibling via shared parent, Lightning Message Service), merge mode, controller generation</value>
     </values>
 </CustomMetadata>

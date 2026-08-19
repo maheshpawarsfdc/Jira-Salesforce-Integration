@@ -68,6 +68,9 @@ public class LwcCodeValidator {
     validateNoHtmlEntitiesInJs(fileName, content);
     validateTodoComments(fileName, content);
     validateNoReservedWordIdentifiers(fileName, content);
+    validateCustomEventNameLowercase(fileName, content);
+    validateLmsSubscribeHasUnsubscribe(fileName, content);
+    validateLmsMessageContextWired(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -361,6 +364,131 @@ public class LwcCodeValidator {
       if (classFieldRiskWords.contains(ident)) {
         throwReservedWordError(fileName, ident, 'a class field name');
       }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: CUSTOM EVENT NAMES MUST BE LOWERCASE
+  // catches: an LLM emitting new CustomEvent('contactSelect', ...) — LWC
+  // silently lowercases mixed-case event names at dispatch time, so a
+  // parent listening via oncontactSelect={handler} never fires. No error
+  // is thrown by the platform, so this only ever surfaces as "the button
+  // appears broken" — catching it here is the only safety net.
+  // Read directly from the string literal passed to the constructor, so
+  // there is no heuristic guessing and no false-positive risk.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateCustomEventNameLowercase(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Pattern eventPat = Pattern.compile(
+      'new\\s+CustomEvent\\s*\\(\\s*[\'"]([^\'"]+)[\'"]'
+    );
+    Matcher m = eventPat.matcher(content);
+    while (m.find()) {
+      String eventName = m.group(1);
+      if (eventName != eventName.toLowerCase()) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] CustomEvent name "' +
+            eventName +
+            '" contains uppercase characters. LWC requires event names to be ' +
+            'entirely lowercase — the platform silently lowercases the name at ' +
+            'dispatch, so a parent handler bound as on' +
+            eventName.toLowerCase() +
+            '={handler} will never fire otherwise. Rename to "' +
+            eventName.toLowerCase() +
+            '".'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: LMS subscribe() WITHOUT A MATCHING unsubscribe()
+  // catches: a component that subscribes to a Lightning Message Channel
+  // in connectedCallback() but never releases it in disconnectedCallback()
+  // — a real, well-documented LWC memory-leak footgun (every mount/unmount
+  // cycle stacks a new listener on top of the last one). Gated on the file
+  // actually importing lightning/messageService so it never fires on
+  // unrelated code. \bsubscribe\( does not match inside unsubscribe( since
+  // there is no word boundary between "n" and "s" — no special-casing needed.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateLmsSubscribeHasUnsubscribe(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+    if (!content.contains('lightning/messageService')) {
+      return;
+    }
+
+    Boolean callsSubscribe = Pattern.compile('\\bsubscribe\\s*\\(')
+      .matcher(content)
+      .find();
+    Boolean callsUnsubscribe = Pattern.compile('\\bunsubscribe\\s*\\(')
+      .matcher(content)
+      .find();
+    if (callsSubscribe && !callsUnsubscribe) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Calls subscribe() from lightning/messageService but never calls ' +
+          'unsubscribe(). Store the subscribe() return value (e.g. ' +
+          'this.subscription = subscribe(...)) and call ' +
+          'unsubscribe(this.subscription) inside disconnectedCallback() — ' +
+          'otherwise every mount of this component leaks a listener.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: LMS publish()/subscribe() WITHOUT A WIRED MessageContext
+  // catches: calling publish() or subscribe() without the required
+  // MessageContext as their first argument — both functions fail at
+  // runtime without it. Gated on the lightning/messageService import,
+  // same as the unsubscribe rule above.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateLmsMessageContextWired(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+    if (!content.contains('lightning/messageService')) {
+      return;
+    }
+
+    Boolean usesPublishOrSubscribe =
+      Pattern.compile('\\bpublish\\s*\\(').matcher(content).find() ||
+      Pattern.compile('\\bsubscribe\\s*\\(').matcher(content).find();
+    if (!usesPublishOrSubscribe) {
+      return;
+    }
+
+    Boolean hasWiredMessageContext = Pattern.compile(
+        '@wire\\s*\\(\\s*MessageContext\\s*\\)'
+      )
+      .matcher(content)
+      .find();
+    if (!hasWiredMessageContext) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Calls publish()/subscribe() from lightning/messageService without ' +
+          'a wired MessageContext. Add: import { MessageContext } from ' +
+          '\'lightning/messageService\'; and a class property ' +
+          '@wire(MessageContext) messageContext; — both functions require it ' +
+          'as their first argument.'
+      );
     }
   }
 
