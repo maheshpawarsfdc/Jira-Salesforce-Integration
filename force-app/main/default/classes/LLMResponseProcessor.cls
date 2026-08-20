@@ -174,6 +174,21 @@ public class LLMResponseProcessor {
       Boolean ticketLooksLikeDelete =
         containsDeleteWording(summary) || containsDeleteWording(description);
 
+      // Same reasoning as the StaticResource case below, applied to LWC
+      // tickets: a "does an LWC named X already exist" name check can never
+      // prove the SPECIFIC new UI/logic this ticket asks to add is already
+      // inside it — it only proves the bundle exists at all. Confirmed as a
+      // real incident 2026-08-20: an "add an Add Contact action to the
+      // existing accountContacts component" ticket got marked allSatisfied
+      // (both the LWC and its Apex controller matched by name) and was
+      // skipped entirely, even though the gate's own free-text summary
+      // said the specific modification was "not verified as already
+      // implemented" — the per-item boolean this loop enforces didn't agree
+      // with the model's own prose, same failure shape as the StaticResource/
+      // delete-wording incidents above.
+      Boolean isLwcTicket =
+        containsLwcWording(summary) || containsLwcWording(description);
+
       if (items != null) {
         for (Object rawItem : items) {
           Map<String, Object> item = (Map<String, Object>) rawItem;
@@ -228,8 +243,11 @@ public class LLMResponseProcessor {
           // unconfirmable claim: never let it stand. Costs at most an
           // unnecessary redeploy (idempotent, cheap); the alternative is
           // silently never applying a real file update.
-          Boolean isUnverifiableContentType = 'StaticResource'
-            .equalsIgnoreCase(itype);
+          Boolean isUnverifiableContentType =
+            'StaticResource'.equalsIgnoreCase(itype) ||
+            'LWC'.equalsIgnoreCase(itype) ||
+            'LightningComponentBundle'.equalsIgnoreCase(itype) ||
+            (isLwcTicket && 'ApexClass'.equalsIgnoreCase(itype));
           Boolean verifiedExists;
           if (!claimedExists) {
             verifiedExists = false;
@@ -374,6 +392,24 @@ public class LLMResponseProcessor {
       '(?s).*\\b(delete|deletion|deleting|remove|removal|removing|destroy|destroying)\\b.*',
       lower
     );
+  }
+
+  // Same trigger wording LLMOrgStateService.runOrgCheck() already uses to
+  // decide a ticket is LWC-related — reused here so the existence gate's
+  // ApexClass-unverifiability guard (see call site) only narrows scope for
+  // tickets that are actually about an LWC and its controller, not every
+  // Apex class ticket in the pipeline. Includes bare "component" too — see
+  // the matching comment in StoryAnalyzer.detectArtifacts() for why: real
+  // tickets say "the accountContacts component", essentially never "LWC".
+  private static Boolean containsLwcWording(String text) {
+    if (String.isBlank(text)) {
+      return false;
+    }
+    String lower = text.toLowerCase();
+    return lower.contains('lwc') ||
+      lower.contains('lightning web component') ||
+      lower.contains('lightning component') ||
+      lower.contains('component');
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1025,56 +1061,19 @@ public class LLMResponseProcessor {
       System.debug('=== RAW LLM XML REPAIR RESPONSE END ===');
     }
 
-    try {
-      return processXmlGenerationResponse(
-        content,
-        issueKey,
-        orgState,
-        summary,
-        description
-      );
-    } catch (ApexCodeValidator.ValidationException ve) {
-      System.debug(
-        '[APEX-VALIDATOR] Caught ValidationException — requesting targeted repair: ' +
-        ve.getMessage()
-      );
-      messages.add(
-        new Map<String, Object>{ 'role' => 'assistant', 'content' => content }
-      );
-      messages.add(
-        new Map<String, Object>{
-          'role' => 'user',
-          'content' => 'The generated Apex code failed static analysis with this error:\n' +
-          ve.getMessage() +
-          '\n\nReturn the COMPLETE corrected JSON. Fix ONLY the identified issue — do not change other files. ' +
-          'Key rules to remember:\n' +
-          '- Use && for logical AND and || for logical OR in Apex (not AND/OR — those are SOQL-only).\n' +
-          '- Every opening brace { must have a matching closing brace }.\n' +
-          'Return ONLY valid JSON with no markdown fences.'
-        }
-      );
-      Long repair2CallStart = Datetime.now().getTime();
-      Map<String, Object> repairResponse = LLMGroqClient.callLLM(
-        messages,
-        new List<Map<String, Object>>(),
-        null,
-        8096
-      );
-      System.debug(
-        '[LLM-TRACE] generate-repair-2 | ' +
-          (Datetime.now().getTime() - repair2CallStart) +
-          'ms'
-      );
-      List<Object> repairChoices = (List<Object>) repairResponse.get('choices');
-      Map<String, Object> repairChoice = (Map<String, Object>) repairChoices[0];
-      Map<String, Object> repairMsg = (Map<String, Object>) repairChoice.get(
-        'message'
-      );
-      content = (String) repairMsg.get('content');
-      FunctionHelper.hadError = false;
-      System.debug(
-        '[APEX-VALIDATOR] Repair response received — re-processing.'
-      );
+    // Bounded repair loop, not a single fixed attempt: ApexCodeValidator and
+    // LwcCodeValidator both throw ApexCodeValidator.ValidationException (the
+    // shared exception type LwcCodeValidator deliberately reuses — see its
+    // class comment) and each validate() call throws on the FIRST violation
+    // it finds, not all of them. A file can easily contain more than one
+    // instance of the same mistake (e.g. two invalid {...} template bindings),
+    // so a single repair attempt only ever gets one shot at fixing one of
+    // them — reusing the growing `messages` history across attempts lets each
+    // retry see everything already tried and failed, same as a human
+    // iterating on compiler errors one at a time.
+    Integer maxRepairAttempts = 2;
+    Integer repairAttempt = 0;
+    while (true) {
       try {
         return processXmlGenerationResponse(
           content,
@@ -1083,16 +1082,80 @@ public class LLMResponseProcessor {
           summary,
           description
         );
-      } catch (ApexCodeValidator.ValidationException ve2) {
+      } catch (ApexCodeValidator.ValidationException ve) {
+        repairAttempt++;
+        if (repairAttempt > maxRepairAttempts) {
+          System.debug(
+            '[CODE-VALIDATOR] Repair attempt ' +
+              (repairAttempt - 1) +
+              '/' +
+              maxRepairAttempts +
+              ' still failed validation — giving up: ' +
+              ve.getMessage()
+          );
+          FunctionHelper.hadError = true;
+          return 'Error: Generated code failed static validation after ' +
+            maxRepairAttempts +
+            ' repair attempt(s): ' +
+            ve.getMessage();
+        }
+
         System.debug(
-          '[APEX-VALIDATOR] Repair attempt still failed validation: ' +
-          ve2.getMessage()
+          '[CODE-VALIDATOR] Caught ValidationException — requesting targeted repair ' +
+            repairAttempt +
+            '/' +
+            maxRepairAttempts +
+            ': ' +
+            ve.getMessage()
         );
-        FunctionHelper.hadError = true;
-        return 'Error: Apex code failed static validation after repair attempt: ' +
-          ve2.getMessage();
+        messages.add(
+          new Map<String, Object>{ 'role' => 'assistant', 'content' => content }
+        );
+        messages.add(
+          new Map<String, Object>{
+            'role' => 'user',
+            'content' => 'The generated code failed static analysis with this error:\n' +
+            ve.getMessage() +
+            '\n\nReturn the COMPLETE corrected JSON. Fix ONLY the identified issue — do not change other files. ' +
+            'Key rules to remember:\n' +
+            '- In Apex: use && for logical AND and || for logical OR (not AND/OR — those are SOQL-only). Every opening brace { must have a matching closing brace }.\n' +
+            '- In LWC HTML: a {...} template binding may ONLY be a single property or getter reference (e.g. {isLoading}, {contact.name}) — never an operator, comparison, or inline expression (||, &&, ===, +, function calls). Expose any computed value as a no-argument getter in the JS class and bind to that getter instead — and check the WHOLE file for other bindings with the same problem, not just the one called out above.\n' +
+            'Return ONLY valid JSON with no markdown fences.'
+          }
+        );
+        Long repairCallStart = Datetime.now().getTime();
+        Map<String, Object> repairResponse = LLMGroqClient.callLLM(
+          messages,
+          new List<Map<String, Object>>(),
+          null,
+          8096
+        );
+        System.debug(
+          '[LLM-TRACE] generate-repair-' +
+            repairAttempt +
+            ' | ' +
+            (Datetime.now().getTime() - repairCallStart) +
+            'ms'
+        );
+        List<Object> repairChoices = (List<Object>) repairResponse.get(
+          'choices'
+        );
+        Map<String, Object> repairChoice = (Map<String, Object>) repairChoices[0];
+        Map<String, Object> repairMsg = (Map<String, Object>) repairChoice.get(
+          'message'
+        );
+        content = (String) repairMsg.get('content');
+        FunctionHelper.hadError = false;
+        System.debug(
+          '[CODE-VALIDATOR] Repair response received — re-processing.'
+        );
       }
     }
+    // Unreachable: every path inside the loop above either returns or loops
+    // again. Apex's flow analysis can't infer that from a `while (true)`
+    // though, so this satisfies the compiler's required-return-statement
+    // check for this method's String return type.
+    return null;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1257,6 +1320,14 @@ public class LLMResponseProcessor {
 
     // ── Trigger merge enforcer (runs before files loop) ────────
     LLMTriggerMerger.enforceTriggerMerge(files, orgState);
+
+    // ── Imperative-call-to-cacheable-method detector (runs before files
+    // loop, same as the trigger merge enforcer above) — cross-file check,
+    // can't live in the per-file LwcCodeValidator.validate()/
+    // ApexCodeValidator.validate() entry points since it needs both the
+    // Apex file AND the JS file in the same pass. Throws to trigger the
+    // same repair-retry loop the per-file validators use.
+    LwcCodeValidator.validateNoImperativeCallToCacheableMethod(files);
 
     // ── Scenario B violation detector ─────────────────────────
     LLMLayoutHelper.detectScenarioBViolation(

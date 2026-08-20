@@ -229,17 +229,21 @@ public with sharing class PromptBuilder {
     }
 
     if (needsLwc) {
+      text += 'EXISTING COMPONENT REUSE\n';
+      text += '- Check ===== ORG STATE ===== above for "existingLwcComponent". If it is non-null, this component already exists in the org: reuse its EXACT developerName, keep its existing HTML/JS/CSS structure intact, and only ADD or MODIFY the specific behavior the ticket asks for — never rewrite unrelated markup, styles, or methods that already work, and never generate a second component with a similar name.\n';
+      text += '- Before returning the file, diff your output against "existingLwcComponent" in your head: every existing button, action, handler method, and getter that the ticket does NOT mention must still be present, unchanged, in what you return. Silently dropping an existing button/method while adding a new one is a regression, not a valid answer — e.g. a ticket that asks you to ADD an "Add Contact" action to a component that already has a "Refresh" button must return BOTH, not just the new one. Only remove something the ticket explicitly asks to remove.\n';
+      text += '- If ORG STATE also includes "existingLwcApexControllers" (or a single "existingLwcApexController"), those are the REAL Apex classes this component already imports via @salesforce/apex — reuse those EXACT class and method names. Add a new @AuraEnabled method to that SAME existing class only if the ticket needs behavior none of its existing methods already provide. Never create a second controller class alongside one that already serves this component. The same no-silent-drops rule applies here too: every existing @AuraEnabled method the ticket doesn\'t mention must remain in the class you return.\n\n';
+
       text += 'LWC CONTROLLERS\n';
       text += '- All @AuraEnabled methods must validate inputs.\n';
       text += '- Throw AuraHandledException with meaningful messages.\n';
       text += '- Do not expose internal exception details.\n';
-      text += '- Use cacheable=true only for read-only methods.\n';
+      text += '- Use cacheable=true only for read-only methods AND only when the JS calls it via @wire. If the JS calls the method IMPERATIVELY (e.g. this.apexMethod({...}).then(...)), do NOT mark it cacheable=true — a cacheable method can return a cached (stale) response even on an imperative call, which silently breaks any "Refresh"/reload button built on top of it (confirmed real incident: a Refresh button that appeared to work but kept showing stale data because its imperative getContacts() call was marked cacheable=true). An imperative-only read method — including one used for both the initial load AND an explicit refresh — must be plain @AuraEnabled with no cacheable argument, so every call genuinely re-executes server-side.\n';
       text += '- Remove unused parameters.\n';
       text += '- Return only required fields.\n\n';
 
       text += 'LWC JAVASCRIPT\n';
-      text += '- Prefer @wire for cacheable Apex methods.\n';
-      text += '- Use imperative Apex only when required.\n';
+      text += '- Choose @wire vs imperative Apex per the wire-vs-imperative decision rule already given in the LWC generation guidance above — that guidance is authoritative; this list only reinforces it.\n';
       text += '- Handle loading state.\n';
       text += '- Handle errors gracefully.\n';
       text += '- Do not use unnecessary @track.\n';
@@ -269,20 +273,13 @@ public with sharing class PromptBuilder {
     }
 
     if (needsLwc) {
-      text += '===== LWC RULES =====\n';
-      text += '- Use @wire whenever reactive data retrieval is sufficient.\n';
-      text += '- Use imperative Apex only when necessary.\n';
-      text += '- Handle loading states.\n';
-      text += '- Handle errors gracefully.\n';
-      text += '- Remove unused imports, variables, and methods.\n';
-      text += '- Use Lightning Data Service whenever possible.\n';
-      text += '- Use cacheable=true for read-only Apex methods.\n';
-      text += '- Do not hardcode record Ids or object names.\n';
-      text += '- Follow Salesforce Lightning Design System best practices.\n';
+      text += 'TEMPLATE BINDING RULES\n';
       text += '- In the template, never gate a data-table/list block with if:true={listProperty} — a non-null array is always truthy even when empty. Check the list\'s length explicitly (e.g. a getter like get hasData() { return this.records && this.records.length > 0; }), and make sure the loading, error, data, and no-results blocks are mutually exclusive so only one can ever render at a time.\n';
       text += '- A template binding {expression} may ONLY be a single property or getter reference (e.g. {isLoading}, {contact.name}, {isPreviousDisabled}) — it can NEVER contain an inline JavaScript expression, operator, comparison, or FUNCTION CALL (no ||, &&, ===, +, ternaries, and no calling a helper like {formatCurrency(opp.Amount)} either — function calls with arguments are just as invalid as operators). If an attribute value needs to be computed, combined, or formatted, either expose it as a no-argument getter in the JS class and bind to that getter, or pre-compute it once when the data is loaded (e.g. map each record to add a field like formattedAmount) and bind to that plain property — never write a function call or expression directly in the HTML.\n';
       text += '- For displaying formatted values (currency, percent, date) inside a lightning-datatable column, use the column definition\'s built-in type (type: \'currency\', type: \'percent\', type: \'date\', etc.) instead of writing any custom formatting function — this is the only correct way to format per-row values in a datatable and avoids the invalid-binding mistake entirely.\n';
-      text += '- Never use HTML entities (like &#124; for | or &amp; for &) inside JavaScript or Apex source code. Entities only apply to literal text rendered in HTML markup, and even there should be avoided — write operators and characters literally (||, &&, etc.) in .js and .cls/.trigger files.\n\n';
+      text += '- PER-ROW computed values inside a <template for:each={records} for:item="rec"> loop are the case this mistake happens most: you need a value that depends on THIS row\'s data, so it is tempting to write {getButtonDisabled(rec)} or {isRowDisabled(rec)} — that is INVALID for the exact same reason as above (a function call with an argument), even though it looks different from a plain top-level getter case. The correct pattern is to compute the per-row value ONCE when the data is loaded/assigned, not in the template: map the returned array to attach the computed field directly onto each row object (e.g. `this.cases = result.map(c => ({ ...c, isCloseDisabled: c.Status === \'Closed\' }))`), then bind to that plain property in the template (`<lightning-button disabled={rec.isCloseDisabled} onclick={handleClose} data-id={rec.Id}>`). Never pass the loop variable into a JS method call from inside the template.\n';
+      text += '- Never use HTML entities (like &#124; for | or &amp; for &) inside JavaScript or Apex source code. Entities only apply to literal text rendered in HTML markup, and even there should be avoided — write operators and characters literally (||, &&, etc.) in .js and .cls/.trigger files.\n';
+      text += '- Use SLDS best practices for markup and styling.\n\n';
     }
 
     if (needsApex) {
@@ -355,21 +352,6 @@ public with sharing class PromptBuilder {
       text += '- Log meaningful error messages.\n';
       text += '- Throw AuraHandledException for LWC Apex controllers.\n';
       text += '- Do not expose stack traces to end users.\n\n';
-    }
-
-    if (needsLwc) {
-      text += '===== LWC BEST PRACTICES =====\n';
-      text += '- Prefer @wire for cacheable Apex.\n';
-      text += '- Use imperative Apex only when necessary.\n';
-      text += '- Avoid unnecessary @track decorators.\n';
-      text += '- Use getters instead of duplicated variables.\n';
-      text += '- Use Lightning Data Service where possible.\n';
-      text += '- Show spinner during server calls.\n';
-      text += '- Display friendly error messages.\n';
-      text += '- Remove unused imports.\n';
-      text += '- Remove unused methods.\n';
-      text += '- Keep components reusable.\n';
-      text += '- Use SLDS best practices.\n\n';
     }
 
     if (needsApex) {

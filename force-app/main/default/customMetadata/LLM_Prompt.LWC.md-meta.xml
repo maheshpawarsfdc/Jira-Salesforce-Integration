@@ -129,17 +129,86 @@ TIER 1 RULES:
 - Use if:true={record.data} and if:true={record.error} — ALWAYS both, never one without the other
 - Never hardcode record IDs
 
-== TIER 2 — APEX-CONNECTED (imperative Apex, loading state) ==
-Use when: ticket asks to display data that requires custom SOQL, DML, or business logic.
-An Apex controller MUST be generated or read.
+== TIER 2 — APEX-CONNECTED (custom SOQL, DML, or business logic) ==
+Use when: ticket asks to display or change data that requires custom SOQL,
+DML, or business logic. An Apex controller MUST be generated or read.
 
-TIER 2 USES IMPERATIVE APEX — NOT @wire.
-Do NOT use @wire in a Tier 2 component. Do NOT import wire from 'lwc' in Tier 2.
-The correct import line for Tier 2 is EXACTLY:
-  import { LightningElement, api, track } from 'lwc';
-If you add wire to that import, you are doing it wrong.
+Tier 2 has TWO sub-patterns — TIER 2A (wired) and TIER 2B (imperative). A
+single component can use BOTH for different operations — apply the rule per
+operation, not once for the whole component.
 
--- TEMPLATE PATTERN (Tier 2) --
+== TIER 2 DECISION RULE — WIRED vs IMPERATIVE APEX ==
+Use TIER 2A — @wire — when ALL are true for that operation: it only READS
+data (never DML); it should load automatically on mount or re-run when a
+reactive @api parameter changes; the user doesn't need to control exactly
+when it fires (no button/form gating the fetch).
+
+Use TIER 2B — imperative (.then().catch()) — when ANY are true: it performs
+DML (insert/update/delete/upsert) or any write; it must fire on a specific
+user action (click, submit, row selection) rather than automatically; it
+needs parameters gathered from user input at the moment of the action.
+
+A wired result can still support "Refresh" without switching to imperative —
+use refreshApex(wiredResult) to force a cacheable result to refetch. Never
+abandon @wire just because a Refresh button exists.
+
+If genuinely ambiguous: default to imperative — always safe, just less
+idiomatic than @wire for a pure read-only, load-time case.
+
+-- JS PATTERN (Tier 2A, @wire PROPERTY form) --
+import { LightningElement, api, wire } from 'lwc';
+import { refreshApex } from '@salesforce/apex';
+import getInvoices from '@salesforce/apex/InvoiceController.getInvoices';
+
+export default class InvoiceList extends LightningElement {
+    @api recordId;
+
+    @wire(getInvoices, { accountId: '$recordId' })
+    wiredInvoices;
+
+    get invoices() {
+        return this.wiredInvoices.data;
+    }
+
+    get error() {
+        return this.wiredInvoices.error?.body?.message;
+    }
+
+    get hasInvoices() {
+        return this.invoices && this.invoices.length > 0;
+    }
+
+    get isLoading() {
+        return !this.wiredInvoices.data && !this.wiredInvoices.error;
+    }
+
+    handleRefresh() {
+        refreshApex(this.wiredInvoices);
+    }
+}
+
+Template reuses the same 3-state shape as Tier 2B (spinner/error/data) below
+— only the JS source of isLoading/error/data differs.
+
+An alternative FUNCTION-HANDLER form exists — @wire(getX) methodName({ data,
+error }) { ... } — for when you need to transform data before storing it. If
+used, still keep the raw { data, error } result in its own property so
+refreshApex() has something to refetch; never discard it after deriving from it.
+
+TIER 2A RULES:
+- A wired Apex adapter's return value is ALWAYS a { data, error } object,
+  never a plain array — bind {property}.data / {property}.error in BOTH JS
+  and the template. Never bind the bare property alone.
+- refreshApex(wiredResult) imports from '@salesforce/apex' (NOT 'lwc') and
+  takes the WIRED RESULT object itself — never a derived copy.
+- Never assign directly to a wired property's .data — call refreshApex().
+- Reactive wire parameters use '$' ({ accountId: '$recordId' }) — the wire
+  re-runs automatically when that reactive property changes.
+- The Apex method behind a Tier 2A wire MUST be @AuraEnabled(cacheable=true).
+- ALWAYS show a loading state until the wire settles — never skip the
+  spinner just because @wire fires automatically.
+
+-- TEMPLATE PATTERN (Tier 2B, imperative) --
 <template>
     <lightning-card title="Invoice List" icon-name="standard:invoice">
         <div class="slds-p-around_medium">
@@ -149,7 +218,7 @@ If you add wire to that import, you are doing it wrong.
             <template if:true={error}>
                 <p class="slds-text-color_error">{error}</p>
             </template>
-            <template if:true={invoices}>
+            <template if:true={hasInvoices}>
                 <template for:each={invoices} for:item="inv">
                     <p key={inv.Id}>{inv.Name} — {inv.Amount__c}</p>
                 </template>
@@ -158,8 +227,8 @@ If you add wire to that import, you are doing it wrong.
     </lightning-card>
 </template>
 
--- JS PATTERN (Tier 2, imperative Apex) --
-// CORRECT Tier 2 import — no wire:
+-- JS PATTERN (Tier 2B, imperative) --
+// CORRECT Tier 2B import — no wire:
 import { LightningElement, api, track } from 'lwc';
 import getInvoices from '@salesforce/apex/InvoiceController.getInvoices';
 
@@ -168,6 +237,10 @@ export default class InvoiceList extends LightningElement {
     @track invoices;
     @track isLoading = false;
     @track error;
+
+    get hasInvoices() {
+        return this.invoices && this.invoices.length > 0;
+    }
 
     connectedCallback() {
         this.loadData();
@@ -199,7 +272,7 @@ export default class InvoiceList extends LightningElement {
     }
 }
 
-TIER 2 RULES:
+TIER 2B RULES:
 - ALWAYS use @track for properties that drive template re-render
 - ALWAYS show lightning-spinner when isLoading is true
 - ALWAYS handle the .catch() — never leave it out
@@ -207,14 +280,20 @@ TIER 2 RULES:
 - ALWAYS call loadData() from connectedCallback() for initial load
 - Import path: @salesforce/apex/ClassName.methodName
 - Use err.body?.message for error display — never err.message directly
-- When a ticket asks for a Refresh/Reload button: ALWAYS clear the data property and error
-  to undefined BEFORE calling loadData() — this gives visible feedback to the user.
-  Without clearing, the list stays visible during reload and the button appears broken.
-- When a Refresh button exists: the Apex method MUST use @AuraEnabled (NOT cacheable=true).
-  @AuraEnabled(cacheable=true) with imperative calls returns platform-cached data for the
-  same parameters — the Refresh button will appear to do nothing even though it runs.
-  Rule: @AuraEnabled(cacheable=true) only for @wire / display-only. @AuraEnabled for any
-  method that must return fresh data on demand (Refresh button, form submit, etc.).
+- When a ticket asks for a Refresh/Reload button ON AN IMPERATIVE (Tier 2B) component:
+  ALWAYS clear the data property and error to undefined BEFORE calling loadData() — this
+  gives visible feedback to the user. Without clearing, the list stays visible during
+  reload and the button appears broken.
+- Cacheable-ness must match HOW the method is called, not just what it does:
+  - Called via @wire (Tier 2A): use @AuraEnabled(cacheable=true) — REQUIRED, this is what
+    enables refreshApex() to force a refetch.
+  - Called imperatively (Tier 2B): use plain @AuraEnabled, WITHOUT cacheable=true.
+    cacheable=true called imperatively returns platform-cached data — a Refresh button
+    calling it will appear to do nothing even though it runs.
+  - Need a Refresh affordance on @wire data? Keep @wire + cacheable=true and call
+    refreshApex(wiredResult) — do NOT switch to imperative just for that.
+  - A method that performs ANY DML can NEVER be cacheable=true — a Salesforce platform
+    restriction enforced at runtime, not a style preference.
 
 LWC EVENT HANDLER SYNTAX — CRITICAL:
 LWC uses "on" prefix for all event handlers. It does NOT support Vue.js or Angular syntax.
@@ -235,329 +314,70 @@ lightning-card slot placement rule:
 
 Using @click causes compile error: LWC1124 — @click is not a valid attribute.
 
-TIER 2 TEMPLATE DATA ACCESS — CRITICAL:
-In Tier 2, this.opportunities (or this.records, this.items, etc.) is a plain JavaScript Array
-assigned from the imperative .then(result => { this.opportunities = result; }).
-It is NOT a wire result object. It has NO .data or .error properties.
+TIER 2B TEMPLATE DATA ACCESS — CRITICAL:
+this.opportunities (Tier 2B) is a plain Array with NO .data/.error — bind
+if:true={opportunities}, for:each={opportunities}, if:true={error}, {error}
+directly. Using {opportunities.data} causes "Cannot read properties of
+undefined (reading 'data')" — that shape belongs to Tier 2A (@wire) only,
+never mix the two.
 
-  CORRECT (Tier 2 — imperative):        WRONG (Tier 1 wire pattern — FORBIDDEN in Tier 2):
-  if:true={opportunities}                if:true={opportunities.data}
-  for:each={opportunities}               for:each={opportunities.data}
-  if:true={error}                        if:true={opportunities.error}
-  {error}                                {opportunities.error}
+If confused about which pattern to use: re-read the TIER 2 DECISION RULE
+above. As a fallback only: default to imperative.
 
-Using {opportunities.data} when opportunities is a plain array causes:
-  "Cannot read properties of undefined (reading 'data')" at connect phase.
+-- JS PATTERN (Tier 2B, imperative Apex DML with toast feedback) --
+import { LightningElement, api, track } from 'lwc';
+import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+import updateInvoiceStatus from '@salesforce/apex/InvoiceController.updateInvoiceStatus';
 
-The @wire FUNCTION HANDLER pattern also produces a plain array and has the same rules:
-  @wire(getOpps, { accountId: '$recordId' })
-  wiredResult({ data, error }) {
-      if (data) { this.opportunities = data; }  // ← plain array, NOT {data, error} object
-  }
-  In this case too: template uses {opportunities} not {opportunities.data}.
+export default class InvoiceStatusUpdater extends LightningElement {
+    @api recordId;
+    @track isLoading = false;
 
-If you are confused about which pattern to use: use the imperative .then().catch() pattern
-(no @wire at all) — it is always safe and unambiguous for Tier 2.
+    handleMarkPaid() {
+        if (this.isLoading) {
+            return;
+        }
+        this.isLoading = true;
+        updateInvoiceStatus({ invoiceId: this.recordId, newStatus: 'Paid' })
+            .then(() => {
+                this.dispatchEvent(new ShowToastEvent({
+                    title: 'Success',
+                    message: 'Invoice marked as paid.',
+                    variant: 'success'
+                }));
+            })
+            .catch((err) => {
+                this.dispatchEvent(new ShowToastEvent({
+                    title: 'Error updating invoice',
+                    message: err.body?.message || 'An unexpected error occurred.',
+                    variant: 'error'
+                }));
+            })
+            .finally(() => {
+                this.isLoading = false;
+            });
+    }
+}
 
-== TIER 3 — COMPONENT COMMUNICATION ==
-Use when: the ticket describes more than one component that must share data or
-coordinate — parent+child, siblings, or a publish/subscribe relationship.
+-- APEX PATTERN (Tier 2B DML method) --
+@AuraEnabled
+public static void updateInvoiceStatus(Id invoiceId, String newStatus) {
+    if (invoiceId == null || String.isBlank(newStatus)) {
+        throw new AuraHandledException('Invoice Id and status are required.');
+    }
+    update new Invoice__c(Id = invoiceId, Status__c = newStatus);
+}
 
--- STEP ZERO (MULTI-COMPONENT) — EXTENDS MERGE MODE vs CREATE MODE --
-A Tier 3 ticket usually names 2+ components. orgState.existingLwcComponent only
-ever resolves ONE of them — this is a known v1 limitation, not a bug.
-  1. For the ONE component name orgState.existingLwcComponent matches (if any)
-     → MERGE MODE for that component only, following the MERGE MODE steps above.
-  2. For every OTHER component name mentioned in the ticket → CREATE MODE
-     (generate it fresh).
-  3. Never invent an @api property/event name for a component the ticket implies
-     already exists but that is NOT in orgState.existingLwcComponent. There is no
-     way to ask the user for clarification — instead, generate that component
-     fresh in this same response using the naming conventions in this section,
-     rather than guessing at an undocumented existing contract.
-
--- PATTERN 1: PARENT → CHILD --
-Child exposes state/behavior via @api properties and @api methods. The parent
-sets properties via template attribute binding, and calls methods via lwc:ref.
-
-Child JS (contactTile.js):
-  import { LightningElement, api } from 'lwc';
-
-  export default class ContactTile extends LightningElement {
-      @api contactName;
-      @api recordId;
-
-      @api
-      focusInput() {
-          this.template.querySelector('input')?.focus();
-      }
-  }
-
-Parent HTML (contactPanel.html):
-  <template>
-      <c-contact-tile
-          contact-name={selectedContactName}
-          record-id={recordId}
-          lwc:ref="tile"
-      ></c-contact-tile>
-      <lightning-button label="Focus Child" onclick={handleFocusChild}></lightning-button>
-  </template>
-
-Parent JS (contactPanel.js):
-  import { LightningElement } from 'lwc';
-
-  export default class ContactPanel extends LightningElement {
-      selectedContactName = 'Jane Doe';
-
-      handleFocusChild() {
-          this.refs.tile.focusInput();
-      }
-  }
-
-CRITICAL NAMING RULE — kebab-case (HTML) vs camelCase (JS):
-  CORRECT:                                  WRONG:
-  JS:   @api contactName;                   JS:   @api contactName;
-  HTML: contact-name={selectedContactName}  HTML: contactName={selectedContactName}
-  (kebab-case attribute maps to the         (camelCase attribute in HTML does NOT
-   camelCase @api property automatically)    bind to the @api property — LWC's
-                                              template compiler requires kebab-case
-                                              for every custom-element attribute)
-
-PATTERN 1 RULES:
-- Child @api properties: declare with @api propertyName — camelCase, no exceptions.
-- Parent template attribute for that property: identical name in kebab-case,
-  e.g. contactName → contact-name={value}.
-- To call an @api METHOD on a child from the parent, put lwc:ref="someRef" on the
-  child's tag in the parent's HTML, then call this.refs.someRef.methodName() in
-  the parent's JS. Do NOT use this.template.querySelector to reach into a CHILD
-  custom element — reserve querySelector for elements native to the component's
-  OWN template (e.g. this.template.querySelector('input') inside the child itself).
-- @api methods are declared with @api methodName() { ... } — not an arrow
-  function class field.
-- Passing a value down: field-name={parentPropertyOrGetter} — the same
-  {...} binding rules from Tier 1/Tier 2 apply (bare identifier or dot-path only).
-
--- PATTERN 2: CHILD → PARENT (CustomEvent) --
-Child fires a CustomEvent; parent listens with an on{eventname} template handler.
-
-Child JS (contactTile.js):
-  import { LightningElement, api } from 'lwc';
-
-  export default class ContactTile extends LightningElement {
-      @api contactId;
-
-      handleSelect() {
-          const selectEvent = new CustomEvent('contactselect', {
-              detail: { contactId: this.contactId }
-          });
-          this.dispatchEvent(selectEvent);
-      }
-  }
-
-Child HTML (contactTile.html):
-  <template>
-      <lightning-button label="Select" onclick={handleSelect}></lightning-button>
-  </template>
-
-Parent HTML (contactPanel.html):
-  <template>
-      <c-contact-tile contact-id={rowId} oncontactselect={handleContactSelect}></c-contact-tile>
-  </template>
-
-Parent JS (contactPanel.js):
-  handleContactSelect(event) {
-      this.selectedContactId = event.detail.contactId;
-  }
-
-CRITICAL — EVENT NAMES MUST BE ALL LOWERCASE:
-  CORRECT:                                   WRONG:
-  new CustomEvent('contactselect', {...})    new CustomEvent('contactSelect', {...})
-  oncontactselect={handleContactSelect}      oncontactSelect={handleContactSelect}
-This is a real LWC platform constraint, not a style preference: the engine
-silently lowercases mixed-case event names at dispatch time, so a handler bound
-with any uppercase letter in its name NEVER fires — no error, no warning, the
-click just appears to do nothing.
-
-PATTERN 2 RULES:
-- Event name string passed to new CustomEvent(...) MUST be entirely lowercase —
-  no camelCase, no PascalCase, no hyphens, no underscores.
-- Parent's handler attribute is "on" + the exact lowercase event name.
-- Always pass data through the detail property: new CustomEvent('name', { detail: {...} }).
-- Do NOT set { bubbles: true, composed: true } unless the ticket explicitly
-  requires the event to escape this component's shadow DOM into a non-ancestor
-  listener — plain parent/child listening needs neither.
-- CustomEvent always flows child → parent (upward). Never have a parent
-  dispatchEvent expecting a child to receive it — a child cannot listen for
-  events on itself dispatched by its own parent this way.
-
--- PATTERN 3: SIBLING COMMUNICATION VIA SHARED PARENT --
-Two unrelated components under the SAME parent: the parent owns the shared
-state, receives a Pattern-2 event from one child, and re-passes the value as a
-Pattern-1 @api property to the other child. No new API beyond Patterns 1+2.
-
-Parent HTML (contactPanel.html):
-  <template>
-      <c-contact-list onselectcontact={handleSelectContact}></c-contact-list>
-      <c-contact-detail contact-id={selectedContactId}></c-contact-detail>
-  </template>
-
-Parent JS (contactPanel.js):
-  import { LightningElement } from 'lwc';
-
-  export default class ContactPanel extends LightningElement {
-      selectedContactId;
-
-      handleSelectContact(event) {
-          this.selectedContactId = event.detail.contactId;
-      }
-  }
-
-WHEN TO USE LMS (PATTERN 4) INSTEAD:
-Use Pattern 3 whenever a shared parent already exists or is being generated in
-this same ticket. Switch to Pattern 4 (LMS) only when the components do NOT
-share a common parent in the same DOM subtree — e.g. one lives on a record page
-and the other lives in the utility bar, or an admin places them independently
-on different regions of an App Page / different FlexiPages entirely, so there
-is no single component you could add these props/listeners to.
-
-PATTERN 3 RULES:
-- Prefer shared-parent re-broadcast whenever a parent component already exists
-  or is being generated in the same ticket — it is simpler and needs no new
-  metadata file.
-- Never reach for LMS when a shared parent already owns both children.
-- The shared parent's re-broadcast property is a plain reactive class field —
-  no special decorator is required on the parent; only the receiving CHILD's
-  property needs @api.
-
--- PATTERN 4: LIGHTNING MESSAGE SERVICE (LMS) --
-Use when: components do not share a common ancestor, OR the ticket explicitly
-says "message channel" / "LMS" / "publish/subscribe" / "loosely coupled".
-
-STEP A — Generate the message channel metadata file. This is ONE file, NOT a
-3-file bundle like LwcHtml/LwcJs/LwcMeta:
-  metadataType: "LightningMessageChannel"
-  memberName:   channel DeveloperName, PascalCase, e.g. "RecordSelected"
-  filePath:     "messageChannels/RecordSelected.messageChannel-meta.xml"
-  xmlContent:
-    <?xml version="1.0" encoding="UTF-8"?>
-    <LightningMessageChannel xmlns="http://soap.sforce.com/2006/04/metadata">
-        <masterLabel>Record Selected</masterLabel>
-        <isExposed>true</isExposed>
-        <description>Publishes the selected record Id across components.</description>
-        <lightningMessageFields>
-            <fieldName>recordId</fieldName>
-            <description>Id of the selected record.</description>
-        </lightningMessageFields>
-    </LightningMessageChannel>
-
-Channel naming: PascalCase DeveloperName (e.g. RecordSelected) — NOT camelCase
-like a component name. Add one <lightningMessageFields> block per field the
-payload carries.
-
-STEP B — Import path ALWAYS appends "__c", even though the file name, the
-memberName, and <masterLabel> do NOT have it. This is a real platform rule:
-  CORRECT:
-    import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected__c';
-  WRONG:
-    import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected';
-    import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/recordSelected__c';
-
-STEP C — Publisher component JS:
-  import { LightningElement, wire } from 'lwc';
-  import { publish, MessageContext } from 'lightning/messageService';
-  import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected__c';
-
-  export default class RecordPicker extends LightningElement {
-      @wire(MessageContext)
-      messageContext;
-
-      handleRowSelect(event) {
-          publish(this.messageContext, RECORD_SELECTED_CHANNEL, {
-              recordId: event.detail.recordId
-          });
-      }
-  }
-
-STEP D — Subscriber component JS, with mandatory cleanup:
-  import { LightningElement, wire } from 'lwc';
-  import {
-      subscribe,
-      unsubscribe,
-      MessageContext
-  } from 'lightning/messageService';
-  import RECORD_SELECTED_CHANNEL from '@salesforce/messageChannel/RecordSelected__c';
-
-  export default class RecordDetailPanel extends LightningElement {
-      subscription = null;
-      recordId;
-
-      @wire(MessageContext)
-      messageContext;
-
-      connectedCallback() {
-          this.subscribeToChannel();
-      }
-
-      subscribeToChannel() {
-          if (this.subscription) {
-              return;
-          }
-          this.subscription = subscribe(
-              this.messageContext,
-              RECORD_SELECTED_CHANNEL,
-              (message) => this.handleMessage(message)
-          );
-      }
-
-      handleMessage(message) {
-          this.recordId = message.recordId;
-      }
-
-      disconnectedCallback() {
-          unsubscribe(this.subscription);
-          this.subscription = null;
-      }
-  }
-
-WRONG (memory leak — missing cleanup):
-  connectedCallback() {
-      subscribe(this.messageContext, RECORD_SELECTED_CHANNEL, (message) => {
-          this.recordId = message.recordId;
-      });
-  }
-  // No disconnectedCallback, no unsubscribe, no stored subscription reference —
-  // every mount/unmount cycle (for:each re-render, navigation away and back)
-  // stacks a new listener on top of the last one that is never released.
-
-PATTERN 4 RULES:
-- ALWAYS import MessageContext and declare @wire(MessageContext) messageContext;
-  in BOTH publisher and subscriber — publish() and subscribe() both require it
-  as their first argument and fail at runtime without it.
-- ALWAYS store subscribe()'s return value in a class field (this.subscription).
-- ALWAYS call unsubscribe(this.subscription) inside disconnectedCallback() and
-  reset the field to null. Every subscribe() needs a matching unsubscribe().
-- Guard against double-subscription: if (this.subscription) return; before
-  calling subscribe() again.
-- The publish() payload's keys must match the channel XML's own
-  <lightningMessageFields><fieldName> entries exactly — never invent a field on
-  publish that the channel XML does not declare, and never read a field on
-  subscribe that was not actually published.
-- One message channel per distinct pub/sub topic — do not overload a single
-  channel with unrelated payloads for unrelated ticket requirements.
-- orgState has no existing-message-channel lookup in v1 — if a ticket refers to
-  an existing channel by name, generate it fresh with the field shape implied by
-  the ticket's own wording; do not fabricate unrelated fields.
-
-== FILE STRUCTURE (Tier 3 addition) ==
-The == FILE STRUCTURE == section above covers the 3 files every LWC component
-needs. Tier 3 tickets ADD a 4th possible file type, used ONLY for Pattern 4 (LMS):
-
-  4. metadataType: LightningMessageChannel   filePath: messageChannels/{ChannelName}.messageChannel-meta.xml
-     → XML only, exactly ONE file, no html/js/meta split.
-
-Parent→Child, Child→Parent, and Sibling (Pattern 1–3) tickets need ONLY the
-standard 3-file LWC bundle per component — never emit a LightningMessageChannel
-file unless the ticket requires LMS-based communication.
+TIER 2B DML RULES:
+- Plain @AuraEnabled — never cacheable=true on a method that performs DML.
+- Import ShowToastEvent from 'lightning/platformShowToastEvent' for feedback
+  on both success and failure — never silently succeed or fail.
+- Validate required parameters in Apex; throw AuraHandledException with a
+  clear message — never let a raw system exception reach the client.
+- Use .finally() (or reset in both .then()/.catch()) to clear isLoading
+  exactly once regardless of outcome.
+- Guard with an isLoading check to prevent double-submission from a
+  double-click.
 
 == APEX CONTROLLER FOR LWC ==
 
@@ -568,6 +388,20 @@ IF NOT NULL → the class already exists in the org.
   2. Add the new method(s) the ticket requires
   3. Emit COMPLETE class — ALL existing methods preserved + new method appended
   4. Emit ApexClass + ApexClassMeta file entries (both required)
+
+-- DECIDING A NEW METHOD'S CACHEABLE-NESS IN MERGE MODE --
+orgState.existingLwcApexController.body is raw Apex source text — no separate
+structured method/annotation list is provided. When adding a NEW method:
+  1. Read each EXISTING method's own @AuraEnabled annotation directly from
+     the body text immediately above its signature — never assume every
+     method in the class shares one annotation.
+  2. Decide the NEW method's cacheable-ness from what THIS ticket needs the
+     NEW method to do (apply the TIER 2 DECISION RULE) — never copy a
+     neighboring existing method's annotation just because it's in the same
+     class. A controller can and often should mix cacheable=true read
+     methods with plain @AuraEnabled write methods.
+  3. Never change an EXISTING method's annotation unless the ticket
+     explicitly asks to change what that method does.
 
 IF NULL → generate the class fresh.
   Naming rule: {ComponentName}Controller with first letter uppercase
@@ -611,7 +445,7 @@ CORRECT EXAMPLE (copy this pattern exactly):
   "metadataType": "ApexClass",
   "memberName": "OpportunityListController",
   "filePath": "classes/OpportunityListController.cls",
-  "xmlContent": "public with sharing class OpportunityListController {\n    @AuraEnabled(cacheable=true)\n    public static List<Opportunity> getOpenOpportunities(Id accountId) {\n        return [SELECT Id, Name, Amount, StageName, CloseDate FROM Opportunity WHERE AccountId = :accountId AND IsClosed = false ORDER BY CloseDate ASC LIMIT 100];\n    }\n}"
+  "xmlContent": "public with sharing class OpportunityListController {\n    @AuraEnabled(cacheable=true)\n    public static List<Opportunity> getOpenOpportunities(Id accountId) {\n        return [SELECT Id, Name FROM Opportunity WHERE AccountId = :accountId];\n    }\n}"
 },
 {
   "metadataType": "ApexClassMeta",
@@ -638,9 +472,10 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
 
 == NEVER ==
 - Never use @click, @change, or any @ event syntax — LWC uses onclick, onchange, etc.
-- Never use @wire in a Tier 2 component — Tier 2 uses imperative .then().catch() only
-- Never import wire from 'lwc' in a Tier 2 component — correct import is: import { LightningElement, api, track } from 'lwc'
-- Never use {property.data} or {property.error} in a Tier 2 template — use {property} and {error} directly
+- Never use @wire for DML or a user-action-triggered operation — use Tier 2B.
+  Never mix data shapes: @wire results are ALWAYS {property}.data/.error;
+  Tier 2B results are ALWAYS a plain value with neither. Never assign
+  directly to a wired property's .data — call refreshApex() instead.
 - Never put <?xml into an ApexClass file — ApexClass.xmlContent MUST be Apex source code starting with "public"
 - Never put Apex code (public with sharing...) into an ApexClassMeta file — its xmlContent MUST be meta XML starting with <?xml
 - Never put <?xml version into a .html or .js file
@@ -656,26 +491,8 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
   to the existing page in Apex, working from the page's real deployed XML. Emitting your own
   FlexiPage would overwrite that page and destroy every component already on it.
 - Never generate a CSS file — out of scope for now
-- Never use an uppercase letter anywhere in a CustomEvent name — new CustomEvent('contactSelect', ...)
-  will silently fail to fire the parent's handler; all event names must be entirely lowercase.
-- Never call this.dispatchEvent from a PARENT expecting a CHILD to receive it — CustomEvent from a
-  child's own dispatchEvent always flows upward (child→parent) only.
-- Never bind a child's @api property using the same casing in HTML as in JS — HTML custom attributes
-  are kebab-case (contact-id={x}), JS class properties are camelCase (@api contactId).
-- Never use this.template.querySelector to call a method or read a property on a CHILD custom element
-  across a component boundary — use lwc:ref="name" on the child tag and this.refs.name in JS instead.
-- Never subscribe() to a Lightning Message Channel without also unsubscribing in disconnectedCallback —
-  this leaks a stale listener on every re-render/navigation cycle.
-- Never call publish() or subscribe() without a wired @wire(MessageContext) messageContext in the same class.
-- Never split a LightningMessageChannel into multiple file entries — it is always exactly one XML file,
-  unlike the 3-file LwcHtml/LwcJs/LwcMeta bundle.
-- Never invent a message channel field name that isn't declared in that channel's own
-  <lightningMessageFields> — publish() payload keys and subscribe() handler reads must match the channel XML.
-- Never reach for Lightning Message Service when a shared parent component already exists (or is being
-  generated in the same ticket) — use the shared-parent pattern instead; LMS is for components with no
-  shared ancestor.
-- Never guess at an existing child component's @api contract when a multi-component ticket references a
-  child not covered by orgState.existingLwcComponent — generate that child fresh in this response.
+- Component communication (parent-child, events, siblings, LMS): see the
+  LWC_COMMUNICATION generation guidance's own == NEVER == additions.
 ]]></value>
     </values>
     <values>
@@ -698,6 +515,6 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
         <field>Description__c</field>
         <value
       xsi:type="xsd:string"
-    >LWC 3-file bundle, Tier 1 wire, Tier 2 Apex, Tier 3 component communication (parent-child @api, CustomEvent, sibling via shared parent, Lightning Message Service), merge mode, controller generation</value>
+    >LWC 3-file bundle, Tier 1 wire, Tier 2A/2B Apex (wired + imperative, DML, refreshApex, errors), merge mode, controller generation. Component communication is a separate record: LWC_COMMUNICATION.</value>
     </values>
 </CustomMetadata>

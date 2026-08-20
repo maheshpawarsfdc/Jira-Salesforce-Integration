@@ -1209,15 +1209,64 @@ public class LLMOrgStateService {
         }
       }
 
+      // "component" alone is included, not just "lwc"/"lightning web
+      // component"/"lightning component" — see the matching comment in
+      // StoryAnalyzer.detectArtifacts() for the confirmed 2026-08-20
+      // incident this covers: a ticket that only ever says "component"
+      // (never "LWC") left this whole block unreached, so the existing
+      // bundle's real HTML/JS/controller never made it into orgState at
+      // all, regardless of the name-resolution fixes below.
       if (
         ticketTextLower.contains('lwc') ||
         ticketTextLower.contains('lightning web component') ||
-        ticketTextLower.contains('lightning component')
+        ticketTextLower.contains('lightning component') ||
+        ticketTextLower.contains('component')
       ) {
         try {
-          String detectedComponentName = extractLwcComponentName(
-            summary + ' ' + description
+          String ticketTextForLwc = summary + ' ' + description;
+          List<Object> existingLwcNames = (List<Object>) orgState.get(
+            'existingLwcComponentNames'
           );
+
+          // PRIMARY: does the ticket literally mention a REAL existing
+          // bundle name (word-boundary, case/singular-plural tolerant)?
+          // Checked against ground truth FIRST, before any regex parsing of
+          // ticket sentence structure — a fixed regex over "the X component"
+          // keeps breaking on real phrasing (2026-08-20: "accountContact
+          // List component" made the old regex capture "List", the word
+          // immediately before "component", instead of "accountContact",
+          // because the regex assumes the component name is the single
+          // word directly adjacent to "component"/"lwc"). Scanning the
+          // whole ticket text against the list of bundles that actually
+          // exist sidesteps sentence-structure guessing entirely — if the
+          // org has a bundle called "accountContacts" and the ticket
+          // mentions it anywhere, that's a strictly more reliable signal
+          // than "which word sits next to the word 'component'".
+          String detectedComponentName = findExistingLwcNameMentionedInTicket(
+            ticketTextForLwc,
+            existingLwcNames
+          );
+
+          if (String.isNotBlank(detectedComponentName)) {
+            System.debug(
+              'runOrgCheck: ticket text mentions real existing LWC [' +
+                detectedComponentName +
+                '] — resolved against ground truth, not regex parsing'
+            );
+          } else {
+            // FALLBACK: no real existing bundle is mentioned anywhere in
+            // the ticket — either genuine create-mode, or a close-but-not-
+            // literal name the ground-truth scan couldn't find. Parse via
+            // the old sentence-structure regexes, then still run it through
+            // the fuzzy resolver (singular/plural/prefix tolerance) in case
+            // it's a near-miss rather than a real miss.
+            String regexGuess = extractLwcComponentName(ticketTextForLwc);
+            detectedComponentName = String.isNotBlank(regexGuess)
+              ? resolveLwcComponentName(regexGuess, existingLwcNames)
+              : regexGuess;
+          }
+
+          Map<String, Object> componentState = null;
 
           if (String.isNotBlank(detectedComponentName)) {
             System.debug(
@@ -1225,9 +1274,7 @@ public class LLMOrgStateService {
                 detectedComponentName +
                 '] — fetching from org'
             );
-            Map<String, Object> componentState = getLwcComponentState(
-              detectedComponentName
-            );
+            componentState = getLwcComponentState(detectedComponentName);
             orgState.put('existingLwcComponent', componentState);
             System.debug(
               'runOrgCheck: existingLwcComponent = ' +
@@ -1242,40 +1289,66 @@ public class LLMOrgStateService {
             orgState.put('existingLwcComponent', null);
           }
 
-          String combined = summary + ' ' + description;
-          Pattern controllerPat = Pattern.compile(
-            '([A-Z][A-Za-z0-9_]+(?:Controller|Service|Handler|Helper))'
-          );
-          Matcher controllerMatch = controllerPat.matcher(combined);
-          String detectedControllerName = null;
-          while (controllerMatch.find()) {
-            String candidate = controllerMatch.group(1);
-            Set<String> sfBuiltInControllers = new Set<String>{
-              'LightningController',
-              'StandardController',
-              'ApexPages'
-            };
-            if (!sfBuiltInControllers.contains(candidate)) {
-              detectedControllerName = candidate;
-              break;
+          // Preferred path: the component already exists, and its own JS
+          // imports name its real controller(s) — ground truth, resolved in
+          // getLwcComponentState() regardless of whether the ticket text
+          // happens to mention the Apex class by name.
+          List<Object> componentControllerNames = componentState != null
+            ? (List<Object>) componentState.get('apexControllerNames')
+            : null;
+
+          if (
+            componentControllerNames != null &&
+            !componentControllerNames.isEmpty()
+          ) {
+            orgState.put(
+              'existingLwcApexControllers',
+              componentState.get('apexControllers')
+            );
+            System.debug(
+              'runOrgCheck: existingLwcApexControllers resolved from ' +
+                'component JS imports: ' +
+                componentControllerNames
+            );
+          } else {
+            // Fallback: component doesn't exist yet (create mode), or its JS
+            // imports no Apex — the only remaining signal is a class name
+            // literally typed in the ticket text.
+            String combined = summary + ' ' + description;
+            Pattern controllerPat = Pattern.compile(
+              '([A-Z][A-Za-z0-9_]+(?:Controller|Service|Handler|Helper))'
+            );
+            Matcher controllerMatch = controllerPat.matcher(combined);
+            String detectedControllerName = null;
+            while (controllerMatch.find()) {
+              String candidate = controllerMatch.group(1);
+              Set<String> sfBuiltInControllers = new Set<String>{
+                'LightningController',
+                'StandardController',
+                'ApexPages'
+              };
+              if (!sfBuiltInControllers.contains(candidate)) {
+                detectedControllerName = candidate;
+                break;
+              }
             }
-          }
-          if (String.isNotBlank(detectedControllerName)) {
-            System.debug(
-              'runOrgCheck: detected LWC Apex controller [' +
-                detectedControllerName +
-                '] — fetching from org'
-            );
-            Map<String, Object> controllerState = getApexClassState(
-              detectedControllerName
-            );
-            orgState.put('existingLwcApexController', controllerState);
-            System.debug(
-              'runOrgCheck: existingLwcApexController = ' +
-              (controllerState != null
-                ? controllerState.get('name')
-                : 'null (will be created)')
-            );
+            if (String.isNotBlank(detectedControllerName)) {
+              System.debug(
+                'runOrgCheck: detected LWC Apex controller [' +
+                  detectedControllerName +
+                  '] from ticket text — fetching from org'
+              );
+              Map<String, Object> controllerState = getApexClassState(
+                detectedControllerName
+              );
+              orgState.put('existingLwcApexController', controllerState);
+              System.debug(
+                'runOrgCheck: existingLwcApexController = ' +
+                (controllerState != null
+                  ? controllerState.get('name')
+                  : 'null (will be created)')
+              );
+            }
           }
         } catch (Exception e) {
           System.debug(
@@ -2213,6 +2286,20 @@ public class LLMOrgStateService {
         }
       }
 
+      // Resolve the controller(s) this component ACTUALLY uses by parsing its
+      // own JS imports (@salesforce/apex/ClassName.methodName), instead of
+      // leaving callers to guess a class name from the ticket wording — a
+      // ticket asking to "enhance the existing X component" very often never
+      // names the Apex class at all, so that guess only ever worked by luck.
+      List<String> controllerNames = extractApexControllerNamesFromJs(jsSource);
+      Map<String, Object> apexControllers = new Map<String, Object>();
+      for (String controllerName : controllerNames) {
+        Map<String, Object> controllerState = getApexClassState(controllerName);
+        if (controllerState != null) {
+          apexControllers.put(controllerName, controllerState);
+        }
+      }
+
       System.debug(
         'getLwcComponentState: resolved' +
           ' html=' +
@@ -2220,14 +2307,18 @@ public class LLMOrgStateService {
           ' js=' +
           (jsSource != null) +
           ' meta=' +
-          (metaXml != null)
+          (metaXml != null) +
+          ' apexControllers=' +
+          controllerNames
       );
 
       return new Map<String, Object>{
         'developerName' => developerName,
         'html' => htmlSource,
         'js' => jsSource,
-        'metaXml' => metaXml
+        'metaXml' => metaXml,
+        'apexControllerNames' => controllerNames,
+        'apexControllers' => apexControllers
       };
     } catch (Exception e) {
       System.debug(
@@ -2239,6 +2330,36 @@ public class LLMOrgStateService {
       ErrorLogger.log(e);
       return null;
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // EXTRACT APEX CONTROLLER NAMES FROM LWC JS SOURCE
+  // Finds every `@salesforce/apex/ClassName.methodName` import and returns
+  // the distinct class names, in first-seen order. This is the ground truth
+  // for "which classes does this component use" — reading it straight from
+  // the component's own imports instead of guessing from ticket wording.
+  // ─────────────────────────────────────────────────────────────
+  private static List<String> extractApexControllerNamesFromJs(
+    String jsSource
+  ) {
+    List<String> result = new List<String>();
+    if (String.isBlank(jsSource)) {
+      return result;
+    }
+
+    Set<String> seen = new Set<String>();
+    Pattern p = Pattern.compile(
+      '@salesforce/apex/([A-Za-z0-9_]+)\\.[A-Za-z0-9_]+'
+    );
+    Matcher m = p.matcher(jsSource);
+    while (m.find()) {
+      String className = m.group(1);
+      if (!seen.contains(className)) {
+        seen.add(className);
+        result.add(className);
+      }
+    }
+    return result;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -2286,6 +2407,122 @@ public class LLMOrgStateService {
     System.debug(
       'extractLwcComponentName: no match — LLM will name the component'
     );
+    return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RESOLVE A TICKET-TEXT LWC NAME AGAINST REAL BUNDLE NAMES
+  // extractLwcComponentName() only reads what the ticket literally says,
+  // which can differ slightly from the real DeveloperName — most commonly
+  // singular vs plural ("accountContact" vs the real "accountContacts") or
+  // casing. An exact-match lookup against a name like that silently returns
+  // null (create mode) even though the component exists, which is worse
+  // than no lookup at all: the LLM then has zero visibility into the real
+  // existing file and regenerates from scratch, capable of dropping
+  // existing behavior the ticket never asked to touch. Tries, in order: an
+  // exact case-insensitive match, then a singular/plural tolerance (one
+  // name is the other plus a trailing "s"), then a prefix relationship.
+  // Falls back to the original candidate (genuine create-mode) when nothing
+  // plausible is found — never guesses wildly.
+  // ─────────────────────────────────────────────────────────────
+  @TestVisible
+  private static String resolveLwcComponentName(
+    String candidate,
+    List<Object> existingNamesRaw
+  ) {
+    if (String.isBlank(candidate) || existingNamesRaw == null) {
+      return candidate;
+    }
+
+    List<String> existingNames = new List<String>();
+    for (Object raw : existingNamesRaw) {
+      if (raw != null) {
+        existingNames.add(String.valueOf(raw));
+      }
+    }
+
+    for (String name : existingNames) {
+      if (name.equalsIgnoreCase(candidate)) {
+        return name;
+      }
+    }
+
+    String candidateLower = candidate.toLowerCase();
+    for (String name : existingNames) {
+      String nameLower = name.toLowerCase();
+      if (
+        nameLower == candidateLower + 's' ||
+        candidateLower == nameLower + 's'
+      ) {
+        return name;
+      }
+    }
+
+    for (String name : existingNames) {
+      String nameLower = name.toLowerCase();
+      if (
+        nameLower.startsWith(candidateLower) ||
+        candidateLower.startsWith(nameLower)
+      ) {
+        return name;
+      }
+    }
+
+    return candidate;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // FIND A REAL EXISTING LWC NAME MENTIONED ANYWHERE IN TICKET TEXT
+  // This is the PRIMARY LWC-name-detection path (see call site in
+  // runOrgCheck) — checked against ground truth (the org's actual bundle
+  // list) BEFORE any regex parsing of ticket sentence structure is
+  // attempted. extractLwcComponentName()'s regexes assume the component
+  // name is the single word immediately adjacent to "component"/"lwc",
+  // which breaks on real phrasing: "accountContact List component" made
+  // that regex capture "List" (the word directly before "component")
+  // instead of "accountContact", because grammatically the ticket inserted
+  // a qualifier word ("List") between the name and "component". A ticket
+  // can be phrased in more ways than any fixed regex anticipates, but if a
+  // bundle called "accountContacts" already exists and the ticket mentions
+  // it ANYWHERE in its text, that is strictly more reliable than guessing
+  // from sentence position. Word-boundary match, tolerant of case and a
+  // trailing "s" (bundle "accountContacts" matches ticket word
+  // "accountContact" or "accountContacts").
+  // ─────────────────────────────────────────────────────────────
+  @TestVisible
+  private static String findExistingLwcNameMentionedInTicket(
+    String ticketText,
+    List<Object> existingNamesRaw
+  ) {
+    if (String.isBlank(ticketText) || existingNamesRaw == null) {
+      return null;
+    }
+
+    String normalizedTicket =
+      ' ' +
+      ticketText.toLowerCase().replaceAll('[^a-z0-9]+', ' ') +
+      ' ';
+
+    for (Object raw : existingNamesRaw) {
+      if (raw == null) {
+        continue;
+      }
+      String name = String.valueOf(raw);
+      String nameLower = name.toLowerCase();
+
+      if (normalizedTicket.contains(' ' + nameLower + ' ')) {
+        return name;
+      }
+      // Ticket uses the singular where the real bundle name is plural
+      // ("accountContact" in text, real bundle "accountContacts").
+      if (
+        nameLower.endsWith('s') &&
+        normalizedTicket.contains(' ' + nameLower.removeEnd('s') + ' ')
+      ) {
+        return name;
+      }
+    }
+
     return null;
   }
 

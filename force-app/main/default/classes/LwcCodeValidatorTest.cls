@@ -158,4 +158,110 @@ private class LwcCodeValidatorTest {
     Test.stopTest();
     System.assert(threw, 'publish without wired MessageContext must throw');
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // validateRefreshApexImported
+  // ─────────────────────────────────────────────────────────────
+  @IsTest
+  static void refreshApexImportedPasses() {
+    String js =
+      'import { LightningElement, wire } from "lwc";\n' +
+      'import { refreshApex } from "@salesforce/apex";\n' +
+      'import getInvoices from "@salesforce/apex/InvoiceController.getInvoices";\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '  @wire(getInvoices) wiredInvoices;\n' +
+      '  handleRefresh() {\n' +
+      '    refreshApex(this.wiredInvoices);\n' +
+      '  }\n' +
+      '}';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.js', js);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'refreshApex imported correctly must not throw: ' + e.getMessage()
+      );
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void refreshApexNotImportedThrows() {
+    String js =
+      'import { LightningElement, wire } from "lwc";\n' +
+      'import getInvoices from "@salesforce/apex/InvoiceController.getInvoices";\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '  @wire(getInvoices) wiredInvoices;\n' +
+      '  handleRefresh() {\n' +
+      '    refreshApex(this.wiredInvoices);\n' +
+      '  }\n' +
+      '}';
+
+    Boolean threw = false;
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.js', js);
+    } catch (ApexCodeValidator.ValidationException e) {
+      threw = true;
+      System.assert(
+        e.getMessage().contains('refreshApex'),
+        'Error should mention refreshApex: ' + e.getMessage()
+      );
+    }
+    Test.stopTest();
+    System.assert(threw, 'refreshApex called without import must throw');
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // validateNoDirectWiredResultMutation
+  // ─────────────────────────────────────────────────────────────
+  @IsTest
+  static void wiredResultNotMutatedPasses() {
+    String js =
+      'import { LightningElement, wire } from "lwc";\n' +
+      'import getInvoices from "@salesforce/apex/InvoiceController.getInvoices";\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '  @wire(getInvoices) wiredInvoices;\n' +
+      '  get invoices() {\n' +
+      '    return this.wiredInvoices.data;\n' +
+      '  }\n' +
+      '}';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.js', js);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(false, 'Reading .data must not throw: ' + e.getMessage());
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void wiredResultDirectlyMutatedThrows() {
+    String js =
+      'import { LightningElement, wire } from "lwc";\n' +
+      'import getInvoices from "@salesforce/apex/InvoiceController.getInvoices";\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '  @wire(getInvoices) wiredInvoices;\n' +
+      '  handleHack() {\n' +
+      '    this.wiredInvoices.data = [];\n' +
+      '  }\n' +
+      '}';
+
+    Boolean threw = false;
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.js', js);
+    } catch (ApexCodeValidator.ValidationException e) {
+      threw = true;
+      System.assert(
+        e.getMessage().contains('refreshApex'),
+        'Error should point at refreshApex as the fix: ' + e.getMessage()
+      );
+    }
+    Test.stopTest();
+    System.assert(threw, 'Direct mutation of a wired result must throw');
+  }
 }
