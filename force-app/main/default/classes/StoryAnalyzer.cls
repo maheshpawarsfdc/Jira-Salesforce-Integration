@@ -23,6 +23,16 @@ public with sharing class StoryAnalyzer {
       result.artifactType = 'Trigger';
     }
 
+    // "component" alone is included, not just "lwc"/"lightning web
+    // component" — real tickets overwhelmingly say "the accountContacts
+    // component" or "...List component", never spelling out "LWC".
+    // Confirmed real incident 2026-08-20: a ticket saying only "component"
+    // left needLwc false, so every LWC-specific prompt rule below (incl.
+    // "reuse existing code, don't drop existing features") was silently
+    // skipped for the whole generation. Over-triggering on an unrelated
+    // "component" is a harmless no-op (the LLM has no LWC file to apply the
+    // extra rules to); under-triggering silently loses governance on a real
+    // LWC ticket, which is the failure that actually happened.
     if (text.contains('lwc') || text.contains('lightning web component')) {
       result.needLwc = true;
       result.artifactType = 'LWC';

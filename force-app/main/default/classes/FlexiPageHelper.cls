@@ -226,10 +226,20 @@ public class FlexiPageHelper {
       if (String.isBlank(componentName)) {
         continue;
       }
+      // Two independent existence checks, not one: the SOAP retrieve above
+      // has been observed to complete successfully (no timeout) while still
+      // returning a snapshot that lags behind a just-saved manual App
+      // Builder change — see the 2026-08-20 case in
+      // flexipage-retrieve-timeout-followup memory, where this exact check
+      // passed (component absent from the retrieved XML) and a real
+      // duplicate got deployed. isComponentOnPageFresh() re-checks via a
+      // separate Tooling API GET, which reflects the manual save. Either
+      // source finding it is enough to skip — a duplicate is worse than an
+      // occasional needless skip.
       if (
         workingXml.contains(
           '<componentName>c:' + componentName + '</componentName>'
-        )
+        ) || isComponentOnPageFresh(pageName, componentName)
       ) {
         alreadyPresentCount++;
         continue;
@@ -697,6 +707,74 @@ public class FlexiPageHelper {
           e.getMessage()
       );
       return null;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // FRESH EXISTENCE CHECK — Tooling API GET, independent of the SOAP
+  // retrieve above. Read-only cross-check: never throws, never blocks
+  // placement on its own failure — a failed/unavailable check just means
+  // this safety net didn't fire, not that placement should stop.
+  // ─────────────────────────────────────────────────────────────
+  private static Boolean isComponentOnPageFresh(
+    String pageName,
+    String componentName
+  ) {
+    try {
+      Map<String, Object> idResult = MetadataHelper.runToolingApiQuery(
+        'SELECT Id FROM FlexiPage WHERE DeveloperName = \'' +
+          String.escapeSingleQuotes(pageName) +
+          '\' LIMIT 1'
+      );
+      List<Object> idRecords = (List<Object>) idResult.get('records');
+      if (idRecords == null || idRecords.isEmpty()) {
+        return false;
+      }
+      String pageId = (String) ((Map<String, Object>) idRecords[0]).get('Id');
+
+      String endpoint =
+        'https://' +
+        DomainCreator.getOrgMyDomainHostname() +
+        '/services/data/v61.0/tooling/sobjects/FlexiPage/' +
+        pageId;
+      HttpRequest req = new HttpRequest();
+      req.setEndpoint(endpoint);
+      req.setMethod('GET');
+      req.setHeader('Authorization', 'Bearer ' + UserInfo.getSessionId());
+      req.setHeader('Content-Type', 'application/json');
+      req.setTimeout(20000);
+
+      HttpResponse res = new Http().send(req);
+      if (res.getStatusCode() != 200) {
+        System.debug(
+          '[FLEXIPAGE] fresh existence check for [c:' +
+            componentName +
+            '] on [' +
+            pageName +
+            '] failed (' +
+            res.getStatusCode() +
+            ') — proceeding without it'
+        );
+        return false;
+      }
+
+      Boolean present = res.getBody()
+        .contains('"componentName":"c:' + componentName + '"');
+      System.debug(
+        '[FLEXIPAGE] fresh existence check for [c:' +
+          componentName +
+          '] on [' +
+          pageName +
+          ']: ' +
+          present
+      );
+      return present;
+    } catch (Exception e) {
+      System.debug(
+        '[FLEXIPAGE] fresh existence check errored — proceeding without it: ' +
+        e.getMessage()
+      );
+      return false;
     }
   }
 

@@ -62,6 +62,148 @@ public class LwcCodeValidator {
     'yield'
   };
 
+  // ─────────────────────────────────────────────────────────────
+  // CROSS-FILE RULE: IMPERATIVE CALL TO A cacheable=true APEX METHOD
+  // catches a real Salesforce platform gotcha, not a syntax error: a
+  // cacheable Apex method can return a CACHED (stale) response even when
+  // called imperatively, not just via @wire. A component that calls such a
+  // method imperatively from a "Refresh"/reload action can look like it
+  // works (the click handler runs, the spinner shows) while silently never
+  // fetching fresh data — confirmed as a real incident 2026-08-20: a
+  // Refresh button on accountContacts appeared broken because its
+  // imperative getContacts() call hit AccountContactsController.getContacts,
+  // which the LLM had marked @AuraEnabled(cacheable=true) per the general
+  // "use cacheable=true for read-only methods" guidance, without noticing
+  // the component never uses @wire at all.
+  //
+  // Cross-file by nature (the annotation lives in the .cls file, the call
+  // site in the .js file), so unlike every other rule in this class it
+  // cannot run through the per-file validate() entry point below — it scans
+  // the WHOLE files[] list from one LLM response in a single pass. Called
+  // from LLMResponseProcessor.processXmlGenerationResponse() before the
+  // main per-file loop, same as LLMTriggerMerger.enforceTriggerMerge().
+  //
+  // Scope: only catches the pattern when both the Apex class and the LWC
+  // JS are present in the SAME generation response. A cacheable method left
+  // over from an earlier ticket that a later ticket calls imperatively
+  // without regenerating the Apex file is not caught here — orgState's
+  // existingLwcApexControllers would need to be threaded through too, which
+  // this method doesn't currently do.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateNoImperativeCallToCacheableMethod(
+    List<Object> files
+  ) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    // "ClassName.methodName" (lowercased) -> true, for every Apex method in
+    // this batch annotated @AuraEnabled(cacheable=true).
+    Set<String> cacheableMethods = new Set<String>();
+    Pattern cacheableMethodPat = Pattern.compile(
+      '(?is)@AuraEnabled\\s*\\(\\s*cacheable\\s*=\\s*true\\s*\\)\\s*' +
+      '(?:public|global)\\s+static\\s+[\\w<>,.\\s]+?\\s+(\\w+)\\s*\\('
+    );
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String metadataType = (String) file.get('metadataType');
+      String memberName = (String) file.get('memberName');
+      String xmlContent = (String) file.get('xmlContent');
+      if (
+        metadataType != 'ApexClass' ||
+        String.isBlank(memberName) ||
+        String.isBlank(xmlContent)
+      ) {
+        continue;
+      }
+      Matcher m = cacheableMethodPat.matcher(xmlContent);
+      while (m.find()) {
+        cacheableMethods.add((memberName + '.' + m.group(1)).toLowerCase());
+      }
+    }
+
+    if (cacheableMethods.isEmpty()) {
+      return;
+    }
+
+    Pattern importPat = Pattern.compile(
+      '(?m)^\\s*import\\s+(\\w+)\\s+from\\s+[\'"]@salesforce/apex/' +
+      '(\\w+)\\.(\\w+)[\'"]'
+    );
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String filePath = (String) file.get('filePath');
+      String xmlContent = (String) file.get('xmlContent');
+      if (
+        filePath == null ||
+        !filePath.toLowerCase().endsWith('.js') ||
+        String.isBlank(xmlContent)
+      ) {
+        continue;
+      }
+
+      Matcher importMatcher = importPat.matcher(xmlContent);
+      while (importMatcher.find()) {
+        String localName = importMatcher.group(1);
+        String importedClass = importMatcher.group(2);
+        String importedMethod = importMatcher.group(3);
+        String key = (importedClass + '.' + importedMethod).toLowerCase();
+        if (!cacheableMethods.contains(key)) {
+          continue;
+        }
+
+        Boolean usedViaWire = Pattern.compile(
+            '@wire\\s*\\(\\s*' + Pattern.quote(localName) + '\\b'
+          )
+          .matcher(xmlContent)
+          .find();
+        if (usedViaWire) {
+          continue;
+        }
+
+        Boolean calledImperatively = Pattern.compile(
+            '\\b' + Pattern.quote(localName) + '\\s*\\('
+          )
+          .matcher(xmlContent)
+          .find();
+        if (!calledImperatively) {
+          continue;
+        }
+
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            filePath +
+            '] Calls "' +
+            localName +
+            '" (Apex ' +
+            importedClass +
+            '.' +
+            importedMethod +
+            ') IMPERATIVELY, but that method is annotated ' +
+            '@AuraEnabled(cacheable=true). A cacheable method can return a ' +
+            'cached (stale) response even on an imperative call — this ' +
+            'silently breaks any Refresh/reload action built on it, since ' +
+            'the UI appears to call the server but may receive the same ' +
+            'old data back. Fix ONE of these two ways: (1) remove ' +
+            'cacheable=true from ' +
+            importedClass +
+            '.' +
+            importedMethod +
+            ' in the Apex file, since it is only ever called imperatively ' +
+            'here — a plain @AuraEnabled method always re-executes on the ' +
+            'server; or (2) switch this JS to use @wire(' +
+            importedMethod +
+            ', { ... }) instead of an imperative call, and call ' +
+            'refreshApex() on the wired result to refresh it. Option (1) ' +
+            'is simpler and correct whenever the component never uses ' +
+            '@wire for this method at all.'
+        );
+      }
+    }
+  }
+
   public static void validate(String fileName, String content) {
     validateNotBlank(fileName, content);
     validateTemplateBindingExpressions(fileName, content);
@@ -71,6 +213,8 @@ public class LwcCodeValidator {
     validateCustomEventNameLowercase(fileName, content);
     validateLmsSubscribeHasUnsubscribe(fileName, content);
     validateLmsMessageContextWired(fileName, content);
+    validateRefreshApexImported(fileName, content);
+    validateNoDirectWiredResultMutation(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -488,6 +632,86 @@ public class LwcCodeValidator {
           '\'lightning/messageService\'; and a class property ' +
           '@wire(MessageContext) messageContext; — both functions require it ' +
           'as their first argument.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: refreshApex() CALLED WITHOUT BEING IMPORTED
+  // catches: a Tier 2A wired component calling refreshApex(...) to force a
+  // cacheable wire result to refetch, without importing it — refreshApex is
+  // not a global function, it must be imported from '@salesforce/apex'
+  // (not 'lwc', where the rest of a wired component's imports come from).
+  // ─────────────────────────────────────────────────────────────
+  private static void validateRefreshApexImported(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Boolean callsRefreshApex = Pattern.compile('\\brefreshApex\\s*\\(')
+      .matcher(content)
+      .find();
+    if (!callsRefreshApex) {
+      return;
+    }
+
+    Boolean importsRefreshApex = Pattern.compile(
+        'import\\s*\\{[^}]*\\brefreshApex\\b[^}]*\\}\\s*from\\s*[\'"]@salesforce/apex[\'"]'
+      )
+      .matcher(content)
+      .find();
+
+    if (!importsRefreshApex) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Calls refreshApex() without importing it. Add: ' +
+          'import { refreshApex } from \'@salesforce/apex\'; — refreshApex ' +
+          'is not a global function, it must be imported explicitly.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: DIRECT MUTATION OF A WIRED RESULT'S .data PROPERTY
+  // catches: this.wiredProp.data = ... — a @wire result is owned and
+  // managed by the LWC wire service; mutating it directly doesn't trigger
+  // a real refetch and fights the framework. Gated on the file both using
+  // @wire( and importing from '@salesforce/apex/' together, so this never
+  // fires on an unrelated object's .data property (e.g. a charting-library
+  // config) or on lightning/ui*Api / MessageContext wires, which aren't
+  // the pattern this rule is about.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateNoDirectWiredResultMutation(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Boolean isWiredApexFile =
+      content.contains('@wire(') && content.contains('@salesforce/apex/');
+    if (!isWiredApexFile) {
+      return;
+    }
+
+    Pattern mutatePat = Pattern.compile(
+      'this\\.[a-zA-Z_$][a-zA-Z0-9_$]*\\.data\\s*=(?!=)'
+    );
+    Matcher m = mutatePat.matcher(content);
+    if (m.find()) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Directly assigns to a wired result\'s .data property (' +
+          m.group().trim() +
+          '...). A @wire result is managed by the LWC wire service — never ' +
+          'mutate it directly. Import refreshApex from \'@salesforce/apex\' ' +
+          'and call refreshApex(wiredResultProperty) to force a refetch instead.'
       );
     }
   }

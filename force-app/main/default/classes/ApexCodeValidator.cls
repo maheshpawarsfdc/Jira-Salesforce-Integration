@@ -15,6 +15,8 @@ public class ApexCodeValidator {
     validateBalancedBraces(fileName, apexCode);
     validateAndOrOperators(fileName, apexCode);
     validateSecurityEnforcedPlacement(fileName, apexCode);
+    validateSecurityEnforcedOrdering(fileName, apexCode);
+    validateCacheableMethodHasNoDml(fileName, apexCode);
     validateApexOperatorsInSoql(fileName, apexCode);
     validateDmlInLoops(fileName, apexCode);
     validateSoqlInLoops(fileName, apexCode);
@@ -171,6 +173,168 @@ public class ApexCodeValidator {
           'SObjectAccessDecision (call .getRecords() on it). It never takes WITH SECURITY_ENFORCED ' +
           'as an argument and does not return void.'
       );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: WITH SECURITY_ENFORCED / WITH USER_MODE ORDERING INSIDE SOQL
+  // catches: Unexpected token 'WITH' / Extra 'IDENTIFIER', at 'WITH' /
+  // unexpected token: '<EOF>' — the SAME error signature as
+  // validateSecurityEnforcedPlacement above, but for a case that check
+  // structurally cannot see: it strips each whole [SELECT ...] block
+  // before scanning for a stray WITH, so a WITH clause that IS inside
+  // the brackets but in the WRONG position (e.g. after ORDER BY/GROUP BY/
+  // LIMIT instead of right after WHERE) is invisible to it. Correct SOQL
+  // clause order is SELECT..FROM..WHERE..WITH..GROUP BY..ORDER BY..LIMIT..
+  // OFFSET..FOR UPDATE, so this rule flags WITH SECURITY_ENFORCED/WITH
+  // USER_MODE appearing after any of those later clauses, and flags a
+  // second WITH clause in the same query (only one is ever valid).
+  // ─────────────────────────────────────────────────────────────
+  private static void validateSecurityEnforcedOrdering(
+    String fileName,
+    String apexCode
+  ) {
+    String cleaned = removeComments(apexCode);
+    cleaned = cleaned.replaceAll('\'[^\']*\'', '\'\'');
+
+    Pattern soqlPat = Pattern.compile('(?s)\\[[^\\]]*SELECT[^\\]]*\\]');
+    Matcher soqlMatcher = soqlPat.matcher(cleaned);
+
+    Pattern withPat = Pattern.compile(
+      '(?i)\\bWITH\\s+(SECURITY_ENFORCED|USER_MODE|SYSTEM_MODE)\\b'
+    );
+
+    while (soqlMatcher.find()) {
+      String soqlBlock = soqlMatcher.group();
+      String upperBlock = soqlBlock.toUpperCase();
+
+      Matcher withMatcher = withPat.matcher(soqlBlock);
+      if (!withMatcher.find()) {
+        continue;
+      }
+      Integer withIdx = withMatcher.start();
+
+      if (withMatcher.find()) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] More than one WITH SECURITY_ENFORCED/WITH USER_MODE clause found in a single SOQL query: ' +
+            soqlBlock.abbreviate(150) +
+            '. Only one WITH clause is allowed per query — remove the duplicate.'
+        );
+      }
+
+      List<String> laterClauseKeywords = new List<String>{
+        'GROUP BY',
+        'ORDER BY',
+        'LIMIT',
+        'OFFSET',
+        'FOR UPDATE',
+        'FOR VIEW',
+        'FOR REFERENCE'
+      };
+      Boolean misplaced = false;
+      for (String kw : laterClauseKeywords) {
+        Integer idx = upperBlock.indexOf(kw);
+        if (idx != -1 && idx < withIdx) {
+          misplaced = true;
+          break;
+        }
+      }
+
+      if (misplaced) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] "WITH SECURITY_ENFORCED"/"WITH USER_MODE" is out of order in this SOQL query: ' +
+            soqlBlock.abbreviate(150) +
+            '. It must come immediately after the WHERE clause (or FROM, if there is no WHERE) ' +
+            'and BEFORE GROUP BY / ORDER BY / LIMIT / OFFSET / FOR UPDATE, e.g. ' +
+            '[SELECT Id FROM Contact WHERE AccountId = :accId WITH SECURITY_ENFORCED ORDER BY Name]. ' +
+            'The current placement causes "Unexpected token \'WITH\'" / "Extra \'IDENTIFIER\', at \'WITH\'" ' +
+            'compile errors — reorder the clause.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: DML INSIDE A cacheable=true METHOD (LWC wired-Apex integration)
+  // catches: a method annotated @AuraEnabled(cacheable=true) — the only
+  // annotation a @wire adapter accepts — that also performs DML. This is
+  // a real Salesforce platform restriction (cacheable Apex methods must
+  // never perform DML), but it's enforced at RUNTIME, not compile time —
+  // the class deploys cleanly and only fails once the method is actually
+  // invoked, so catching it here saves a real deploy-and-fail round trip.
+  // Locates each @AuraEnabled(cacheable=true) annotation textually, then
+  // walks brace-depth from the first '{' after it (same technique
+  // containsDmlInsideLoop already uses below) to isolate THAT method's own
+  // body before scanning it — never the whole class — so a DML statement
+  // in a different, non-cacheable method never triggers a false positive.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateCacheableMethodHasNoDml(
+    String fileName,
+    String apexCode
+  ) {
+    if (fileName == null || !fileName.endsWith('.cls')) {
+      return;
+    }
+
+    String code = removeComments(apexCode);
+    code = code.replaceAll('\'[^\']*\'', '\'\'');
+
+    Pattern annPat = Pattern.compile(
+      '(?i)@AuraEnabled\\s*\\(\\s*cacheable\\s*=\\s*true\\s*\\)'
+    );
+    Matcher annMatcher = annPat.matcher(code);
+
+    while (annMatcher.find()) {
+      Integer annEnd = annMatcher.end();
+      Integer openBrace = code.indexOf('{', annEnd);
+      if (openBrace == -1) {
+        continue;
+      }
+
+      Integer depth = 1;
+      Integer pos = openBrace + 1;
+      while (pos < code.length() && depth > 0) {
+        String ch = code.substring(pos, pos + 1);
+        if (ch == '{') {
+          depth++;
+        } else if (ch == '}') {
+          depth--;
+        }
+        pos++;
+      }
+      if (depth != 0) {
+        continue;
+      }
+
+      String body = code.substring(openBrace + 1, pos - 1).toLowerCase();
+      Boolean hasDml =
+        containsStandaloneWord(body, 'insert') ||
+        containsStandaloneWord(body, 'update') ||
+        containsStandaloneWord(body, 'delete') ||
+        containsStandaloneWord(body, 'upsert') ||
+        containsStandaloneWord(body, 'undelete') ||
+        body.contains('database.insert') ||
+        body.contains('database.update') ||
+        body.contains('database.delete') ||
+        body.contains('database.upsert') ||
+        body.contains('database.undelete');
+
+      if (hasDml) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] @AuraEnabled(cacheable=true) method contains a DML statement. ' +
+            'Cacheable Apex methods must never perform DML — this is enforced ' +
+            'by the Salesforce platform at runtime and will fail after deploy, ' +
+            'not at compile time. Either remove cacheable=true from this ' +
+            'method (if it must write data), or move the write into a ' +
+            'separate plain @AuraEnabled method.'
+        );
+      }
     }
   }
 
