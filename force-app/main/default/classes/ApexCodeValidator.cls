@@ -13,6 +13,7 @@ public class ApexCodeValidator {
   public static void validate(String fileName, String apexCode) {
     validateNotBlank(fileName, apexCode);
     validateBalancedBraces(fileName, apexCode);
+    validateBatchableClassesAreTopLevel(fileName, apexCode);
     validateAndOrOperators(fileName, apexCode);
     validateSecurityEnforcedPlacement(fileName, apexCode);
     validateSecurityEnforcedOrdering(fileName, apexCode);
@@ -83,6 +84,42 @@ public class ApexCodeValidator {
           ' closing }. The Apex source is incomplete and will cause unexpected token: <EOF>. ' +
           'Return the COMPLETE class with every opening brace matched by a closing brace.'
       );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: BATCHABLE CLASSES MUST BE TOP-LEVEL
+  // Database.Batchable implementations cannot be nested in Apex.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateBatchableClassesAreTopLevel(
+    String fileName,
+    String apexCode
+  ) {
+    String cleaned = removeComments(apexCode);
+    cleaned = cleaned.replaceAll('\'[^^\']*\'', '\'\'');
+
+    Pattern batchablePattern = Pattern.compile(
+      '(?i)\\bimplements\\b[^{};]*\\bDatabase\\.Batchable\\s*<'
+    );
+    Matcher matcher = batchablePattern.matcher(cleaned);
+    while (matcher.find()) {
+      Integer braceDepth = 0;
+      for (Integer index = 0; index < matcher.start(); index++) {
+        String character = cleaned.substring(index, index + 1);
+        if (character == '{') {
+          braceDepth++;
+        } else if (character == '}') {
+          braceDepth--;
+        }
+      }
+      if (braceDepth > 0) {
+        throw new ValidationException(
+          '[' +
+            fileName +
+            '] A class implementing Database.Batchable<SObject> must be a top-level Apex class. ' +
+            'Move the Batchable implementation outside any enclosing class.'
+        );
+      }
     }
   }
 

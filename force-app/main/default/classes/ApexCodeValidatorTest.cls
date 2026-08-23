@@ -172,4 +172,47 @@ private class ApexCodeValidatorTest {
     Test.stopTest();
     System.assert(threw, 'Duplicate WITH clause must throw');
   }
+
+  @IsTest
+  static void nestedBatchableClassThrows() {
+    String cls =
+      'public class OuterClass {\n' +
+      '  public class InnerBatch implements Database.Batchable<SObject> {\n' +
+      '    public Database.QueryLocator start(Database.BatchableContext c) { return Database.getQueryLocator([SELECT Id FROM Account]); }\n' +
+      '    public void execute(Database.BatchableContext c, List<SObject> scope) {}\n' +
+      '    public void finish(Database.BatchableContext c) {}\n' +
+      '  }\n' +
+      '}';
+
+    Boolean threw = false;
+    try {
+      ApexCodeValidator.validate('OuterClass.cls', cls);
+    } catch (ApexCodeValidator.ValidationException e) {
+      threw = true;
+      System.assert(
+        e.getMessage().contains('top-level'),
+        'Error should require a top-level Batchable class: ' + e.getMessage()
+      );
+    }
+    System.assert(threw, 'Nested Batchable class must throw');
+  }
+
+  @IsTest
+  static void topLevelBatchableClassPasses() {
+    String cls =
+      'public class AccountBatch implements Database.Batchable<SObject> {\n' +
+      '  public Database.QueryLocator start(Database.BatchableContext c) { return Database.getQueryLocator([SELECT Id FROM Account]); }\n' +
+      '  public void execute(Database.BatchableContext c, List<SObject> scope) {}\n' +
+      '  public void finish(Database.BatchableContext c) {}\n' +
+      '}';
+
+    try {
+      ApexCodeValidator.validate('AccountBatch.cls', cls);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'Top-level Batchable class must not throw: ' + e.getMessage()
+      );
+    }
+  }
 }
