@@ -1355,6 +1355,15 @@ public class LLMResponseProcessor {
         String filePath = (String) file.get('filePath');
         String xmlContent = (String) file.get('xmlContent');
 
+        if (
+          (metadataType == 'ApexClass' || metadataType == 'ApexTrigger') &&
+          String.isNotBlank(xmlContent) &&
+          filePath != null &&
+          !filePath.endsWith('-meta.xml')
+        ) {
+          xmlContent = stripApexMarkdownFences(xmlContent);
+        }
+
         System.debug(
           'processXmlGenerationResponse: processing file [' +
             filePath +
@@ -2778,6 +2787,24 @@ public class LLMResponseProcessor {
     }
 
     return false;
+  }
+
+  private static String stripApexMarkdownFences(String source) {
+    String cleaned = source.trim();
+    if (!cleaned.startsWith('```')) {
+      return cleaned;
+    }
+
+    Integer firstLineEnd = cleaned.indexOf('\n');
+    if (firstLineEnd < 0) {
+      return cleaned;
+    }
+
+    cleaned = cleaned.substring(firstLineEnd + 1).trim();
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.substring(0, cleaned.length() - 3).trim();
+    }
+    return cleaned;
   }
 
   public static List<String> extractRecordTypeNamesFromObjectXml(

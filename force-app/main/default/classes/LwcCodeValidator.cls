@@ -208,7 +208,6 @@ public class LwcCodeValidator {
     validateNotBlank(fileName, content);
     validateTemplateBindingExpressions(fileName, content);
     validateNoHtmlEntitiesInJs(fileName, content);
-    validateTodoComments(fileName, content);
     validateNoReservedWordIdentifiers(fileName, content);
     validateCustomEventNameLowercase(fileName, content);
     validateLmsSubscribeHasUnsubscribe(fileName, content);
@@ -219,6 +218,7 @@ public class LwcCodeValidator {
     validateForEachHasKeyAttribute(fileName, content);
     validateLwcElseChainingOrder(fileName, content);
     validateLightningBadgeVariant(fileName, content);
+    validateTodoComments(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -539,7 +539,10 @@ public class LwcCodeValidator {
     Matcher m = eventPat.matcher(content);
     while (m.find()) {
       String eventName = m.group(1);
-      if (eventName != eventName.toLowerCase()) {
+      Boolean containsUppercase = Pattern.compile('[A-Z]')
+        .matcher(eventName)
+        .find();
+      if (containsUppercase) {
         throw new ApexCodeValidator.ValidationException(
           '[' +
             fileName +
