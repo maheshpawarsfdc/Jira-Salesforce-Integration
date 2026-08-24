@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>LWC Dynamic UI</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LWC_DYNAMIC_UI</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== DYNAMIC UI GENERATION ==
+Use when: the ticket needs conditional rendering, loops over a list, a
+reusable/generic component, or a layout that adapts to screen size.
+
+-- CONDITIONAL RENDERING: lwc:if/lwc:elseif/lwc:else (PREFERRED) --
+Use the lwc:if/lwc:elseif/lwc:else directive family for new components —
+this is the current recommended LWC syntax:
+
+  <template>
+      <template lwc:if={isOpen}>
+          <p>Status: Open</p>
+      </template>
+      <template lwc:elseif={isPending}>
+          <p>Status: Pending</p>
+      </template>
+      <template lwc:else>
+          <p>Status: Closed</p>
+      </template>
+  </template>
+
+RULES:
+- lwc:elseif and lwc:else must directly follow the lwc:if that starts the
+  chain (or another lwc:elseif continuing it) — never a standalone
+  lwc:elseif/lwc:else with no preceding lwc:if.
+- Each condition binding is a bare property or getter reference, per the
+  standard {...} binding rule already given in the base LWC guidance — never
+  an inline expression like lwc:if={status === 'Open'}. Expose a getter
+  (get isOpen() { return this.status === 'Open'; }) and bind to that instead.
+
+-- LEGACY if:true / if:false --
+The older if:true={cond} / if:false={cond} directives still work and are
+fine to reuse when MERGING into an existing component that already uses
+them (do not churn a component's existing working style just to modernize
+it) — but prefer lwc:if/lwc:elseif/lwc:else for anything newly generated.
+
+CRITICAL TRUTHINESS GOTCHA: if:true={someList} (or lwc:if={someList}) is
+TRUE even when someList is an EMPTY array — an array is a truthy value in
+JavaScript regardless of its length. Never bind a conditional directly to
+an array or a @wire result:
+  WRONG:  <template if:true={contacts}>          <!-- true even if contacts = [] -->
+  RIGHT:  get hasContacts() { return this.contacts && this.contacts.length > 0; }
+          <template lwc:if={hasContacts}>
+This applies to any "show this section only if there is data" requirement —
+always expose a boolean getter, never bind the directive to the raw
+array/collection/wire-result property itself.
+
+-- LOOPS: for:each AND iterator:x --
+for:each — the common case, one variable per item:
+
+  <template for:each={contacts} for:item="contact">
+      <div key={contact.Id}>{contact.Name}</div>
+  </template>
+
+iterator:x — use only when the ticket needs to style the first/last row
+differently (e.g. a divider between rows, no divider after the last one):
+
+  <template iterator:it={contacts}>
+      <div key={it.value.Id}>
+          {it.value.Name}
+          <template lwc:if={it.last}>(last)</template>
+      </div>
+  </template>
+
+RULES:
+- ALWAYS put a key={uniqueField} on the element directly inside the loop
+  (typically key={item.Id}) — LWC requires a unique key per iterated element
+  for its rendering diff algorithm; omitting it is rejected at deploy.
+- NEVER combine a conditional directive (lwc:if/lwc:elseif/lwc:else,
+  if:true/if:false) and an iterator directive (for:each, iterator:x) on the
+  SAME <template> tag — this is illegal and rejected at deploy. Nest two
+  separate <template> tags instead: one for the condition, one for the loop.
+- it.first / it.last (iterator:x only) are booleans, bind them directly:
+  <template lwc:if={it.first}>...</template> — never it.first === true.
+
+-- REUSABLE / GENERIC COMPONENTS --
+A "reusable component" ticket wants a component with NO hardcoded business
+logic — configuration comes in entirely through @api properties, and content
+comes in through slots, not through object/field names baked into the JS:
+
+  Generic JS (genericCard.js):
+    import { LightningElement, api } from 'lwc';
+    export default class GenericCard extends LightningElement {
+        @api title;
+        @api iconName;
+    }
+
+  Generic HTML (genericCard.html):
+    <template>
+        <lightning-card title={title} icon-name={iconName}>
+            <slot></slot>
+        </lightning-card>
+    </template>
+
+  Consumer HTML (uses the generic component with specific content):
+    <c-generic-card title="Open Cases" icon-name="standard:case">
+        <p>{caseCount} open cases</p>
+    </c-generic-card>
+
+RULES:
+- A generic/reusable component never imports an Apex controller or a
+  specific SObject's schema fields directly — those belong in the
+  component that CONSUMES it, passed down via @api properties.
+- Prefer a default (unnamed) <slot></slot> for arbitrary consumer content;
+  use a named slot (<slot name="footer"></slot>) only when the ticket
+  describes more than one distinct content region.
+- CRITICAL — WHEN THE TICKET NAMES A SPECIFIC FIRST USE (e.g. "build a
+  reusable X, first use: wrap Y on Z"), you MUST generate BOTH components
+  as separate 3-file bundles in the same response: (1) the generic/
+  reusable component itself (@api properties + <slot>, no business logic),
+  AND (2) the consumer component that actually uses it — fetches/computes
+  the real data, sets the generic component's @api attributes, and passes
+  the real content into its slot. Never stop after generating only the
+  generic shell — a ticket describing a specific first use is asking for
+  that use to exist, not just the reusable building block.
+- NEVER treat the bare generic/reusable component itself as the thing to
+  place on a page. It has no default title, icon, or slot content — placed
+  alone it renders an empty, useless card. If the ticket asks for page
+  placement, the component intended for that placement is always the
+  CONSUMER (the one with the real title/icon/content), never the generic
+  shell it wraps.
+
+-- RESPONSIVE LAYOUTS: SLDS GRID --
+Use SLDS grid utility classes for any "responsive"/"adapts to screen size"
+requirement — never hand-rolled CSS media queries for a plain multi-column
+layout the SLDS grid system already covers:
+
+  <div class="slds-grid slds-wrap slds-gutters">
+      <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-large-size_1-of-3">
+          <!-- one card -->
+      </div>
+  </div>
+
+RULES:
+- slds-grid on the container, slds-wrap so columns drop to the next row
+  instead of overflowing, slds-gutters for spacing between columns.
+- slds-size_1-of-N is the DEFAULT (smallest/mobile) column width; add
+  slds-medium-size_1-of-N and/or slds-large-size_1-of-N to widen the column
+  at larger breakpoints — always specify the small/default size first.
+]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">168.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">LWC</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >Dynamic UI generation: lwc:if/lwc:elseif/lwc:else conditional rendering, for:each/iterator loops, reusable slot-driven components, responsive SLDS grid layouts</value>
+    </values>
+</CustomMetadata>

@@ -205,89 +205,97 @@ public class LLMLayoutHelper {
         continue;
       }
 
-      Map<String, Object> firstLayout = (Map<String, Object>) layouts[0];
-      String layoutFullName = (String) firstLayout.get('fullName');
-      if (String.isBlank(layoutFullName)) {
-        continue;
-      }
+      // Patch EVERY layout this object has, not just the first one returned.
+      // An object routinely has several layouts (e.g. Account has separate
+      // Sales/Marketing/Support layouts) assigned to different profiles —
+      // only patching layouts[0] left the new field invisible on every
+      // OTHER layout, which is exactly what a profile assigned to a
+      // different layout would see as "field not added to any page
+      // layout." Confirmed as a real incident 2026-08-21: Approval_Status__c
+      // was patched only into "Account (Marketing)" while the user's own
+      // profile used a different Account layout.
+      for (Object rawLayout : layouts) {
+        Map<String, Object> layout = (Map<String, Object>) rawLayout;
+        String layoutFullName = (String) layout.get('fullName');
+        if (String.isBlank(layoutFullName)) {
+          continue;
+        }
 
-      String layoutPath = 'layouts/' + layoutFullName + '.layout';
-      if (zip2Files.containsKey(layoutPath)) {
-        System.debug(
-          '[DEPLOY-TRACE] backstopB: Layout already in zip2Files for [' +
-            objName +
-            '] — skipping'
-        );
-        continue;
-      }
-
-      // ── Fetch layout structure if sections are missing ────────
-      // batchFetchLayoutNames only fetches layout names, not sections.
-      // rebuildLayoutXmlWithNewFields needs sections to preserve existing
-      // fields and behaviors (especially Name = Required).
-      // If sections are missing, fetch structure now via Metadata API.
-      if (
-        !firstLayout.containsKey('sections') ||
-        firstLayout.get('sections') == null
-      ) {
-        System.debug(
-          '[DEPLOY-TRACE] backstopB: sections missing for [' +
-            layoutFullName +
-            '] — fetching structure via Metadata API'
-        );
-        Map<String, Object> structure = LLMOrgStateService.getLayoutStructure(
-          layoutFullName
-        );
-        if (structure != null) {
-          firstLayout = structure;
+        String layoutPath = 'layouts/' + layoutFullName + '.layout';
+        if (zip2Files.containsKey(layoutPath)) {
           System.debug(
-            '[DEPLOY-TRACE] backstopB: structure fetched for [' +
+            '[DEPLOY-TRACE] backstopB: Layout already in zip2Files for [' +
               layoutFullName +
-              ']'
+              '] — skipping'
           );
-        } else {
-          String layoutId = (String) firstLayout.get('id');
-          Map<String, Object> toolingStructure = String.isNotBlank(layoutId)
-            ? LLMOrgStateService.getLayoutStructureViaToolingId(layoutId)
-            : null;
-          if (toolingStructure != null) {
-            firstLayout = toolingStructure;
+          continue;
+        }
+
+        // ── Fetch layout structure if sections are missing ────────
+        // batchFetchLayoutNames only fetches layout names, not sections.
+        // rebuildLayoutXmlWithNewFields needs sections to preserve existing
+        // fields and behaviors (especially Name = Required).
+        // If sections are missing, fetch structure now via Metadata API.
+        if (!layout.containsKey('sections') || layout.get('sections') == null) {
+          System.debug(
+            '[DEPLOY-TRACE] backstopB: sections missing for [' +
+              layoutFullName +
+              '] — fetching structure via Metadata API'
+          );
+          Map<String, Object> structure = LLMOrgStateService.getLayoutStructure(
+            layoutFullName
+          );
+          if (structure != null) {
+            layout = structure;
             System.debug(
-              '[DEPLOY-TRACE] backstopB: Tooling API fallback succeeded for [' +
+              '[DEPLOY-TRACE] backstopB: structure fetched for [' +
                 layoutFullName +
                 ']'
             );
           } else {
-            System.debug(
-              '[DEPLOY-TRACE] backstopB: all layout structure fetches failed for [' +
-                layoutFullName +
-                '] — skipping to preserve existing layout fields'
-            );
-            continue;
+            String layoutId = (String) layout.get('id');
+            Map<String, Object> toolingStructure = String.isNotBlank(layoutId)
+              ? LLMOrgStateService.getLayoutStructureViaToolingId(layoutId)
+              : null;
+            if (toolingStructure != null) {
+              layout = toolingStructure;
+              System.debug(
+                '[DEPLOY-TRACE] backstopB: Tooling API fallback succeeded for [' +
+                  layoutFullName +
+                  ']'
+              );
+            } else {
+              System.debug(
+                '[DEPLOY-TRACE] backstopB: all layout structure fetches failed for [' +
+                  layoutFullName +
+                  '] — skipping to preserve existing layout fields'
+              );
+              continue;
+            }
           }
         }
-      }
 
-      String layoutXml = rebuildLayoutXmlWithNewFields(firstLayout, newFields);
-      if (String.isBlank(layoutXml)) {
-        continue;
-      }
+        String layoutXml = rebuildLayoutXmlWithNewFields(layout, newFields);
+        if (String.isBlank(layoutXml)) {
+          continue;
+        }
 
-      zip2Files.put(layoutPath, layoutXml);
-      if (!zip2MetadataTypes.containsKey('Layout')) {
-        zip2MetadataTypes.put('Layout', new Set<String>());
-      }
-      zip2MetadataTypes.get('Layout').add(layoutFullName);
+        zip2Files.put(layoutPath, layoutXml);
+        if (!zip2MetadataTypes.containsKey('Layout')) {
+          zip2MetadataTypes.put('Layout', new Set<String>());
+        }
+        zip2MetadataTypes.get('Layout').add(layoutFullName);
 
-      System.debug(
-        '[DEPLOY-TRACE] *** SCENARIO B BACKSTOP FIRED *** object=' +
-          objName +
-          ' | LLM omitted Layout — appending ' +
-          newFields.size() +
-          ' field(s) to [' +
-          layoutFullName +
-          '] via zip2Files'
-      );
+        System.debug(
+          '[DEPLOY-TRACE] *** SCENARIO B BACKSTOP FIRED *** object=' +
+            objName +
+            ' | LLM omitted Layout — appending ' +
+            newFields.size() +
+            ' field(s) to [' +
+            layoutFullName +
+            '] via zip2Files'
+        );
+      }
     }
   }
 
@@ -422,8 +430,11 @@ public class LLMLayoutHelper {
       return null;
     }
     List<Object> sections = (List<Object>) rawSections;
-    Boolean isCustomMetadataLayout = String.isNotBlank(parentObject) && parentObject.endsWith('__mdt');
-    String requiredPrimaryField = isCustomMetadataLayout ? 'MasterLabel' : 'Name';
+    Boolean isCustomMetadataLayout =
+      String.isNotBlank(parentObject) && parentObject.endsWith('__mdt');
+    String requiredPrimaryField = isCustomMetadataLayout
+      ? 'MasterLabel'
+      : 'Name';
 
     Set<String> alreadyOnLayout = new Set<String>();
     for (Object rawSecScan : sections) {
@@ -458,22 +469,27 @@ public class LLMLayoutHelper {
       List<String> rightBehaviors = toStringList(sec.get('rightBehaviors'));
 
       if (!injected && label == 'Information') {
-        // Ensure the required primary field is present at the start of the Information section.
-        Boolean primaryFieldAlreadyPresent = false;
-        for (String f : leftFields) {
-          if (requiredPrimaryField.equalsIgnoreCase(f)) {
-            primaryFieldAlreadyPresent = true;
-            break;
-          }
-        }
-        if (!primaryFieldAlreadyPresent) {
-          for (String f : rightFields) {
-            if (requiredPrimaryField.equalsIgnoreCase(f)) {
-              primaryFieldAlreadyPresent = true;
-              break;
-            }
-          }
-        }
+        // Ensure the required primary field is present somewhere on the
+        // layout before injecting it into THIS section. Deliberately checks
+        // the GLOBAL alreadyOnLayout set (scanned across every section up
+        // front, above) rather than re-scanning only this section's own
+        // leftFields/rightFields — a layout can have more than one section,
+        // and a DIFFERENT section elsewhere (typically one literally titled
+        // "{Object} Information", e.g. "Account Information") is very
+        // commonly where the real primary field already lives. A org can
+        // also have an unrelated LATER custom section that happens to be
+        // labeled literally "Information" (this exact match is how we find
+        // the section to inject new fields into) — checking only that
+        // section's own fields wrongly concluded the primary field was
+        // missing and injected a SECOND <field>Name</field> into it,
+        // causing "Field: field, value:Name appears more than once" at
+        // deploy. Confirmed as a real incident 2026-08-21 on the
+        // "Account (Marketing)" layout, which has Name in "Account
+        // Information" and a separate, later "Information" section holding
+        // only a custom field.
+        Boolean primaryFieldAlreadyPresent = alreadyOnLayout.contains(
+          requiredPrimaryField.toLowerCase()
+        );
         if (!primaryFieldAlreadyPresent) {
           leftFields.add(0, requiredPrimaryField);
           leftBehaviors.add(0, 'Edit'); // Will be corrected below based on object type
@@ -566,7 +582,10 @@ public class LLMLayoutHelper {
     if (String.isNotBlank(fullName) && fullName.contains('-')) {
       try {
         if (isCustomMetadataLayout) {
-          xml = xml.replace('<field>Name</field>', '<field>MasterLabel</field>');
+          xml = xml.replace(
+            '<field>Name</field>',
+            '<field>MasterLabel</field>'
+          );
           xml = xml.replace(
             '<behavior>Readonly</behavior>\n                <field>MasterLabel</field>',
             '<behavior>Required</behavior>\n                <field>MasterLabel</field>'
@@ -577,14 +596,19 @@ public class LLMLayoutHelper {
           );
         } else {
           String nameFieldType = resolveNameFieldType(parentObject);
-          xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(xml, nameFieldType);
+          xml = LLMXmlSanitizer.fixNameFieldBehaviorInLayout(
+            xml,
+            nameFieldType
+          );
         }
 
         Set<String> autoNumberFields = collectAutoNumberFieldNames(
           parentObject,
           null
         );
-        autoNumberFields.remove(isCustomMetadataLayout ? 'MasterLabel' : 'Name');
+        autoNumberFields.remove(
+          isCustomMetadataLayout ? 'MasterLabel' : 'Name'
+        );
         if (!autoNumberFields.isEmpty()) {
           xml = LLMXmlSanitizer.forceReadonlyForAutoNumberFields(
             xml,
@@ -636,8 +660,8 @@ public class LLMLayoutHelper {
         } else {
           String nameFieldType = resolveNameFieldType(objectApiName);
           primaryBehavior = 'AutoNumber'.equalsIgnoreCase(nameFieldType)
-          ? 'Readonly'
-          : 'Required';
+            ? 'Readonly'
+            : 'Required';
         }
       } catch (Exception ex) {
         System.debug(

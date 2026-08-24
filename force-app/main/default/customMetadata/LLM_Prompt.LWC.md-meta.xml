@@ -470,8 +470,41 @@ If the ticket explicitly says "the class already exists" or "use existing ClassN
   3. Only add the new method the ticket requests if it is not already there
   4. If the method already exists, do not duplicate it
 
+== COLORED STATUS INDICATORS (BADGES) ==
+Use when: the ticket wants a colored badge/label/chip indicating a status,
+priority, or category (e.g. "show a colored badge based on Status").
+
+<lightning-badge> (the LWC base component) supports ONLY TWO variant values:
+"base" (default grey) and "inverse" — there is no "brand"/"warning"/
+"success"/"error" variant on this component, even though those names exist
+on OTHER base components (lightning-button, lightning-icon). Salesforce
+does not error on an invalid variant value — it silently falls back to the
+default grey badge, so every branch of a status-conditional ends up
+rendering identically (and wrongly) with no deploy-time signal anything is
+broken.
+
+CORRECT — for an actually colored badge, use plain SLDS markup with SLDS
+theme utility classes instead of <lightning-badge>:
+  <span class="slds-badge slds-theme_success">Closed</span>
+  <span class="slds-badge slds-theme_warning">In Progress</span>
+  <span class="slds-badge slds-theme_error">New</span>
+This needs NO css file and no custom styling — slds-theme_success/warning/
+error/info are pre-defined SLDS classes that already carry their own colors.
+
+WRONG (compiles and deploys, but every badge silently renders grey):
+  <lightning-badge label="New" variant="brand"></lightning-badge>
+  <lightning-badge label="Closed" variant="success"></lightning-badge>
+
+Only reach for <lightning-badge> itself when the ticket wants a plain,
+uncolored badge (variant="base") or a badge meant for a dark/inverse
+background (variant="inverse") — never pass it any other variant value.
+
 == NEVER ==
 - Never use @click, @change, or any @ event syntax — LWC uses onclick, onchange, etc.
+- Never pass a variant other than "base" or "inverse" to <lightning-badge> —
+  those are the only two values this component supports. For a colored
+  status badge, use <span class="slds-badge slds-theme_success/warning/error/info">
+  instead — see == COLORED STATUS INDICATORS (BADGES) == above.
 - Never use @wire for DML or a user-action-triggered operation — use Tier 2B.
   Never mix data shapes: @wire results are ALWAYS {property}.data/.error;
   Tier 2B results are ALWAYS a plain value with neither. Never assign

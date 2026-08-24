@@ -264,4 +264,72 @@ private class LwcCodeValidatorTest {
     Test.stopTest();
     System.assert(threw, 'Direct mutation of a wired result must throw');
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // validateLightningBadgeVariant
+  // ─────────────────────────────────────────────────────────────
+  @IsTest
+  static void lightningBadgeBaseVariantPasses() {
+    String html =
+      '<template>\n' +
+      '  <lightning-badge label="Closed" variant="base"></lightning-badge>\n' +
+      '</template>';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.html', html);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'lightning-badge variant="base" must not throw: ' + e.getMessage()
+      );
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void lightningBadgeInverseVariantPasses() {
+    String html =
+      '<template>\n' +
+      '  <lightning-badge label="Closed" variant="inverse"></lightning-badge>\n' +
+      '</template>';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.html', html);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'lightning-badge variant="inverse" must not throw: ' + e.getMessage()
+      );
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void lightningBadgeInvalidVariantThrows() {
+    String html =
+      '<template>\n' +
+      '  <lightning-badge label="Closed" variant="success"></lightning-badge>\n' +
+      '</template>';
+
+    Boolean threw = false;
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.html', html);
+    } catch (ApexCodeValidator.ValidationException e) {
+      threw = true;
+      System.assert(
+        e.getMessage().contains('success') &&
+        e.getMessage().contains('slds-badge'),
+        'Error should name the invalid variant and point at the SLDS fix: ' +
+        e.getMessage()
+      );
+    }
+    Test.stopTest();
+    System.assert(
+      threw,
+      'lightning-badge with an unsupported variant must throw'
+    );
+  }
 }

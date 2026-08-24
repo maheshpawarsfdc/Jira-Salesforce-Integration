@@ -561,7 +561,7 @@ public class LLMXmlSanitizer {
     // ExternalDataSource does not actually exist, so strip that block rather
     // than letting deployment fail.
     xml = xml.replaceAll(
-      '(?is)\s*<externalDataSourceAccesses>.*?<externalDataSource>\s*Bedrock\s*</externalDataSource>.*?</externalDataSourceAccesses>',
+      '(?is)\\s*<externalDataSourceAccesses>.*?<externalDataSource>\\s*Bedrock\\s*</externalDataSource>.*?</externalDataSourceAccesses>',
       ''
     );
 
@@ -3341,7 +3341,16 @@ public class LLMXmlSanitizer {
       return;
     }
 
-    // Step 1: Collect new custom fields from CustomObject files
+    // Step 1: Collect new custom fields from CustomObject files (fields
+    // nested inside a brand-new object) AND standalone CustomField files
+    // (a new field added onto an object — standard like Account, or an
+    // existing custom object — that already exists in the org). These are
+    // two different response shapes for "a new field," and both need FLS
+    // granted the same way; a ticket that only adds a field to Account
+    // never emits a CustomObject file at all, so handling ONLY the
+    // CustomObject shape (as this used to) silently skipped every such
+    // field. Confirmed as a real incident 2026-08-21: Approval_Status__c
+    // added to Account came back invisible to every profile.
     Map<String, List<String>> editableByObj = new Map<String, List<String>>();
     Map<String, List<String>> readOnlyByObj = new Map<String, List<String>>();
 
@@ -3349,42 +3358,76 @@ public class LLMXmlSanitizer {
       Map<String, Object> file = (Map<String, Object>) rawFile;
       String mt = (String) file.get('metadataType');
       String mn = (String) file.get('memberName');
-      if (mt != 'CustomObject' || !mn.endsWith('__c')) {
-        continue;
-      }
       String xml = (String) file.get('xmlContent');
-      if (String.isBlank(xml) || !xml.contains('<fields>')) {
+      if (String.isBlank(mn) || String.isBlank(xml)) {
         continue;
       }
 
-      List<String> editable = new List<String>();
-      List<String> readOnly = new List<String>();
-      Pattern p = Pattern.compile('(?s)<fields>(.*?)</fields>');
-      Matcher m = p.matcher(xml);
-      while (m.find()) {
-        String block = m.group(1);
-        String fieldName = extractInlineTagValue(block, 'fullName');
-        if (String.isBlank(fieldName)) {
+      if (
+        mt == 'CustomObject' &&
+        mn.endsWith('__c') &&
+        xml.contains('<fields>')
+      ) {
+        List<String> editable = editableByObj.containsKey(mn)
+          ? editableByObj.get(mn)
+          : new List<String>();
+        List<String> readOnly = readOnlyByObj.containsKey(mn)
+          ? readOnlyByObj.get(mn)
+          : new List<String>();
+
+        Pattern p = Pattern.compile('(?s)<fields>(.*?)</fields>');
+        Matcher m = p.matcher(xml);
+        while (m.find()) {
+          String block = m.group(1);
+          String fieldName = extractInlineTagValue(block, 'fullName');
+          if (String.isBlank(fieldName)) {
+            continue;
+          }
+          // Required fields have implicit access — Salesforce rejects explicit FLS entries
+          String reqVal = extractInlineTagValue(block, 'required');
+          if ('true'.equalsIgnoreCase(reqVal)) {
+            continue;
+          }
+          String fieldType = extractInlineTagValue(block, 'type');
+          if (READ_ONLY_FIELD_TYPES.contains(fieldType)) {
+            readOnly.add(fieldName);
+          } else {
+            editable.add(fieldName);
+          }
+        }
+
+        if (!editable.isEmpty()) {
+          editableByObj.put(mn, editable);
+        }
+        if (!readOnly.isEmpty()) {
+          readOnlyByObj.put(mn, readOnly);
+        }
+      } else if (mt == 'CustomField' && mn.contains('.')) {
+        String parentObj = mn.substringBefore('.');
+        String fieldName = mn.substringAfter('.');
+        if (String.isBlank(parentObj) || String.isBlank(fieldName)) {
           continue;
         }
-        // Required fields have implicit access — Salesforce rejects explicit FLS entries
-        String reqVal = extractInlineTagValue(block, 'required');
+
+        String reqVal = extractInlineTagValue(xml, 'required');
         if ('true'.equalsIgnoreCase(reqVal)) {
           continue;
         }
-        String fieldType = extractInlineTagValue(block, 'type');
-        if (READ_ONLY_FIELD_TYPES.contains(fieldType)) {
-          readOnly.add(fieldName);
-        } else {
-          editable.add(fieldName);
-        }
-      }
+        String fieldType = extractInlineTagValue(xml, 'type');
 
-      if (!editable.isEmpty()) {
-        editableByObj.put(mn, editable);
-      }
-      if (!readOnly.isEmpty()) {
-        readOnlyByObj.put(mn, readOnly);
+        if (READ_ONLY_FIELD_TYPES.contains(fieldType)) {
+          List<String> readOnly = readOnlyByObj.containsKey(parentObj)
+            ? readOnlyByObj.get(parentObj)
+            : new List<String>();
+          readOnly.add(fieldName);
+          readOnlyByObj.put(parentObj, readOnly);
+        } else {
+          List<String> editable = editableByObj.containsKey(parentObj)
+            ? editableByObj.get(parentObj)
+            : new List<String>();
+          editable.add(fieldName);
+          editableByObj.put(parentObj, editable);
+        }
       }
     }
 
