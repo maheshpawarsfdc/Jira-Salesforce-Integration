@@ -214,6 +214,10 @@ public class LwcCodeValidator {
     validateLmsMessageContextWired(fileName, content);
     validateRefreshApexImported(fileName, content);
     validateNoDirectWiredResultMutation(fileName, content);
+    validateNoMixedConditionalAndIteratorOnSameTemplate(fileName, content);
+    validateForEachHasKeyAttribute(fileName, content);
+    validateLwcElseChainingOrder(fileName, content);
+    validateLightningBadgeVariant(fileName, content);
     validateTodoComments(fileName, content);
   }
 
@@ -717,6 +721,288 @@ public class LwcCodeValidator {
           'and call refreshApex(wiredResultProperty) to force a refetch instead.'
       );
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: CONDITIONAL DIRECTIVE + for:each ON THE SAME <template> TAG
+  // catches: <template lwc:if={x} for:each={items} for:item="item"> — LWC
+  // does not allow a conditional rendering directive (lwc:if/lwc:elseif/
+  // lwc:else, or the legacy if:true/if:false) and an iterator directive
+  // (for:each or iterator:x) on the SAME template tag. The platform
+  // rejects this at deploy (a template-compiler error), not something
+  // that merely renders wrong — nest two separate <template> tags
+  // instead, one for the condition and one for the loop.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateNoMixedConditionalAndIteratorOnSameTemplate(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.html')) {
+      return;
+    }
+
+    Pattern templateTagPat = Pattern.compile('(?is)<template\\b([^>]*)>');
+    Pattern conditionalPat = Pattern.compile(
+      'lwc:if\\s*=|lwc:elseif\\s*=|lwc:else\\b|if:true\\s*=|if:false\\s*='
+    );
+    Pattern iteratorPat = Pattern.compile('for:each\\s*=|iterator:\\w+\\s*=');
+
+    Matcher m = templateTagPat.matcher(content);
+    while (m.find()) {
+      String attrs = m.group(1);
+      Boolean hasConditional = conditionalPat.matcher(attrs).find();
+      Boolean hasIterator = iteratorPat.matcher(attrs).find();
+      if (hasConditional && hasIterator) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] <template ' +
+            attrs.trim().replaceAll('\\s+', ' ') +
+            '> combines a conditional directive (lwc:if/lwc:elseif/lwc:else ' +
+            'or if:true/if:false) with an iterator directive (for:each/' +
+            'iterator:x) on the SAME tag. LWC does not allow this and rejects ' +
+            'it at deploy. Nest two separate <template> tags instead — one ' +
+            'carrying the conditional, the other (nested inside or around it) ' +
+            'carrying the iterator.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: for:each WITHOUT A key ATTRIBUTE
+  // catches: <template for:each={items} for:item="item"> ... </template>
+  // with no key={...} on the iterated element. LWC requires a unique key
+  // on every for:each-rendered element so its rendering diff algorithm can
+  // track which DOM node maps to which array item — omitting it is a real
+  // deploy-time template-compiler rejection, not a style preference.
+  //
+  // Heuristic scope: matches from the <template ...for:each...> opening
+  // tag to its first following </template> (lazy match) and checks for
+  // key= anywhere in between. A for:each block that itself contains a
+  // NESTED <template> (e.g. a conditional inside the loop) can cause this
+  // to stop at the inner </template> instead of the outer one — a known
+  // v1 limitation, consistent with this validator's other regex-based
+  // (non-AST) checks.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateForEachHasKeyAttribute(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.html')) {
+      return;
+    }
+
+    Pattern forEachBlockPat = Pattern.compile(
+      '(?is)<template\\b[^>]*\\bfor:each\\s*=\\s*\\{[^}]+\\}[^>]*>(.*?)</template>'
+    );
+    Pattern keyPat = Pattern.compile('\\bkey\\s*=');
+    Matcher m = forEachBlockPat.matcher(content);
+    while (m.find()) {
+      String block = m.group(1);
+      if (!keyPat.matcher(block).find()) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] A for:each loop is missing a key={...} attribute on its ' +
+            'iterated element. LWC requires a unique key on every for:each ' +
+            'item for its rendering diff algorithm to work — add ' +
+            'key={item.Id} (or another field unique per row) to the element ' +
+            'directly inside the loop.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: lwc:elseif / lwc:else WITHOUT A PRECEDING lwc:if
+  // catches: a <template lwc:elseif={x}> or <template lwc:else> tag that
+  // does not follow a <template lwc:if={...}> (or another lwc:elseif
+  // continuing the same chain). LWC requires lwc:elseif/lwc:else to be a
+  // direct sibling continuing the lwc:if that starts the chain — used
+  // standalone (copy-pasted without its lwc:if, or left over after the
+  // lwc:if branch was deleted) it is a deploy-time template-compiler
+  // error, not merely a runtime bug.
+  //
+  // Scans template tags in DOCUMENT ORDER and tracks the last chain
+  // directive seen (if/elseif/else/none). A non-chain <template> tag
+  // (e.g. one only using for:each) does not reset the chain — a
+  // deliberate, pragmatic scope matching this validator's other
+  // regex-based checks, not a full DOM-sibling parser.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateLwcElseChainingOrder(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.html')) {
+      return;
+    }
+
+    Pattern templateTagPat = Pattern.compile('(?is)<template\\b([^>]*)>');
+    Pattern ifPat = Pattern.compile('lwc:if\\s*=');
+    Pattern elseifPat = Pattern.compile('lwc:elseif\\s*=');
+    Pattern elsePat = Pattern.compile('lwc:else\\b');
+
+    Matcher m = templateTagPat.matcher(content);
+    String lastDirective = null; // 'if' | 'elseif' | 'else' | null
+
+    while (m.find()) {
+      String attrs = m.group(1);
+      String directive = null;
+      if (ifPat.matcher(attrs).find()) {
+        directive = 'if';
+      } else if (elseifPat.matcher(attrs).find()) {
+        directive = 'elseif';
+      } else if (elsePat.matcher(attrs).find()) {
+        directive = 'else';
+      }
+
+      if (directive == null) {
+        continue;
+      }
+
+      if (
+        (directive == 'elseif' ||
+        directive == 'else') &&
+        lastDirective != 'if' &&
+        lastDirective != 'elseif'
+      ) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] <template ' +
+            (directive == 'elseif' ? 'lwc:elseif' : 'lwc:else') +
+            '> found without an immediately preceding <template lwc:if={...}> ' +
+            '(or an lwc:elseif continuing that chain). LWC requires lwc:elseif/' +
+            'lwc:else to directly follow the lwc:if that starts the ' +
+            'conditional chain — add the missing lwc:if, or remove this ' +
+            'orphaned branch.'
+        );
+      }
+
+      lastDirective = directive;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: <lightning-badge> VARIANT MUST BE "base" OR "inverse"
+  // catches: variant="brand"/"warning"/"success"/"error" (etc.) on
+  // <lightning-badge> — this base component supports ONLY "base" (default
+  // grey) and "inverse". Salesforce does not error on an invalid variant
+  // value; it silently falls back to the default grey badge, so a
+  // status-conditional with 3 branches each passing a different (all
+  // invalid) variant renders every branch identically grey with zero
+  // deploy-time signal anything is wrong. Confirmed as a real incident
+  // 2026-08-21: caseStatusBadge used variant="brand"/"warning"/"success"
+  // and every badge rendered grey regardless of Status.
+  //
+  // Only checks LITERAL string variant values (variant="success") — a
+  // variant bound to a computed property (variant={badgeVariant}) can't be
+  // statically resolved here and is intentionally left unchecked, same as
+  // this validator's other literal-only checks (e.g. CustomEvent names).
+  // ─────────────────────────────────────────────────────────────
+  private static void validateLightningBadgeVariant(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.html')) {
+      return;
+    }
+
+    Set<String> validVariants = new Set<String>{ 'base', 'inverse' };
+    Pattern badgePat = Pattern.compile(
+      '(?is)<lightning-badge\\b[^>]*\\bvariant\\s*=\\s*["\']([^"\']+)["\']'
+    );
+    Matcher m = badgePat.matcher(content);
+    while (m.find()) {
+      String variantValue = m.group(1);
+      if (!validVariants.contains(variantValue)) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] <lightning-badge variant="' +
+            variantValue +
+            '"> is not a supported value — this component only accepts ' +
+            '"base" or "inverse". Salesforce silently renders the default ' +
+            'grey badge for any other value instead of erroring, so this ' +
+            'would deploy successfully while every badge renders identically ' +
+            'grey. For a COLORED status badge, replace <lightning-badge> with ' +
+            'plain SLDS markup instead: <span class="slds-badge ' +
+            'slds-theme_success">Label</span> (swap slds-theme_success for ' +
+            'slds-theme_warning/slds-theme_error/slds-theme_info as needed).'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // DETECTOR (not a throwing rule): PURE REUSABLE/GENERIC SLOT-ONLY COMPONENT
+  // Identifies a component whose ENTIRE template is just a single wrapper
+  // element around a bare <slot> — the "generic card" shape from the
+  // LWC_DYNAMIC_UI prompt's reusable-component guidance. Such a component
+  // is deliberately unconfigured on its own (no title, no content) —
+  // dropping it raw onto a FlexiPage renders an empty, useless card, since
+  // page-builder placement has no way to set its @api properties or supply
+  // slot content. LLMResponseProcessor uses this to EXCLUDE this kind of
+  // component from automatic page placement — the ticket's separate
+  // CONSUMER component (the one that actually configures/fills it) should
+  // be placed instead. Confirmed as a real incident 2026-08-21: a bare
+  // genericInfoCard was placed on the Case record page with zero
+  // configured attributes and an empty slot, rendering nothing useful.
+  //
+  // Deliberately conservative — returns false (not a shell) whenever there
+  // is any ambiguity, since wrongly EXCLUDING a real standalone component
+  // from placement is worse than wrongly failing to exclude a shell (the
+  // prior behavior: silently placing a blank card). Returns false if:
+  //   - the template uses any conditional/loop directive (real logic, not
+  //     a pure passthrough)
+  //   - there isn't EXACTLY one <slot> in the whole file
+  //   - once that <slot> is removed, more than one other element remains
+  //     at the top level (a real wrapper PLUS other real content/markup)
+  // ─────────────────────────────────────────────────────────────
+  public static Boolean isSlotOnlyReusableComponent(String htmlContent) {
+    if (String.isBlank(htmlContent)) {
+      return false;
+    }
+
+    Pattern directivePat = Pattern.compile(
+      'for:each\\s*=|iterator:\\w+\\s*=|lwc:if\\s*=|lwc:elseif\\s*=|' +
+      'lwc:else\\b|if:true\\s*=|if:false\\s*='
+    );
+    if (directivePat.matcher(htmlContent).find()) {
+      return false;
+    }
+
+    Matcher slotMatcher = Pattern.compile('(?i)<slot\\b').matcher(htmlContent);
+    Integer slotCount = 0;
+    while (slotMatcher.find()) {
+      slotCount++;
+    }
+    if (slotCount != 1) {
+      return false;
+    }
+
+    // Remove the single <slot ...>...</slot> (or self-closing <slot .../>)
+    // element, then count remaining opening tags (excluding <template>
+    // itself) — 0 (the slot was the only element) or 1 (a single wrapper
+    // element) both count as "shell".
+    String withoutSlot = Pattern.compile(
+        '(?is)<slot\\b[^>]*?(?:/>|>.*?</slot\\s*>)'
+      )
+      .matcher(htmlContent)
+      .replaceFirst('');
+
+    Matcher openingTagMatcher = Pattern.compile('<[a-zA-Z][\\w-]*\\b')
+      .matcher(withoutSlot);
+    Integer remainingElementCount = 0;
+    while (openingTagMatcher.find()) {
+      String tag = openingTagMatcher.group().substring(1).toLowerCase();
+      if (tag != 'template') {
+        remainingElementCount++;
+      }
+    }
+
+    return remainingElementCount <= 1;
   }
 
   private static void throwReservedWordError(

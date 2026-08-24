@@ -1283,6 +1283,11 @@ public class LLMResponseProcessor {
 
     // ── LWC bundles staged this run — fed to the FlexiPage backstop ──
     Set<String> detectedLwcNames = new Set<String>();
+    // Pure reusable/generic "shell" components (single wrapper + bare
+    // <slot>, no logic of their own) — excluded from auto-placement below,
+    // since dropping one raw onto a page renders empty with no configured
+    // attributes or slot content. See LwcCodeValidator.isSlotOnlyReusableComponent.
+    Set<String> shellLwcNames = new Set<String>();
 
     List<Object> files = (List<Object>) parsed.get('files');
 
@@ -2116,6 +2121,14 @@ public class LLMResponseProcessor {
           );
         }
 
+        if (
+          isLwcHtml &&
+          String.isNotBlank(xmlContent) &&
+          LwcCodeValidator.isSlotOnlyReusableComponent(xmlContent)
+        ) {
+          shellLwcNames.add(memberName);
+        }
+
         if (metadataType == 'PublicGroup') {
           effectiveType = 'Group';
           System.debug(
@@ -2370,12 +2383,38 @@ public class LLMResponseProcessor {
     LLMXmlSanitizer.injectDefaultTabVisibility(files);
     // Append generated LWCs to an existing record page when the ticket asks.
     // No-op unless the ticket explicitly requests placement; never throws.
+    // Pure reusable/generic shell components (see shellLwcNames above) are
+    // deliberately excluded here — only a component that actually has
+    // configured content belongs standing alone on a page; a bare shell
+    // renders empty with no title/icon/slot content since page-builder
+    // placement has no way to configure it.
+    Set<String> lwcPlacementCandidates = new Set<String>(detectedLwcNames);
+    lwcPlacementCandidates.removeAll(shellLwcNames);
     FlexiPageHelper.backstopLwcPagePlacement(
       issueKey,
       ticketSummary,
       ticketDescription,
-      new List<String>(detectedLwcNames)
+      new List<String>(lwcPlacementCandidates)
     );
+    if (!shellLwcNames.isEmpty()) {
+      String shellNote =
+        '⚠️ ' +
+        String.join(new List<String>(shellLwcNames), ', ') +
+        (shellLwcNames.size() == 1 ? ' is' : ' are') +
+        ' a reusable slot-only component and was not placed directly on a ' +
+        'page — build/place a consumer component that actually configures ' +
+        'it (title, icon, slot content) instead.';
+      FlexiPageHelper.lastPlacementNote = String.isBlank(
+          FlexiPageHelper.lastPlacementNote
+        )
+        ? shellNote
+        : FlexiPageHelper.lastPlacementNote + ' | ' + shellNote;
+      System.debug(
+        '[FLEXIPAGE] Excluded pure reusable/slot-only component(s) from ' +
+          'auto-placement: ' +
+          shellLwcNames
+      );
+    }
 
     // ── Compose the deploy summary for the Jira status message ─────────────
     // One line per metadata type actually staged (object, field, record
@@ -4583,8 +4622,9 @@ public class LLMResponseProcessor {
       String target = trimmed.substring(prefix.length()).trim();
       if (!target.contains('.')) {
         throw new LLMService.LLMException(
-          'Invalid @AgentforcePostDeploy marker in ' + memberName +
-          ': expected ClassName.methodName'
+          'Invalid @AgentforcePostDeploy marker in ' +
+            memberName +
+            ': expected ClassName.methodName'
         );
       }
       String className = target.substringBefore('.').trim();

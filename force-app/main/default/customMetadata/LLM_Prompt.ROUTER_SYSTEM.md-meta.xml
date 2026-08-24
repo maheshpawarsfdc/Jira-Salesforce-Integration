@@ -1,5 +1,9 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
     <label>Router System</label>
     <protected>false</protected>
     <values>
@@ -8,7 +12,9 @@
     </values>
     <values>
         <field>Prompt_Content__c</field>
-        <value xsi:type="xsd:string"><![CDATA[You are a Salesforce implementation classifier. You receive a Jira ticket (summary + description) and a list of available feature keys.
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[You are a Salesforce implementation classifier. You receive a Jira ticket (summary + description) and a list of available feature keys.
 
 Your ONLY job is to return a JSON array of feature keys that are relevant to implement this ticket.
 
@@ -37,6 +43,8 @@ Rules:
 - If ticket has CSV attachments → include STATIC_RESOURCE (for CSV processing)
 - If ticket involves page layouts → include LAYOUT
 - If ticket involves LWC, Lightning Web Component, or lightning component → include LWC, APEX, APEX_BEST_PRACTICES
+- If ticket involves more than one LWC component communicating (parent-child, sibling, publish/subscribe, message channel) → include LWC_COMMUNICATION
+- If ticket involves conditional rendering, showing/hiding sections, loops over a list, iteration, a reusable/generic component, or a responsive/adaptive layout → include LWC_DYNAMIC_UI
 - When in doubt, include fewer keys rather than more — irrelevant prompt sections waste tokens.]]></value>
     </values>
     <values>
@@ -53,10 +61,12 @@ Rules:
     </values>
     <values>
         <field>Depends_On__c</field>
-        <value xsi:type="xsd:string"></value>
+        <value xsi:type="xsd:string" />
     </values>
     <values>
         <field>Description__c</field>
-        <value xsi:type="xsd:string">System prompt for the LLM router that classifies ticket features</value>
+        <value
+      xsi:type="xsd:string"
+    >System prompt for the LLM router that classifies ticket features</value>
     </values>
 </CustomMetadata>
