@@ -45,6 +45,7 @@ Rules:
 - If ticket involves LWC, Lightning Web Component, or lightning component → include LWC, APEX, APEX_BEST_PRACTICES
 - If ticket involves more than one LWC component communicating (parent-child, sibling, publish/subscribe, message channel) → include LWC_COMMUNICATION
 - If ticket involves conditional rendering, showing/hiding sections, loops over a list, iteration, a reusable/generic component, or a responsive/adaptive layout → include LWC_DYNAMIC_UI
+- If ticket involves navigating to a record/list/tab/custom page/Visualforce page/URL, NavigationMixin, toast notifications, success/error messages on a button click, a loading spinner, or a modal/popup dialog → include LWC_NAVIGATION
 - When in doubt, include fewer keys rather than more — irrelevant prompt sections waste tokens.]]></value>
     </values>
     <values>

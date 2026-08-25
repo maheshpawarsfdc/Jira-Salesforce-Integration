@@ -20,17 +20,34 @@
  * HOW IT WORKS
  * 1. Ticket text is checked for an explicit placement request — nothing
  *    happens unless the ticket actually asks for it.
- * 2. Tooling API locates the target page (RecordPage/AppPage/HomePage).
- * 3. port.retrieve() pulls the REAL deployed XML — same retrieve/poll/extract
- *    pattern as PermissionSetHelper.clonePermissionSet(). The page is modified
- *    in place, so untouched regions and components survive verbatim.
- * 4. The modified page is staged through ZipBuilder, so it deploys in the SAME
- *    ZIP as the component. Salesforce resolves the c:component reference within
- *    the deployment, and a failed deploy leaves the live page untouched.
+ * 2. Tooling API locates the target page (RecordPage/AppPage/HomePage) and
+ *    resolves region/object — all fast, no Metadata API callout involved.
+ * 3. port.retrieve() STARTS the real Metadata API retrieve job (one quick
+ *    callout) and hands off waiting for it to a FlexiPagePlacementPoller —
+ *    see below for why. This method returns immediately after that handoff;
+ *    the LWC component itself deploys in ZIP1 as normal, without waiting on
+ *    placement at all.
+ * 4. FlexiPagePlacementPoller polls the retrieve to completion across real
+ *    async hops (same enqueueJob-then-System.schedule-fallback pattern
+ *    DeployPoller uses for deploy-status polling), modifies the retrieved
+ *    XML in place so untouched regions/components survive verbatim, then
+ *    deploys JUST the modified FlexiPage as its own follow-up ZIP via
+ *    ZipDeployQueueable.forZip2 + the existing DeployPoller — reused
+ *    unmodified — which posts its own follow-up Jira comment once that
+ *    resolves.
  *
- * Placement never fails the ticket: if the page can't be found, retrieved, or
- * parsed, the reason is logged and the component deploys without placement.
- * A deployable component that isn't on a page beats no component at all.
+ * WHY ASYNC: retrieveFlexiPageXml() used to poll checkRetrieveStatus in a
+ * tight synchronous loop with no real delay between attempts — Apex has no
+ * synchronous sleep, so the only elapsed time was whatever the callouts
+ * themselves took, nowhere near enough real wall-clock time for a large
+ * page's retrieve job to finish (confirmed failing repeatedly against
+ * Account_Record_Page — see flexipage-retrieve-timeout-followup memory).
+ * Async polling gets genuine elapsed time across hops instead.
+ *
+ * Placement never fails the ticket: if the page can't be found, retrieved,
+ * or parsed, the reason is logged and/or posted as a follow-up Jira comment,
+ * and the component deploys without placement either way. A deployable
+ * component that isn't on a page beats no component at all.
  */
 public class FlexiPageHelper {
   public class FlexiPageException extends Exception {
@@ -39,13 +56,6 @@ public class FlexiPageHelper {
   private static final String DEFAULT_REGION = 'sidebar';
   private static final String FALLBACK_REGION = 'main';
   private static final String ITEM_CLOSE = '</itemInstances>';
-  // Apex has no synchronous sleep — each poll IS the only wall-clock delay
-  // available before the next one. 10 was too few for a page with many
-  // components (retrieve genuinely still in progress server-side); 40 gives
-  // the async retrieve job enough real elapsed time across the callout
-  // round-trips themselves, while staying well inside the governor limit
-  // on callouts per transaction (100).
-  private static final Integer RETRIEVE_MAX_POLL_ATTEMPTS = 40;
 
   // ─────────────────────────────────────────────────────────────
   // PORT — same MetadataPort the rest of the system uses
@@ -179,36 +189,6 @@ public class FlexiPageHelper {
       return;
     }
 
-    String pageXml;
-    try {
-      pageXml = retrieveFlexiPageXml(pageName);
-    } catch (Exception e) {
-      System.debug(
-        '[FLEXIPAGE] retrieve failed for [' + pageName + ']: ' + e.getMessage()
-      );
-      ErrorLogger.log(e);
-      recordPlacementGap(
-        issueKey,
-        lwcComponentNames,
-        'Retrieving the ' + pageName + ' page failed: ' + e.getMessage()
-      );
-      return;
-    }
-
-    if (String.isBlank(pageXml)) {
-      System.debug(
-        '[FLEXIPAGE] retrieve returned no XML for [' +
-          pageName +
-          '] — skipping placement.'
-      );
-      recordPlacementGap(
-        issueKey,
-        lwcComponentNames,
-        'Retrieving the ' + pageName + ' page returned no content.'
-      );
-      return;
-    }
-
     // Any-region last resort only applies to AppPage/HomePage: their
     // templates don't follow the record-page sidebar/main convention this
     // helper's default region names are based on, so falling back to
@@ -218,95 +198,89 @@ public class FlexiPageHelper {
     // (e.g. next to the record's name/photo).
     Boolean allowAnyRegionFallback = pageType != 'RecordPage';
 
-    // Apply every component to the same retrieved XML, in order.
-    String workingXml = pageXml;
-    Integer appliedCount = 0;
-    Integer alreadyPresentCount = 0;
+    // Fast pre-check — independent of the slow Metadata API retrieve below.
+    // isComponentOnPageFresh() is a single lightweight Tooling API GET, not
+    // the big SOAP retrieve/poll. If every requested component is already
+    // on the page (a re-run of a ticket that already placed successfully,
+    // or a retry after a previous timeout that actually did land), there is
+    // nothing to do and no reason to kick off an async retrieve at all.
+    List<String> stillNeeded = new List<String>();
     for (String componentName : lwcComponentNames) {
       if (String.isBlank(componentName)) {
         continue;
       }
-      // Two independent existence checks, not one: the SOAP retrieve above
-      // has been observed to complete successfully (no timeout) while still
-      // returning a snapshot that lags behind a just-saved manual App
-      // Builder change — see the 2026-08-20 case in
-      // flexipage-retrieve-timeout-followup memory, where this exact check
-      // passed (component absent from the retrieved XML) and a real
-      // duplicate got deployed. isComponentOnPageFresh() re-checks via a
-      // separate Tooling API GET, which reflects the manual save. Either
-      // source finding it is enough to skip — a duplicate is worse than an
-      // occasional needless skip.
-      if (
-        workingXml.contains(
-          '<componentName>c:' + componentName + '</componentName>'
-        ) || isComponentOnPageFresh(pageName, componentName)
-      ) {
-        alreadyPresentCount++;
+      if (isComponentOnPageFresh(pageName, componentName)) {
         continue;
       }
-      String updated = appendComponentToRegion(
-        workingXml,
-        componentName,
-        regionName,
-        allowAnyRegionFallback
-      );
-      if (updated == null) {
-        continue;
-      }
-      workingXml = updated;
-      appliedCount++;
+      stillNeeded.add(componentName);
     }
-
-    if (appliedCount == 0) {
-      if (alreadyPresentCount > 0) {
-        // Already on the page — success, just nothing new to add.
-        lastPlacementNote =
-          '✅ Already present on the ' +
-          describeTarget(pageType, objectApiName) +
-          ' (' +
-          pageName +
-          ').';
-      } else {
-        System.debug(
-          '[FLEXIPAGE] nothing to apply for [' +
-            pageName +
-            '] — region [' +
-            regionName +
-            '] not found on the page. Page left unmodified.'
-        );
-        recordPlacementGap(
-          issueKey,
-          lwcComponentNames,
-          'No usable region found on ' +
-            pageName +
-            '. Component deployed but not added to the page.'
-        );
-      }
+    if (stillNeeded.isEmpty()) {
+      lastPlacementNote =
+        '✅ Already present on the ' +
+        describeTarget(pageType, objectApiName) +
+        ' (' +
+        pageName +
+        ').';
       return;
     }
 
-    ZipBuilder.addFile(
-      'FlexiPage',
-      pageName,
-      'flexipages/' + pageName + '.flexipage',
-      workingXml
-    );
+    // ── ASYNC HANDOFF ────────────────────────────────────────────────
+    // startFlexiPageRetrieve() only STARTS the retrieve job (one quick
+    // callout) — waiting for it to finish is handed off to
+    // FlexiPagePlacementPoller, which gets genuine async elapsed time
+    // across hops instead of a tight synchronous poll loop. This method
+    // returns right after handoff; the component itself still deploys in
+    // ZIP1 as normal, without waiting on placement.
+    String asyncId;
+    try {
+      asyncId = startFlexiPageRetrieve(pageName);
+    } catch (Exception e) {
+      System.debug(
+        '[FLEXIPAGE] retrieve kickoff failed for [' +
+          pageName +
+          ']: ' +
+          e.getMessage()
+      );
+      ErrorLogger.log(e);
+      recordPlacementGap(
+        issueKey,
+        lwcComponentNames,
+        'Starting the retrieve for the ' +
+          pageName +
+          ' page failed: ' +
+          e.getMessage()
+      );
+      return;
+    }
+
+    FlexiPagePlacementPoller poller = new FlexiPagePlacementPoller();
+    poller.asyncId = asyncId;
+    poller.pageName = pageName;
+    poller.pageType = pageType;
+    poller.objectApiName = objectApiName;
+    poller.regionName = regionName;
+    poller.allowAnyRegionFallback = allowAnyRegionFallback;
+    poller.lwcComponentNames = stillNeeded;
+    poller.issueKey = issueKey;
+    poller.attempt = 1;
+    System.enqueueJob(poller);
+
     lastPlacementNote =
-      '✅ Added to the ' +
-      regionName +
-      ' region of the ' +
+      '⏳ Placing on the ' +
       describeTarget(pageType, objectApiName) +
       ' (' +
       pageName +
-      ').';
+      ') — will confirm in a follow-up comment shortly; large pages can ' +
+      'take up to ~2 minutes.';
     System.debug(
-      '[DEPLOY-TRACE] route ZIP1 <- FlexiPage / flexipages/' +
+      '[DEPLOY-TRACE] FlexiPage placement handed off async | issue=' +
+        issueKey +
+        ' | page=' +
         pageName +
-        '.flexipage (' +
-        appliedCount +
-        ' component(s) appended to region [' +
-        regionName +
-        '])'
+        ' | asyncId=' +
+        asyncId +
+        ' | components=' +
+        stillNeeded
     );
   }
 
@@ -315,7 +289,7 @@ public class FlexiPageHelper {
    * and the success note. RecordPage needs the object name; AppPage/HomePage
    * don't have one.
    */
-  private static String describeTarget(String pageType, String objectApiName) {
+  public static String describeTarget(String pageType, String objectApiName) {
     if (pageType == 'RecordPage') {
       return objectApiName + ' record page';
     }
@@ -711,6 +685,89 @@ public class FlexiPageHelper {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // FETCH — an existing LWC bundle's full file content, via Tooling API
+  // SOQL (LightningComponentBundle → LightningComponentResource), not a
+  // Metadata API retrieve. Fast and synchronous — a bundle is a handful of
+  // small files, nothing like the size/latency of a FlexiPage retrieve.
+  //
+  // WHY THIS EXISTS: deploying a FlexiPage that references a Lightning
+  // component NOT included in that SAME deploy package can fail with
+  // "We couldn't retrieve the design time component information for
+  // component c:X" — confirmed as a real incident 2026-08-24, caseNoteList/
+  // Case_Record_Page, right after FlexiPagePlacementPoller started
+  // deploying the modified page as its own separate follow-up ZIP (see
+  // that class). The component had already deployed successfully moments
+  // earlier in ZIP1, in a separate transaction — Salesforce's deploy-time
+  // design-info lookup for a referenced component doesn't reliably see it
+  // unless the component is ALSO part of the deploy that touches the page
+  // referencing it, even though nothing about the component actually
+  // needs to change. FlexiPagePlacementPoller re-includes the bundle
+  // (unmodified) in its placement ZIP using this method, purely to satisfy
+  // that requirement.
+  //
+  // Returns Map<filePath, content> (FilePath from the resource IS already
+  // the exact zip-relative path ZipBuilder.addFile expects, e.g.
+  // "lwc/caseNoteList/caseNoteList.js") — empty map if the bundle isn't
+  // found or has no resources; never throws.
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, String> fetchLwcBundleFiles(String componentName) {
+    Map<String, String> files = new Map<String, String>();
+    try {
+      Map<String, Object> bundleResult = MetadataHelper.runToolingApiQuery(
+        'SELECT Id FROM LightningComponentBundle WHERE DeveloperName = \'' +
+          String.escapeSingleQuotes(componentName) +
+          '\' AND NamespacePrefix = null LIMIT 1'
+      );
+      List<Object> bundleRecords = (List<Object>) bundleResult.get('records');
+      if (bundleRecords == null || bundleRecords.isEmpty()) {
+        System.debug(
+          '[FLEXIPAGE] fetchLwcBundleFiles: no bundle found for [' +
+            componentName +
+            ']'
+        );
+        return files;
+      }
+      String bundleId = (String) ((Map<String, Object>) bundleRecords[0])
+        .get('Id');
+
+      Map<String, Object> resourceResult = MetadataHelper.runToolingApiQuery(
+        'SELECT FilePath, Source FROM LightningComponentResource ' +
+          'WHERE LightningComponentBundleId = \'' +
+          bundleId +
+          '\''
+      );
+      List<Object> resourceRecords = (List<Object>) resourceResult.get(
+        'records'
+      );
+      if (resourceRecords != null) {
+        for (Object raw : resourceRecords) {
+          Map<String, Object> rec = (Map<String, Object>) raw;
+          String filePath = (String) rec.get('FilePath');
+          String source = (String) rec.get('Source');
+          if (String.isNotBlank(filePath) && source != null) {
+            files.put(filePath, source);
+          }
+        }
+      }
+      System.debug(
+        '[FLEXIPAGE] fetchLwcBundleFiles: [' +
+          componentName +
+          '] → ' +
+          files.size() +
+          ' file(s)'
+      );
+    } catch (Exception e) {
+      System.debug(
+        '[FLEXIPAGE] fetchLwcBundleFiles failed for [' +
+          componentName +
+          ']: ' +
+          e.getMessage()
+      );
+    }
+    return files;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // FRESH EXISTENCE CHECK — Tooling API GET, independent of the SOAP
   // retrieve above. Read-only cross-check: never throws, never blocks
   // placement on its own failure — a failed/unavailable check just means
@@ -779,13 +836,15 @@ public class FlexiPageHelper {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // RETRIEVE — pull the real deployed page XML
+  // RETRIEVE — start the async retrieve job (ASYNC-SAFE)
   //
-  // Mirrors PermissionSetHelper.clonePermissionSet(): SOAP retrieve, poll to
-  // completion, extract the single file from the returned ZIP. Working from
-  // the deployed XML is what makes the append non-destructive.
+  // One quick callout that only STARTS the Metadata API retrieve job and
+  // returns its asyncId. Waiting for it to finish is FlexiPagePlacementPoller's
+  // job (real async elapsed time across hops), not this method's — see the
+  // class doc comment for why. Public so the poller can call it from a fresh
+  // transaction after being enqueued.
   // ─────────────────────────────────────────────────────────────
-  public static String retrieveFlexiPageXml(String developerName) {
+  public static String startFlexiPageRetrieve(String developerName) {
     MetadataService.RetrieveRequest retrieveRequest = new MetadataService.RetrieveRequest();
     retrieveRequest.apiVersion = 61.0;
     retrieveRequest.singlePackage = true;
@@ -807,43 +866,32 @@ public class FlexiPageHelper {
         '], asyncId=' +
         asyncId
     );
+    return asyncId;
+  }
 
-    String zipBase64 = null;
-    for (Integer attempt = 0; attempt < RETRIEVE_MAX_POLL_ATTEMPTS; attempt++) {
-      MetadataService.RetrieveResult retrieveResult = port.checkRetrieveStatus(
-        asyncId,
-        true
-      );
-      System.debug(
-        '[FLEXIPAGE] retrieve poll attempt=' +
-          attempt +
-          ', done=' +
-          retrieveResult.done +
-          ', status=' +
-          retrieveResult.status
-      );
+  // ─────────────────────────────────────────────────────────────
+  // RETRIEVE — check status of an already-started retrieve (ASYNC-SAFE)
+  //
+  // Thin wrapper so FlexiPagePlacementPoller doesn't need direct access to
+  // this class's private `port` property. One callout per call — the
+  // poller decides how many times and how far apart to call this.
+  // ─────────────────────────────────────────────────────────────
+  public static MetadataService.RetrieveResult checkFlexiPageRetrieveStatus(
+    String asyncId
+  ) {
+    return port.checkRetrieveStatus(asyncId, true);
+  }
 
-      if (retrieveResult.done) {
-        if (retrieveResult.status == 'Failed') {
-          throw new FlexiPageException(
-            'Retrieve failed for FlexiPage ' +
-              developerName +
-              ': ' +
-              retrieveResult.errorMessage
-          );
-        }
-        zipBase64 = retrieveResult.zipFile;
-        break;
-      }
-    }
-
+  // ─────────────────────────────────────────────────────────────
+  // RETRIEVE — extract the page XML from a completed retrieve's ZIP
+  // ─────────────────────────────────────────────────────────────
+  public static String extractXmlFromRetrieveZip(
+    String developerName,
+    String zipBase64
+  ) {
     if (String.isBlank(zipBase64)) {
       throw new FlexiPageException(
-        'Retrieve timed out for FlexiPage: ' +
-          developerName +
-          ' after ' +
-          RETRIEVE_MAX_POLL_ATTEMPTS +
-          ' poll attempts.'
+        'Retrieve for FlexiPage ' + developerName + ' returned no ZIP content.'
       );
     }
 
@@ -875,6 +923,66 @@ public class FlexiPageHelper {
       '[FLEXIPAGE] retrieved [' + developerName + '], length=' + xml.length()
     );
     return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // APPLY — run every requested component through appendComponentToRegion
+  // against an already-retrieved page XML (ASYNC-SAFE)
+  //
+  // Called by FlexiPagePlacementPoller once its retrieve completes. Returns
+  // a small result bag rather than a custom type to keep this callable
+  // without exposing another public inner class:
+  //   'modifiedXml'         → String, or null if nothing changed
+  //   'appliedCount'        → Integer
+  //   'alreadyPresentCount' → Integer
+  // ─────────────────────────────────────────────────────────────
+  public static Map<String, Object> applyComponentsToXml(
+    String pageXml,
+    String pageName,
+    String regionName,
+    Boolean allowAnyRegionFallback,
+    List<String> lwcComponentNames
+  ) {
+    String workingXml = pageXml;
+    Integer appliedCount = 0;
+    Integer alreadyPresentCount = 0;
+
+    for (String componentName : lwcComponentNames) {
+      if (String.isBlank(componentName)) {
+        continue;
+      }
+      // Belt-and-suspenders re-check against the just-retrieved XML itself,
+      // on top of whatever pre-filtering the caller already did (e.g. the
+      // isComponentOnPageFresh() pre-check in backstopLwcPagePlacement) —
+      // see flexipage-retrieve-timeout-followup memory for why a single
+      // check isn't enough. A duplicate is worse than an occasional
+      // needless skip.
+      if (
+        workingXml.contains(
+          '<componentName>c:' + componentName + '</componentName>'
+        )
+      ) {
+        alreadyPresentCount++;
+        continue;
+      }
+      String updated = appendComponentToRegion(
+        workingXml,
+        componentName,
+        regionName,
+        allowAnyRegionFallback
+      );
+      if (updated == null) {
+        continue;
+      }
+      workingXml = updated;
+      appliedCount++;
+    }
+
+    return new Map<String, Object>{
+      'modifiedXml' => appliedCount > 0 ? workingXml : null,
+      'appliedCount' => appliedCount,
+      'alreadyPresentCount' => alreadyPresentCount
+    };
   }
 
   // ─────────────────────────────────────────────────────────────
