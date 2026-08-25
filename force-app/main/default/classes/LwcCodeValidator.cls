@@ -204,6 +204,88 @@ public class LwcCodeValidator {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // CROSS-FILE RULE: LWC BUNDLE memberName MUST MATCH ITS FOLDER NAME
+  // catches: an LWC file's memberName field disagreeing with (or missing
+  // relative to) the actual bundle folder its filePath places it in.
+  // LLMResponseProcessor trusts memberName directly for package.xml
+  // membership (ZipBuilder.metadataTypes) rather than deriving it from
+  // filePath — so a single file with a wrong/blank memberName produces a
+  // package.xml entry that does not line up with where the file actually
+  // ends up in the zip, which then fails at deploy time with a completely
+  // opaque Metadata API error — "Cannot find Lightning Component Bundle
+  // X" — instead of anything actionable. Confirmed as a real,
+  // REPRODUCIBLE incident 2026-08-25 (caseEscalationWorkflow, failed
+  // identically on 2 separate generation attempts for the same ticket).
+  //
+  // Cross-file by nature (needs every file's filePath + memberName from
+  // the same bundle folder together), same reasoning as
+  // validateNoImperativeCallToCacheableMethod above — cannot run through
+  // the per-file validate() entry point below. Called from
+  // LLMResponseProcessor.processXmlGenerationResponse() before the main
+  // per-file loop, same call site as that method, so it throws into the
+  // same repair-retry loop.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateLwcBundleMemberNamesMatchFolder(
+    List<Object> files
+  ) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    List<String> problems = new List<String>();
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String filePath = (String) file.get('filePath');
+      String memberName = (String) file.get('memberName');
+
+      if (
+        String.isBlank(filePath) || !filePath.toLowerCase().startsWith('lwc/')
+      ) {
+        continue;
+      }
+
+      List<String> segments = filePath.split('/');
+      if (segments.size() < 3) {
+        continue; // not a real "lwc/<folder>/<file>" path — nothing to check
+      }
+      String folderName = segments[1];
+
+      // .equals() — NOT == — is deliberate: Apex's == operator (and
+      // Set<String>/Map<String,x> membership, which an earlier version of
+      // this exact check used) is CASE-INSENSITIVE by default. That
+      // earlier version silently failed to catch a deliberately-injected
+      // casing-only mismatch ("CaseEscalationWorkflow" vs
+      // "caseEscalationWorkflow") in a live test run — exactly the class
+      // of mismatch this rule exists to catch. .equals() is case-sensitive.
+      if (memberName == null || !memberName.equals(folderName)) {
+        problems.add(
+          '[' +
+            filePath +
+            '] memberName is "' +
+            (memberName == null ? '(blank)' : memberName) +
+            '" but the file lives in the "' +
+            folderName +
+            '" bundle folder — memberName must exactly match the folder ' +
+            'name (case-sensitive).'
+        );
+      }
+    }
+
+    if (!problems.isEmpty()) {
+      throw new ApexCodeValidator.ValidationException(
+        'LWC bundle memberName mismatch — this produces a package.xml ' +
+          'entry that does not line up with the actual zip folder, and ' +
+          'fails at deploy time with "Cannot find Lightning Component ' +
+          'Bundle X" instead of a clear message. Fix every affected ' +
+          'file\'s memberName to exactly match its own bundle folder ' +
+          'name:\n' +
+          String.join(problems, '\n')
+      );
+    }
+  }
+
   public static void validate(String fileName, String content) {
     validateNotBlank(fileName, content);
     validateTemplateBindingExpressions(fileName, content);
@@ -212,6 +294,7 @@ public class LwcCodeValidator {
     validateCustomEventNameLowercase(fileName, content);
     validateLmsSubscribeHasUnsubscribe(fileName, content);
     validateLmsMessageContextWired(fileName, content);
+    validateDecoratorsImportedFromLwc(fileName, content);
     validateRefreshApexImported(fileName, content);
     validateNoDirectWiredResultMutation(fileName, content);
     validateNoMixedConditionalAndIteratorOnSameTemplate(fileName, content);
@@ -219,6 +302,10 @@ public class LwcCodeValidator {
     validateLwcElseChainingOrder(fileName, content);
     validateLightningBadgeVariant(fileName, content);
     validateTodoComments(fileName, content);
+    validateNavigationMixinExtendsClause(fileName, content);
+    validateNavigationMixinImported(fileName, content);
+    validateWriteActionHasToastFeedback(fileName, content);
+    validateSpinnerResetOnError(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -644,6 +731,67 @@ public class LwcCodeValidator {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // RULE: @api / @wire / @track USED WITHOUT BEING IMPORTED FROM 'lwc'
+  // catches: a class using @api/@wire/@track as a decorator without a
+  // matching `import { api } from 'lwc';` (etc.) — importing the BASE
+  // class (LightningElement from 'lwc', or LightningModal from
+  // 'lightning/modal') does not also bring the decorators in. This is a
+  // deploy-time compiler error (LWC1102: Invalid 'x' decorator usage), not
+  // a runtime one — confirmed as a real incident 2026-08-24:
+  // confirmDeleteModal used `@api recordName;` after only importing
+  // LightningModal from 'lightning/modal', with no `import { api } from
+  // 'lwc';` at all. Root cause traced back to the LWC_NAVIGATION prompt's
+  // OWN modal example missing that import — the LLM was faithfully
+  // copying a bug baked into the prompt template itself.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateDecoratorsImportedFromLwc(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Map<String, Pattern> usagePatterns = new Map<String, Pattern>{
+      'api' => Pattern.compile('@api\\b'),
+      'wire' => Pattern.compile('@wire\\s*\\('),
+      'track' => Pattern.compile('@track\\b')
+    };
+
+    for (String decorator : usagePatterns.keySet()) {
+      Boolean usesDecorator = usagePatterns.get(decorator)
+        .matcher(content)
+        .find();
+      if (!usesDecorator) {
+        continue;
+      }
+
+      Boolean importsDecorator = Pattern.compile(
+          'import\\s*\\{[^}]*\\b' +
+            decorator +
+            '\\b[^}]*\\}\\s*from\\s*[\'"]lwc[\'"]'
+        )
+        .matcher(content)
+        .find();
+
+      if (!importsDecorator) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] Uses @' +
+            decorator +
+            ' without importing it. Add \'' +
+            decorator +
+            '\' to the import from \'lwc\' (e.g. import { ' +
+            decorator +
+            ' } from \'lwc\';) — importing LightningElement or ' +
+            'LightningModal does not also bring the decorators in.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // RULE: refreshApex() CALLED WITHOUT BEING IMPORTED
   // catches: a Tier 2A wired component calling refreshApex(...) to force a
   // cacheable wire result to refetch, without importing it — refreshApex is
@@ -824,11 +972,21 @@ public class LwcCodeValidator {
   // lwc:if branch was deleted) it is a deploy-time template-compiler
   // error, not merely a runtime bug.
   //
-  // Scans template tags in DOCUMENT ORDER and tracks the last chain
-  // directive seen (if/elseif/else/none). A non-chain <template> tag
-  // (e.g. one only using for:each) does not reset the chain — a
-  // deliberate, pragmatic scope matching this validator's other
-  // regex-based checks, not a full DOM-sibling parser.
+  // NESTING-AWARE: scans both <template> open tags AND </template> close
+  // tags in document order and maintains a STACK, so the "last chain
+  // directive seen" is tracked PER NESTING LEVEL, not as one flat
+  // document-wide value. Without this, an unrelated nested chain inside
+  // one branch (e.g. a per-row lwc:if/lwc:else inside a for:each nested
+  // in an outer lwc:elseif block) corrupts tracking for the OUTER chain
+  // once control returns to it — confirmed as a real false positive
+  // 2026-08-24: a valid isLoading/hasError/hasData/else outer chain with
+  // a nested per-row if/else inside the hasData branch was rejected
+  // because the nested chain's trailing 'else' leaked out as the
+  // "last directive" seen before the outer lwc:else, even though the
+  // outer chain (elseif={hasData} → else) was perfectly valid. A non-chain
+  // <template> (e.g. one only using for:each) still does not reset the
+  // chain at ITS OWN level — same deliberate, pragmatic scope as before,
+  // just now correctly scoped per nesting level instead of globally.
   // ─────────────────────────────────────────────────────────────
   private static void validateLwcElseChainingOrder(
     String fileName,
@@ -838,15 +996,38 @@ public class LwcCodeValidator {
       return;
     }
 
-    Pattern templateTagPat = Pattern.compile('(?is)<template\\b([^>]*)>');
+    Pattern tagPat = Pattern.compile(
+      '(?is)<template\\b([^>]*)>|(</template\\s*>)'
+    );
     Pattern ifPat = Pattern.compile('lwc:if\\s*=');
     Pattern elseifPat = Pattern.compile('lwc:elseif\\s*=');
     Pattern elsePat = Pattern.compile('lwc:else\\b');
 
-    Matcher m = templateTagPat.matcher(content);
-    String lastDirective = null; // 'if' | 'elseif' | 'else' | null
+    Matcher m = tagPat.matcher(content);
+    String currentLast = null; // 'if' | 'elseif' | 'else' | null — last
+    // chain directive seen so far AT THE CURRENT NESTING LEVEL.
+    List<String> ownDirectiveStack = new List<String>(); // this
+    // <template>'s own directive, pushed on open / popped on close — used
+    // to update the PARENT level's currentLast once this element closes.
+    List<String> parentLastStack = new List<String>(); // currentLast of
+    // the PARENT level at the moment we descended, restored when this
+    // element's own directive is null (a non-chain template, e.g.
+    // for:each) so it doesn't erase the parent chain's position.
 
     while (m.find()) {
+      Boolean isCloseTag = m.group(2) != null;
+
+      if (isCloseTag) {
+        if (ownDirectiveStack.isEmpty()) {
+          continue; // unmatched close tag — not this validator's concern
+        }
+        Integer lastIdx = ownDirectiveStack.size() - 1;
+        String myDirective = ownDirectiveStack.remove(lastIdx);
+        String parentLast = parentLastStack.remove(lastIdx);
+        currentLast = (myDirective != null) ? myDirective : parentLast;
+        continue;
+      }
+
       String attrs = m.group(1);
       String directive = null;
       if (ifPat.matcher(attrs).find()) {
@@ -857,15 +1038,11 @@ public class LwcCodeValidator {
         directive = 'else';
       }
 
-      if (directive == null) {
-        continue;
-      }
-
       if (
         (directive == 'elseif' ||
         directive == 'else') &&
-        lastDirective != 'if' &&
-        lastDirective != 'elseif'
+        currentLast != 'if' &&
+        currentLast != 'elseif'
       ) {
         throw new ApexCodeValidator.ValidationException(
           '[' +
@@ -880,7 +1057,14 @@ public class LwcCodeValidator {
         );
       }
 
-      lastDirective = directive;
+      // Descend into this <template>'s own scope: remember the parent
+      // level's chain position (to restore if this template turns out to
+      // be a non-chain one, e.g. for:each) and this template's own
+      // directive (to apply to the parent level once we hit its matching
+      // </template>), then start fresh chain-tracking for its children.
+      ownDirectiveStack.add(directive);
+      parentLastStack.add(currentLast);
+      currentLast = null;
     }
   }
 
@@ -1003,6 +1187,259 @@ public class LwcCodeValidator {
     }
 
     return remainingElementCount <= 1;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: NavigationMixin USED WITHOUT THE MIXIN IN THE extends CLAUSE
+  // catches: this[NavigationMixin.Navigate](...) called on a class that
+  // still extends plain LightningElement — NavigationMixin is a mixin
+  // function that must wrap LightningElement in the extends clause for
+  // this[NavigationMixin.Navigate] to exist at all; calling it otherwise
+  // throws "Cannot read properties of undefined" at runtime, not a
+  // deploy-time error, so it silently ships broken until a user clicks it.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateNavigationMixinExtendsClause(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Boolean usesNavigate = Pattern.compile(
+        'this\\s*\\[\\s*NavigationMixin\\.Navigate\\s*\\]'
+      )
+      .matcher(content)
+      .find();
+    if (!usesNavigate) {
+      return;
+    }
+
+    Boolean extendsNavigationMixin = Pattern.compile(
+        'extends\\s+NavigationMixin\\s*\\('
+      )
+      .matcher(content)
+      .find();
+    if (!extendsNavigationMixin) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Calls this[NavigationMixin.Navigate](...) but the class does ' +
+          'not extend NavigationMixin(LightningElement). Change ' +
+          '"extends LightningElement" to ' +
+          '"extends NavigationMixin(LightningElement)".'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: NavigationMixin USED WITHOUT BEING IMPORTED
+  // catches: "extends NavigationMixin(LightningElement)" with no import —
+  // NavigationMixin is not a global, it must come from 'lightning/navigation'.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateNavigationMixinImported(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Boolean extendsNavigationMixin = Pattern.compile(
+        'extends\\s+NavigationMixin\\s*\\('
+      )
+      .matcher(content)
+      .find();
+    if (!extendsNavigationMixin) {
+      return;
+    }
+
+    Boolean importsNavigationMixin = Pattern.compile(
+        'import\\s*\\{[^}]*\\bNavigationMixin\\b[^}]*\\}\\s*from\\s*[\'"]lightning/navigation[\'"]'
+      )
+      .matcher(content)
+      .find();
+    if (!importsNavigationMixin) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Extends NavigationMixin but never imports it. Add: ' +
+          'import { NavigationMixin } from \'lightning/navigation\';'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: WRITE ACTION WITHOUT ShowToastEvent FEEDBACK
+  // catches: a component that calls an LDS write function (createRecord/
+  // updateRecord/deleteRecord) or an imperative Apex method, but never
+  // shows a ShowToastEvent anywhere — the user clicks a button and gets no
+  // confirmation the action succeeded OR failed, which looks identical to
+  // the button silently doing nothing.
+  //
+  // Scoped deliberately to presence-only (content.contains('ShowToastEvent'))
+  // rather than verifying it fires on BOTH the success and error paths
+  // specifically — a real, accepted precision tradeoff: nearly every write
+  // in this pipeline is user-initiated, so a false positive here is more
+  // likely than a false negative, and this still catches the common case
+  // of a write with NO toast feedback at all.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateWriteActionHasToastFeedback(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Boolean callsLdsWrite = Pattern.compile(
+        '\\b(createRecord|updateRecord|deleteRecord)\\s*\\('
+      )
+      .matcher(content)
+      .find();
+
+    Boolean callsImperativeApex = false;
+    Pattern apexImportPat = Pattern.compile(
+      'import\\s+(\\w+)\\s+from\\s+[\'"]@salesforce/apex/[\\w.]+[\'"]'
+    );
+    Matcher apexImportMatcher = apexImportPat.matcher(content);
+    while (apexImportMatcher.find()) {
+      String localName = apexImportMatcher.group(1);
+      Boolean usedViaWire = Pattern.compile(
+          '@wire\\s*\\(\\s*' + Pattern.quote(localName) + '\\b'
+        )
+        .matcher(content)
+        .find();
+      if (usedViaWire) {
+        continue;
+      }
+      Boolean calledImperatively = Pattern.compile(
+          '\\b' + Pattern.quote(localName) + '\\s*\\('
+        )
+        .matcher(content)
+        .find();
+      if (calledImperatively) {
+        callsImperativeApex = true;
+        break;
+      }
+    }
+
+    if (!callsLdsWrite && !callsImperativeApex) {
+      return;
+    }
+
+    if (!content.contains('ShowToastEvent')) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Performs a create/update/delete action (LDS write or an ' +
+          'imperative Apex call) but never shows a ShowToastEvent — the ' +
+          'user gets no confirmation the action succeeded or failed. ' +
+          'Import ShowToastEvent from \'lightning/platformShowToastEvent\' ' +
+          'and dispatch one on both the success and error paths.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: isLoading SPINNER NEVER RESET ON FAILURE
+  // catches: isLoading = true set to show a spinner, but no catch or
+  // .finally() block anywhere in the file ever resets it back to false —
+  // if the operation fails, the spinner spins forever with no way out.
+  // Checks BOTH catch(...) blocks and .finally(...) blocks (not just
+  // catch) since the project's own recommended pattern is
+  // .then().catch().finally(() => { isLoading = false }) — the reset
+  // legitimately lives in finally, not in catch itself, and this rule
+  // must not flag that correct, endorsed pattern as a violation.
+  //
+  // Uses a real balanced-brace scan (extractBalancedBlock) rather than a
+  // regex over the block body, since catch/finally bodies routinely
+  // contain their own nested { } (an if statement, an object literal)
+  // that a non-greedy regex match would truncate at the wrong '}'.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateSpinnerResetOnError(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+    if (
+      !Pattern.compile('\\bisLoading\\s*=\\s*true\\b').matcher(content).find()
+    ) {
+      return;
+    }
+
+    List<Pattern> errorPathAnchors = new List<Pattern>{
+      Pattern.compile('\\bcatch\\s*\\([^)]*\\)\\s*'),
+      Pattern.compile('\\.finally\\s*\\(')
+    };
+
+    Boolean foundErrorPath = false;
+    Boolean resetSomewhere = false;
+
+    for (Pattern anchor : errorPathAnchors) {
+      Matcher m = anchor.matcher(content);
+      while (m.find()) {
+        Integer braceStart = content.indexOf('{', m.end());
+        if (braceStart < 0) {
+          continue;
+        }
+        String block = extractBalancedBlock(content, braceStart);
+        if (block == null) {
+          continue;
+        }
+        foundErrorPath = true;
+        if (
+          Pattern.compile('\\bisLoading\\s*=\\s*false\\b').matcher(block).find()
+        ) {
+          resetSomewhere = true;
+        }
+      }
+    }
+
+    if (foundErrorPath && !resetSomewhere) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Sets isLoading = true but no catch or .finally() block ever ' +
+          'resets it back to false — the spinner will spin forever if the ' +
+          'operation fails. Reset isLoading = false inside the catch ' +
+          'block, or in a .finally() that runs regardless of success or ' +
+          'failure.'
+      );
+    }
+  }
+
+  // Scans forward from an opening '{' at contentIndex and returns the
+  // substring up to (and including) its matching closing '}', counting
+  // nested braces. Returns null if no matching close is found (malformed
+  // or truncated source) — callers must treat null as "could not verify,
+  // skip this occurrence" rather than a violation.
+  private static String extractBalancedBlock(
+    String content,
+    Integer openBraceIndex
+  ) {
+    if (
+      openBraceIndex == null ||
+      openBraceIndex < 0 ||
+      openBraceIndex >= content.length()
+    ) {
+      return null;
+    }
+    Integer depth = 0;
+    for (Integer i = openBraceIndex; i < content.length(); i++) {
+      String ch = content.substring(i, i + 1);
+      if (ch == '{') {
+        depth++;
+      } else if (ch == '}') {
+        depth--;
+        if (depth == 0) {
+          return content.substring(openBraceIndex, i + 1);
+        }
+      }
+    }
+    return null;
   }
 
   private static void throwReservedWordError(

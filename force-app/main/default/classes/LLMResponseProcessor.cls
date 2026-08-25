@@ -1336,6 +1336,14 @@ public class LLMResponseProcessor {
     // same repair-retry loop the per-file validators use.
     LwcCodeValidator.validateNoImperativeCallToCacheableMethod(files);
 
+    // ── LWC bundle memberName/folder consistency detector — cross-file
+    // check, same reasoning as above. Catches a memberName that disagrees
+    // with the bundle folder its filePath places it in BEFORE deploy,
+    // instead of letting it surface as an opaque "Cannot find Lightning
+    // Component Bundle X" Metadata API error. Confirmed as a real,
+    // reproducible incident 2026-08-25 (caseEscalationWorkflow).
+    LwcCodeValidator.validateLwcBundleMemberNamesMatchFolder(files);
+
     // ── Scenario B violation detector ─────────────────────────
     LLMLayoutHelper.detectScenarioBViolation(
       nonCustomSettingLayoutFiles,
@@ -1356,7 +1364,8 @@ public class LLMResponseProcessor {
         String xmlContent = (String) file.get('xmlContent');
 
         if (
-          (metadataType == 'ApexClass' || metadataType == 'ApexTrigger') &&
+          (metadataType == 'ApexClass' ||
+          metadataType == 'ApexTrigger') &&
           String.isNotBlank(xmlContent) &&
           filePath != null &&
           !filePath.endsWith('-meta.xml')

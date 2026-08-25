@@ -158,6 +158,52 @@ private class LwcDynamicUiValidatorTest {
     System.assert(threw, 'lwc:elseif without a preceding lwc:if must throw');
   }
 
+  // Regression for a real 2026-08-24 false positive: a nested per-row
+  // lwc:if/lwc:else INSIDE a for:each, which itself is inside an outer
+  // lwc:elseif branch, must not corrupt tracking for the OUTER chain's
+  // trailing lwc:else. The outer chain here (isLoading → hasData → else)
+  // is completely valid and must not throw even though the nested chain's
+  // last directive is 'else' at the point the outer lwc:else is reached.
+  @IsTest
+  static void nestedElseChainInsideOuterBranchDoesNotBreakOuterChain() {
+    String html =
+      '<template>\n' +
+      '  <template lwc:if={isLoading}>\n' +
+      '    <lightning-spinner></lightning-spinner>\n' +
+      '  </template>\n' +
+      '  <template lwc:elseif={hasData}>\n' +
+      '    <table>\n' +
+      '      <template for:each={rows} for:item="row">\n' +
+      '        <tr key={row.Id}>\n' +
+      '          <template lwc:if={row.isPriority}>\n' +
+      '            <td>High</td>\n' +
+      '          </template>\n' +
+      '          <template lwc:else>\n' +
+      '            <td>Normal</td>\n' +
+      '          </template>\n' +
+      '        </tr>\n' +
+      '      </template>\n' +
+      '    </table>\n' +
+      '  </template>\n' +
+      '  <template lwc:else>\n' +
+      '    <p>No records found.</p>\n' +
+      '  </template>\n' +
+      '</template>';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.html', html);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'An unrelated nested if/else chain inside a branch must not break ' +
+          'the outer chain\'s own valid elseif/else sequencing: ' +
+          e.getMessage()
+      );
+    }
+    Test.stopTest();
+  }
+
   // ─────────────────────────────────────────────────────────────
   // isSlotOnlyReusableComponent
   // ─────────────────────────────────────────────────────────────

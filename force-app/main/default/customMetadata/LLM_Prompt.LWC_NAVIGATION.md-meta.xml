@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>LWC Navigation</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LWC_NAVIGATION</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== NAVIGATION & USER EXPERIENCE ==
+Use when: the ticket needs programmatic navigation (go to a record/list/tab/
+URL), success/error feedback on a user action, a loading indicator, or a
+modal dialog.
+
+-- NavigationMixin — PROGRAMMATIC NAVIGATION --
+Import from 'lightning/navigation', mix it into the class's extends clause
+(NOT a plain import-and-use — it must wrap LightningElement), then call
+this[NavigationMixin.Navigate](pageReference):
+
+  import { LightningElement } from 'lwc';
+  import { NavigationMixin } from 'lightning/navigation';
+
+  export default class AccountActions extends NavigationMixin(LightningElement) {
+      handleViewRecord() {
+          this[NavigationMixin.Navigate]({
+              type: 'standard__recordPage',
+              attributes: {
+                  recordId: this.recordId,
+                  objectApiName: 'Account',
+                  actionName: 'view'
+              }
+          });
+      }
+  }
+
+CRITICAL RULE: the class MUST extend NavigationMixin(LightningElement) —
+"extends LightningElement" alone means this[NavigationMixin.Navigate] does
+not exist on the instance and calling it throws at runtime (not caught at
+deploy time), so the button appears to do nothing when clicked.
+
+PAGE REFERENCE SHAPES (pick the one matching what the ticket asks to
+navigate to):
+
+  View a record:
+    { type: 'standard__recordPage',
+      attributes: { recordId, objectApiName, actionName: 'view' } }
+
+  Edit a record:
+    { type: 'standard__recordPage',
+      attributes: { recordId, objectApiName, actionName: 'edit' } }
+
+  New record for an object:
+    { type: 'standard__objectPage',
+      attributes: { objectApiName, actionName: 'new' } }
+
+  An object's list view (e.g. "go to the Accounts list"):
+    { type: 'standard__objectPage',
+      attributes: { objectApiName, actionName: 'list' } }
+
+  Another Lightning component registered as its OWN tab (not embedded on a
+  page — a tab that opens the component full-screen):
+    { type: 'standard__component',
+      attributes: { componentName: 'c__myCustomTab' } }
+
+  A CUSTOM PAGE — a custom tab, which can itself point to a Visualforce
+  page, a Lightning App Page, a Canvas app, or a URL depending on how the
+  tab is configured. Use this whenever the ticket says "custom page",
+  "custom tab", "Visualforce page", or names a tab that isn't a plain
+  object list view:
+    { type: 'standard__navItemPage',
+      attributes: { apiName: 'My_Custom_Tab' } }
+
+  An external URL, OR a Visualforce page with no custom tab wrapping it
+  (use its relative or absolute URL):
+    { type: 'standard__webPage',
+      attributes: { url: 'https://example.com' } }
+    { type: 'standard__webPage',
+      attributes: { url: '/apex/MyVisualforcePage' } }
+
+RULES:
+- recordId/objectApiName should come from @api properties or wired data —
+  never hardcode a record Id.
+- Use actionName: 'view' for viewing, 'edit' for opening the edit form —
+  never invent other actionName values.
+- standard__component's componentName is ALWAYS namespace-prefixed with
+  "c__" (two underscores) followed by the tab's API name — not the LWC's
+  own folder name.
+- standard__navItemPage's apiName is the CUSTOM TAB's API name (as it
+  appears in Setup → Tabs), never the underlying Visualforce page's or
+  Lightning page's own name — the tab is the navigation target, whatever
+  it happens to display is an implementation detail of the tab itself.
+- Prefer standard__navItemPage over standard__webPage whenever the
+  destination has a real custom tab — it stays a normal, trackable
+  in-app navigation (keeps the tab highlighted, works the same in the
+  Salesforce mobile app) rather than a raw page load.
+
+-- ShowToastEvent — MANDATORY FEEDBACK ON EVERY USER-TRIGGERED WRITE --
+ANY action a user triggers that creates, updates, or deletes data (LDS
+createRecord/updateRecord/deleteRecord, OR an imperative Apex call) MUST
+show a ShowToastEvent on BOTH the success and the error path — a write
+with no feedback looks identical to a write that silently failed:
+
+  import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+  // ...
+  .then(() => {
+      this.dispatchEvent(new ShowToastEvent({
+          title: 'Success',
+          message: 'Record updated.',
+          variant: 'success'
+      }));
+  })
+  .catch((error) => {
+      this.dispatchEvent(new ShowToastEvent({
+          title: 'Error updating record',
+          message: error.body?.message || 'An unexpected error occurred.',
+          variant: 'error'
+      }));
+  });
+
+RULES:
+- variant: 'success' for the happy path, 'error' for the failure path —
+  never omit variant (defaults to a neutral gray toast that reads as
+  ambiguous).
+- Always import from 'lightning/platformShowToastEvent' — never any other
+  path.
+- error.body?.message is the standard shape for both an AuraHandledException
+  message and a raw LDS error — always fall back to a generic message
+  ('An unexpected error occurred.') when it is undefined.
+
+-- LOADING INDICATOR: lightning-spinner + isLoading --
+Gate a spinner on a single reactive isLoading boolean, and ALWAYS reset it
+in a .finally() so it clears regardless of success or failure — resetting
+it only inside .then() leaves it stuck forever on any error:
+
+  Template:
+    <template lwc:if={isLoading}>
+        <lightning-spinner alternative-text="Loading" size="medium"></lightning-spinner>
+    </template>
+
+  JS:
+    handleSave() {
+        this.isLoading = true;
+        updateRecord({ fields: { Id: this.recordId, ...this.draftFields } })
+            .then(() => { /* toast success */ })
+            .catch((error) => { /* toast error */ })
+            .finally(() => {
+                this.isLoading = false;
+            });
+    }
+
+RULE: prefer a single .finally() over duplicating "isLoading = false" in
+both .then() and .catch() — one reset point is less likely to be missed
+when a branch is edited later. If the ticket's control flow genuinely can't
+use a promise chain (e.g. async/await), reset isLoading in a finally block
+there instead — the requirement is "always resets on error," not the exact
+syntax.
+
+-- MODAL DIALOGS: lightning-modal / LightningModal --
+Use when the ticket asks for a popup/dialog/confirmation window rather than
+inline page content. The modal is its OWN separate LWC bundle, extending
+LightningModal (not LightningElement):
+
+  Modal component JS (confirmDeleteModal.js):
+    import { api } from 'lwc';
+    import LightningModal from 'lightning/modal';
+    export default class ConfirmDeleteModal extends LightningModal {
+        @api recordName; // passed in via .open({ recordName: ... })
+
+        handleConfirm() {
+            this.close('confirmed');
+        }
+        handleCancel() {
+            this.close('canceled');
+        }
+    }
+
+  Modal component HTML (confirmDeleteModal.html) — needs its own header/
+  footer, lightning-modal does not supply them automatically:
+    <template>
+        <lightning-modal-header label="Confirm Delete"></lightning-modal-header>
+        <lightning-modal-body>
+            <p>Delete {recordName}? This cannot be undone.</p>
+        </lightning-modal-body>
+        <lightning-modal-footer>
+            <lightning-button label="Cancel" onclick={handleCancel}></lightning-button>
+            <lightning-button label="Delete" variant="destructive" onclick={handleConfirm}></lightning-button>
+        </lightning-modal-footer>
+    </template>
+
+  Caller JS (opens the modal, dynamically imported):
+    import ConfirmDeleteModal from 'c/confirmDeleteModal';
+    // ...
+    async handleDeleteClick() {
+        const result = await ConfirmDeleteModal.open({
+            size: 'small',
+            recordName: this.recordName
+        });
+        if (result === 'confirmed') {
+            // proceed with the delete
+        }
+    }
+
+RULES:
+- The modal's own js-meta.xml does NOT need any lightning__RecordPage/
+  lightning__AppPage target — it is opened programmatically, never placed
+  on a page directly.
+- Config is passed into .open({...}) as plain properties, matching @api
+  properties declared on the modal component — not slots.
+- The modal closes and returns its result via this.close(value) called
+  FROM INSIDE the modal component itself — the caller reads that value from
+  the awaited .open(...) call, never by polling a shared property.
+- @api on the modal class MUST be paired with `import { api } from 'lwc';` —
+  LightningModal only supplies the base class import (`import LightningModal
+  from 'lightning/modal';`), it does NOT also bring in the `api` decorator.
+  Omitting this import is a deploy-time compiler error (LWC1102: Invalid
+  'api' decorator usage), not a runtime one — confirmed as a real incident
+  2026-08-24, caseNoteList/confirmDeleteModal.
+
+== NEVER ==
+- Never call this[NavigationMixin.Navigate] on a class that only extends
+  LightningElement — it must extend NavigationMixin(LightningElement).
+- Never perform a create/update/delete action with no ShowToastEvent on
+  either path — silence reads as a broken button.
+- Never reset isLoading only in the success path — always cover the error
+  path too (a .finally(), or resets in both .then() and .catch()).
+- Never give a modal component a page-placement target in its js-meta.xml —
+  it is opened via ComponentName.open({...}), never placed on a FlexiPage.
+- Never use @api, @wire, or @track in ANY component's JS (modal or not)
+  without `import { api } from 'lwc';` / `import { wire } from 'lwc';` /
+  `import { track } from 'lwc';` — importing LightningElement or
+  LightningModal does not also bring in the decorators.
+]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">169.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">LWC</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >Navigation &amp; UX: NavigationMixin programmatic navigation, mandatory ShowToastEvent feedback on writes, isLoading spinner reset discipline, lightning-modal dialogs</value>
+    </values>
+</CustomMetadata>
