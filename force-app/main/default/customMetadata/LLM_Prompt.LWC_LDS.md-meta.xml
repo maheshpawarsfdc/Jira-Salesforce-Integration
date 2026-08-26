@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>LWC Lightning Data Service</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LWC_LDS</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== LIGHTNING DATA SERVICE (RECORD APIs / CRUD) ==
+Use when: the ticket needs to read, create, update, or delete a Salesforce
+record directly from a component's own data — no custom Apex controller
+required for plain CRUD against fields the running user already has access
+to. Prefer LDS over a custom Apex method whenever the operation is a plain
+field read/write — LDS gets you sharing/FLS enforcement, the shared record
+cache, and offline draft support for free; a custom Apex method for the
+same job is extra surface with none of that benefit.
+
+-- READING A RECORD: @wire(getRecord) + getFieldValue --
+Always import field references from '@salesforce/schema/Object.Field' —
+never hardcode a field's API name as a bare string:
+
+  import { LightningElement, api, wire } from 'lwc';
+  import { getRecord, getFieldValue } from 'lightning/uiRecordApi';
+  import NAME_FIELD from '@salesforce/schema/Contact.Name';
+  import EMAIL_FIELD from '@salesforce/schema/Contact.Email';
+
+  export default class ContactCard extends LightningElement {
+      @api recordId;
+
+      @wire(getRecord, { recordId: '$recordId', fields: [NAME_FIELD, EMAIL_FIELD] })
+      contact;
+
+      get name() {
+          return getFieldValue(this.contact.data, NAME_FIELD);
+      }
+      get email() {
+          return getFieldValue(this.contact.data, EMAIL_FIELD);
+      }
+  }
+
+CRITICAL RULE: @wire(getRecord, {...}) MUST supply at least one of fields,
+optionalFields, or layoutTypes — omitting all three throws at runtime
+("either fields or layout type must be specified"), not at deploy time.
+
+CRITICAL RULE: getRecord is a WIRE ADAPTER ONLY — it can never be called
+as a plain imperative function (getRecord({...}) with no @wire), even
+inside a .then()/async block, e.g. after a save completes. Doing so is a
+compile-time error: LWC1503 "getRecord is a wire adapter and can only be
+used via the @wire decorator." This is DIFFERENT from
+createRecord/updateRecord/deleteRecord/getFieldValue, which genuinely ARE
+plain functions callable imperatively — getRecord is the one exception in
+this module. If a handler needs to re-fetch/refresh a record's data after
+a write (e.g. to show updated values after Save), do NOT call
+getRecord(...) directly — instead call refreshApex(wiredResult) on the
+component's existing @wire(getRecord) result property, or simply rely on
+the wire's own reactivity (it re-runs automatically whenever its reactive
+'$recordId' parameter changes). refreshApex is imported from
+'@salesforce/apex', not 'lightning/uiRecordApi'.
+
+RULES:
+- '$recordId' (with the leading $) reactively re-runs the wire whenever
+  the recordId property changes — a plain recordId: this.recordId does
+  NOT do this and only fires once.
+- Always guard getFieldValue/rendering on this.contact.data being present
+  before the wire resolves (e.g. <template lwc:if={contact.data}>) —
+  contact.data is undefined on the very first render.
+- Never mutate this.contact.data directly to reflect an edit — it is
+  owned by the LDS wire service. Call updateRecord(...) (see below) and
+  let the wire naturally refetch, or call refreshApex(this.contact).
+- fields/optionalFields entries are imported schema references (NAME_FIELD),
+  never raw strings like 'Contact.Name' — EXCEPT the genuinely dynamic,
+  runtime-configurable case below, where a schema import is impossible.
+
+-- DYNAMICALLY-CONFIGURABLE FIELDS (fields list driven by @api input) --
+Use when: the ticket wants the set of fields to be configuration — passed
+in through an @api property, built from user selection, or otherwise not
+knowable until runtime — rather than a fixed list the component always
+requests.
+
+A `@salesforce/schema/Object.Field` import is resolved at BUILD time, so it
+CANNOT represent a field decided at RUN time. For this case only, fall back
+to plain strings — but every string MUST be the FULLY OBJECT-QUALIFIED API
+name, `"ObjectApiName.FieldApiName"` (e.g. `'Contact.Email'`,
+`'Account.Industry'`), never a bare field name (`'Email'`). getRecord's
+fields array requires the qualified form unconditionally — a bare name
+throws at runtime ("field API name ... is not valid") with no deploy-time
+or static-validation signal, since a dynamically-built array is exactly
+the shape the literal-only validators (updateRecord Id, createRecord
+apiName, getRecord fields/layoutTypes) intentionally do not inspect.
+
+  import { LightningElement, api, wire, track } from 'lwc';
+  import { getRecord, getFieldValue } from 'lightning/uiRecordApi';
+
+  export default class ConfigurableFieldDisplay extends LightningElement {
+      @api recordId;
+      @api fieldApiNames = []; // e.g. ['Contact.Email', 'Contact.Phone'] — caller-supplied, object-qualified
+
+      @wire(getRecord, { recordId: '$recordId', fields: '$fieldApiNames' })
+      record;
+
+      get displayFields() {
+          if (!this.record.data || !this.fieldApiNames) {
+              return [];
+          }
+          return this.fieldApiNames.map((apiName) => ({
+              apiName,
+              value: getFieldValue(this.record.data, apiName)
+          }));
+      }
+  }
+
+RULES:
+- The `fields`/`optionalFields` wire parameter itself may also be reactive
+  ('$fieldApiNames') so the wire re-runs if the caller changes the field
+  list after initial render — not required, but never wrong.
+- getFieldValue accepts a plain qualified string directly (no imported
+  token needed) — `getFieldValue(this.record.data, 'Contact.Email')` is
+  correct and is the intended dynamic-case usage.
+- If the ticket implies a caller might pass unqualified names, still emit
+  the component expecting qualified input and document it in a comment —
+  never silently prepend a guessed object name; the component cannot know
+  which object a bare field name belongs to.
+- Guard on `this.record.data` (or `this.record.error`) exactly as the
+  static case does — the dynamic field list changes what's fetched, not
+  the loading/error-guard shape.
+
+-- CRITICAL: getRecord's layoutTypes DOES NOT RETURN LAYOUT METADATA --
+layoutTypes on getRecord ONLY changes which fields are populated inside
+record.fields (Compact = the compact layout's fields, Full = the full
+layout's fields) — the RESPONSE SHAPE IS STILL THE PLAIN RecordRepresentation
+({ apiName, fields, id, ... }). getRecord's response NEVER has a `layouts`
+property, no matter what layoutTypes says. Confirmed as a real incident
+2026-08-25 (caseFullLayoutPanel): code read `record.layouts.Full.sections`
+off a getRecord result — record.layouts was always undefined, so the
+component silently rendered an empty card on every load, with no error
+and no deploy-time signal anything was wrong.
+
+If the ticket needs the actual rendered layout — sections, rows, per-field
+labels grouped the way Setup's page layout defines them — that data comes
+from a COMPLETELY DIFFERENT wire adapter, getRecordUi (also from
+'lightning/uiRecordApi'), whose response genuinely is
+{ records, layouts, objectInfos }:
+
+  import { getRecordUi } from 'lightning/uiRecordApi';
+
+  @wire(getRecordUi, { recordIds: ['$recordId'], layoutTypes: ['Full'], modes: ['View'] })
+  wiredRecordUi({ data, error }) {
+      if (data) {
+          const record = data.records[this.recordId];
+          const sections = data.layouts[record.apiName].View.Full.sections;
+          // sections[].layoutRows[].layoutItems[] — this is the real shape
+          // that carries section headings/rows/fields, and it ONLY exists
+          // on a getRecordUi response.
+      }
+  }
+
+STRONGLY PREFERRED for "show a record's full/compact layout" tickets: skip
+hand-rolled getRecordUi extraction entirely and use the built-in
+<lightning-record-form> component instead — it renders the requested
+layout (including every section and field) with zero custom wire/JS code:
+
+  <lightning-record-form
+      record-id={recordId}
+      object-api-name="Case"
+      layout-type="Full"
+      columns="2">
+  </lightning-record-form>
+
+Reach for getRecordUi directly only when the ticket needs to read layout
+metadata programmatically (e.g. to drive custom conditional logic per
+section) — not merely to display it, which lightning-record-form already
+does correctly out of the box.
+
+-- WRITING A RECORD: updateRecord / createRecord / deleteRecord --
+All three come from 'lightning/uiRecordApi' and return a Promise —
+combine with the isLoading spinner and ShowToastEvent patterns from
+LWC_NAVIGATION (mandatory feedback on every write, spinner always reset
+in .finally()):
+
+  import { updateRecord, createRecord, deleteRecord } from 'lightning/uiRecordApi';
+
+  // UPDATE — fields MUST include Id, or LDS throws at runtime:
+  updateRecord({ fields: { Id: this.recordId, Name: this.nameValue } })
+      .then(() => { /* toast success */ })
+      .catch((error) => { /* toast error */ })
+      .finally(() => { this.isLoading = false; });
+
+  // CREATE — the record-input object MUST include apiName, or LDS throws
+  // at runtime ("Cannot destructure property 'apiName'"):
+  createRecord({ apiName: 'Contact', fields: { LastName: this.lastName } })
+      .then((record) => { this.newRecordId = record.id; /* toast success */ })
+      .catch((error) => { /* toast error */ })
+      .finally(() => { this.isLoading = false; });
+
+  // DELETE — takes the record Id directly, not a fields object:
+  deleteRecord(this.recordId)
+      .then(() => { /* toast success */ })
+      .catch((error) => { /* toast error */ })
+      .finally(() => { this.isLoading = false; });
+
+RULES:
+- Every one of createRecord/updateRecord/deleteRecord/getFieldValue used
+  in a file MUST be imported by name from 'lightning/uiRecordApi' — none
+  are globals; an unimported call fails at RUNTIME ("X is not defined"),
+  not at deploy time.
+- updateRecord's fields object ALWAYS includes Id — it identifies which
+  record to write to.
+- createRecord's top-level object ALWAYS includes apiName — it identifies
+  which object to insert into.
+- Do NOT write a custom Apex method that performs its own DML
+  (insert/update/upsert/delete) for the SAME write a component already
+  performs via LDS — pick ONE path. Reach for a custom Apex method only
+  when the write needs logic LDS cannot express (cross-object DML in one
+  transaction, a validation/business rule not enforceable via a single
+  record write, a bulk operation).
+  EXCEPTION — this does NOT forbid a Save handler that calls both an LDS
+  write AND an imperative Apex method, when the Apex method's DML target
+  is genuinely different from what LDS already wrote (e.g. LDS updates
+  Rating; a separate Apex method writes an audit/log record and a
+  Last_Modified/timestamp field as a side effect of that change). That is
+  two distinct writes for two distinct purposes, not the same write done
+  twice — see "COMBINING AN LDS WRITE WITH AN IMPERATIVE APEX CALL" below
+  for the required control-flow shape.
+
+-- COMBINING AN LDS WRITE WITH AN IMPERATIVE APEX CALL IN ONE HANDLER --
+Use when: the ticket needs a Save handler to perform an LDS write (e.g.
+updateRecord) AND separately invoke an imperative Apex method (e.g. for
+audit logging, a side-effect timestamp field, or any action LDS cannot
+itself express) as part of the same user action.
+
+Chaining two async write calls with nested .then()/.catch() is exactly the
+shape that has repeatedly produced a spinner-never-resets bug in practice
+— it is easy to place .finally() on only one of the two calls, or to
+return early from one .catch() in a way that skips the other's cleanup.
+For ANY handler with two or more sequential async write operations, use
+async/await with ONE try/catch/finally wrapping the entire sequence —
+this guarantees isLoading resets exactly once, regardless of which step
+throws:
+
+  import { LightningElement, api, track, wire } from 'lwc';
+  import { getRecord, getFieldValue, updateRecord } from 'lightning/uiRecordApi';
+  import { refreshApex } from '@salesforce/apex';
+  import { ShowToastEvent } from 'lightning/platformShowToastEvent';
+  import RATING_FIELD from '@salesforce/schema/Account.Rating';
+  import logRatingChange from '@salesforce/apex/AccountAuditLogger.logRatingChange';
+
+  export default class AccountRatingUpdater extends LightningElement {
+      @api recordId;
+      @track isLoading = false;
+      @track ratingValue;
+
+      // Reading the CURRENT value (to seed the input) is a @wire, never an
+      // imperative getRecord(...) call — see the CRITICAL RULE above.
+      @wire(getRecord, { recordId: '$recordId', fields: [RATING_FIELD] })
+      account;
+
+      get currentRating() {
+          return getFieldValue(this.account.data, RATING_FIELD);
+      }
+
+      async handleSave() {
+          if (this.isLoading) {
+              return;
+          }
+          this.isLoading = true;
+          try {
+              await updateRecord({ fields: { Id: this.recordId, Rating: this.ratingValue } });
+              await logRatingChange({ acc: { Id: this.recordId, Rating: this.ratingValue } });
+              // Re-fetch to reflect the change — refreshApex on the EXISTING
+              // wired result, never a fresh imperative getRecord(...) call.
+              await refreshApex(this.account);
+              this.dispatchEvent(new ShowToastEvent({
+                  title: 'Success',
+                  message: 'Rating updated.',
+                  variant: 'success'
+              }));
+          } catch (error) {
+              this.dispatchEvent(new ShowToastEvent({
+                  title: 'Error updating rating',
+                  message: getErrorMessage(error),
+                  variant: 'error'
+              }));
+          } finally {
+              this.isLoading = false;
+          }
+      }
+  }
+
+RULES:
+- One try/catch/finally around the WHOLE sequence of awaited calls — never
+  a separate .then/.catch/.finally per call when there is more than one
+  write in the handler.
+- Need the record's current value, before or after the write? Use
+  @wire(getRecord) + refreshApex(wiredResult) — never a bare getRecord(...)
+  call anywhere in the file, imperative or otherwise.
+- isLoading = false lives ONLY in the single finally block — never
+  duplicated inside then/catch as well, which invites drift if one copy
+  is edited later and the other is not.
+- Route the caught error through getErrorMessage(error) (see
+  LWC_NAVIGATION's error-extraction rule) regardless of which of the two
+  calls actually threw — the helper handles both an LDS error shape and
+  an AuraHandledException shape the same way.
+- The imperative Apex method itself stays plain @AuraEnabled (performs
+  DML) — never cacheable=true — per the standard Tier 2B DML rules.
+
+== NEVER ==
+- Never call @wire(getRecord, {...}) without fields, optionalFields, or
+  layoutTypes — it throws at runtime with nothing rendered.
+- Never read a `.layouts` property off a getRecord wire result (or off
+  getFieldValue's record argument) — getRecord's response never has one,
+  even when layoutTypes is set. That shape only exists on getRecordUi's
+  response. For displaying a full/compact layout, prefer
+  <lightning-record-form layout-type="Full"|"Compact"> over hand-rolled
+  extraction; use getRecordUi directly only when the layout metadata must
+  drive custom logic.
+- Never call updateRecord with a fields object that omits Id.
+- Never call createRecord with a record-input object that omits apiName.
+- Never call createRecord/updateRecord/deleteRecord/getFieldValue without
+  importing it from 'lightning/uiRecordApi'.
+- Never hardcode a field's API name as a bare string where an imported
+  '@salesforce/schema/Object.Field' reference belongs.
+- Never build a custom Apex DML method AND call an LDS write function for
+  the same record write in the same component — pick one path. (This does
+  NOT forbid an LDS write plus a genuinely separate imperative Apex call —
+  e.g. an audit log / side-effect timestamp field — see "COMBINING AN LDS
+  WRITE WITH AN IMPERATIVE APEX CALL IN ONE HANDLER" above.)
+- Never chain two or more sequential async write calls (LDS + Apex, or
+  Apex + Apex) with separate .then()/.catch()/.finally() blocks each —
+  use one async/await try/catch/finally around the whole sequence so
+  isLoading resets exactly once no matter which call fails.
+]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">170.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">LWC</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >Lightning Data Service: @wire(getRecord)/getFieldValue reads, createRecord/updateRecord/deleteRecord writes, required-field discipline, getRecord-vs-getRecordUi layout distinction, prefer LDS over redundant Apex DML</value>
+    </values>
+</CustomMetadata>
