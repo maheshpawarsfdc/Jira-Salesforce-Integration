@@ -286,6 +286,300 @@ public class LwcCodeValidator {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // CROSS-FILE DETECTOR (WARN-ONLY): LDS WRITE + REDUNDANT APEX DML ON THE
+  // SAME GENERATION BATCH
+  // flags (does NOT throw): a JS file that both calls an LDS write
+  // function (createRecord/updateRecord/deleteRecord, imported from
+  // 'lightning/uiRecordApi') AND imperatively calls an Apex method whose
+  // class performs its OWN DML (insert/update/upsert/delete, or a
+  // Database.* DML call) in the same generation response — two separate
+  // write paths against what is very likely the same data, which is
+  // redundant and can also race/duplicate a write depending on which path
+  // the LLM actually wired the button to.
+  //
+  // Ships WARN-ONLY (System.debug, no throw) per the Area 3 (Lightning
+  // Data Service) risk decision — promote to a hard ValidationException
+  // only after verifying a low false-positive rate against real ticket
+  // generations. A false positive is easy to construct here (e.g. the LDS
+  // write and the Apex DML genuinely target different objects/records in
+  // the same component), so this starts as a visibility tool, not a gate.
+  //
+  // Cross-file by nature, same reasoning as
+  // validateNoImperativeCallToCacheableMethod above — cannot run through
+  // the per-file validate() entry point below. Called from
+  // LLMResponseProcessor.processXmlGenerationResponse() alongside that
+  // method's other cross-file checks.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateNoRedundantLdsAndApexDml(List<Object> files) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    // "ClassName" (lowercased) -> true, for every Apex class in this batch
+    // whose body contains a real DML statement.
+    Set<String> dmlApexClasses = new Set<String>();
+    Pattern dmlPat = Pattern.compile(
+      '(?i)\\b(?:insert|update|upsert|delete)\\s+\\w|' +
+      'Database\\s*\\.\\s*(?:insert|update|upsert|delete)\\s*\\('
+    );
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String metadataType = (String) file.get('metadataType');
+      String memberName = (String) file.get('memberName');
+      String xmlContent = (String) file.get('xmlContent');
+      if (
+        metadataType != 'ApexClass' ||
+        String.isBlank(memberName) ||
+        String.isBlank(xmlContent)
+      ) {
+        continue;
+      }
+      if (dmlPat.matcher(xmlContent).find()) {
+        dmlApexClasses.add(memberName.toLowerCase());
+      }
+    }
+
+    if (dmlApexClasses.isEmpty()) {
+      return;
+    }
+
+    Pattern apexImportPat = Pattern.compile(
+      'import\\s+(\\w+)\\s+from\\s+[\'"]@salesforce/apex/(\\w+)\\.(\\w+)[\'"]'
+    );
+    Set<String> ldsWriteFunctions = new Set<String>{
+      'createRecord',
+      'updateRecord',
+      'deleteRecord'
+    };
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String filePath = (String) file.get('filePath');
+      String xmlContent = (String) file.get('xmlContent');
+      if (
+        filePath == null ||
+        !filePath.toLowerCase().endsWith('.js') ||
+        String.isBlank(xmlContent)
+      ) {
+        continue;
+      }
+
+      Boolean callsLdsWrite = false;
+      for (String fn : ldsWriteFunctions) {
+        Boolean usesFn = Pattern.compile('\\b' + fn + '\\s*\\(')
+          .matcher(xmlContent)
+          .find();
+        Boolean importsFn = Pattern.compile(
+            'import\\s*\\{[^}]*\\b' +
+              fn +
+              '\\b[^}]*\\}\\s*from\\s*[\'"]lightning/uiRecordApi[\'"]'
+          )
+          .matcher(xmlContent)
+          .find();
+        if (usesFn && importsFn) {
+          callsLdsWrite = true;
+          break;
+        }
+      }
+      if (!callsLdsWrite) {
+        continue;
+      }
+
+      Matcher importMatcher = apexImportPat.matcher(xmlContent);
+      while (importMatcher.find()) {
+        String localName = importMatcher.group(1);
+        String importedClass = importMatcher.group(2);
+        String importedMethod = importMatcher.group(3);
+        if (!dmlApexClasses.contains(importedClass.toLowerCase())) {
+          continue;
+        }
+        Boolean calledImperatively = Pattern.compile(
+            '\\b' + Pattern.quote(localName) + '\\s*\\('
+          )
+          .matcher(xmlContent)
+          .find();
+        if (calledImperatively) {
+          System.debug(
+            LoggingLevel.WARN,
+            '[' +
+              filePath +
+              '] WARN: calls an LDS write function (createRecord/' +
+              'updateRecord/deleteRecord) AND imperatively calls ' +
+              importedClass +
+              '.' +
+              importedMethod +
+              '(...), which itself performs Apex DML — two separate write ' +
+              'paths in the same component. Review whether both are ' +
+              'actually needed, or whether one should be removed.'
+          );
+        }
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // CROSS-FILE RULE: TEMPLATE BINDING REFERENCES A PROPERTY THE JS NEVER
+  // DECLARES
+  // catches: {someProp} in a bundle's .html with no matching field,
+  // getter, wired property, or method named someProp anywhere in the
+  // SAME bundle's .js — LWC does not error on this: binding to an
+  // undeclared property silently evaluates to undefined (falsy), so a
+  // gate like <template if:true={record}> where the JS never declares
+  // `record` at all just permanently hides everything inside it, with no
+  // compile error, no runtime error, no console warning. Confirmed as a
+  // real incident 2026-08-25 (opportunityStageInlineEdit, MS-138): the
+  // HTML gated its entire body — picklist, Save/Cancel buttons — on
+  // {record}, but the JS only ever set currentStage/selectedStage/etc.
+  // and never declared `record` anywhere; the component deployed clean,
+  // placed on the page clean, and rendered nothing but its
+  // <lightning-card title="..."> wrapper — "only the component name" is
+  // exactly what a user sees when this bug fires.
+  //
+  // Cross-file by nature (needs both the .html and .js of the SAME
+  // bundle together), same reasoning as
+  // validateNoImperativeCallToCacheableMethod above — cannot run through
+  // the per-file validate() entry point below. Called from
+  // LLMResponseProcessor.processXmlGenerationResponse() alongside that
+  // method's other cross-file checks. Only runs for a bundle whose BOTH
+  // .html AND .js are present in the SAME response — a bundle where only
+  // one of the two is being regenerated this round can't be verified
+  // here and is left unchecked, same precision tradeoff as the other
+  // cross-file rules in this class.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateTemplateBindingsDeclaredInJs(List<Object> files) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+
+    Map<String, String> htmlByBundle = new Map<String, String>();
+    Map<String, String> jsByBundle = new Map<String, String>();
+
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String filePath = (String) file.get('filePath');
+      String xmlContent = (String) file.get('xmlContent');
+      if (
+        String.isBlank(filePath) ||
+        !filePath.toLowerCase().startsWith('lwc/') ||
+        String.isBlank(xmlContent)
+      ) {
+        continue;
+      }
+      List<String> segments = filePath.split('/');
+      if (segments.size() < 3) {
+        continue;
+      }
+      String bundleFolder = segments[1];
+      String lowerPath = filePath.toLowerCase();
+      if (lowerPath.endsWith('.html')) {
+        htmlByBundle.put(bundleFolder, xmlContent);
+      } else if (lowerPath.endsWith('.js') && !lowerPath.endsWith('.test.js')) {
+        jsByBundle.put(bundleFolder, xmlContent);
+      }
+    }
+
+    Pattern forItemPat = Pattern.compile(
+      'for:item\\s*=\\s*["\']([a-zA-Z_$][a-zA-Z0-9_$]*)["\']'
+    );
+    Pattern forIndexPat = Pattern.compile(
+      'for:index\\s*=\\s*["\']([a-zA-Z_$][a-zA-Z0-9_$]*)["\']'
+    );
+    Pattern iteratorPat = Pattern.compile(
+      'iterator:([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*='
+    );
+    Pattern bindingPat = Pattern.compile('\\{([^{}]+)\\}');
+    Pattern fieldDeclPat = Pattern.compile(
+      '(?m)^\\s*(?:@track\\s+|@api\\s+|@wire\\([^)]*\\)\\s*)?' +
+      '([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*[=;]'
+    );
+    Pattern methodOrGetterPat = Pattern.compile(
+      '\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(([^()]*)\\)\\s*\\{'
+    );
+    Set<String> nonDeclarationKeywords = new Set<String>{
+      'if',
+      'while',
+      'for',
+      'switch',
+      'catch'
+    };
+
+    for (String bundleFolder : htmlByBundle.keySet()) {
+      if (!jsByBundle.containsKey(bundleFolder)) {
+        continue; // .js not in this response — can't verify, skip
+      }
+      String htmlContent = htmlByBundle.get(bundleFolder);
+      String jsContent = jsByBundle.get(bundleFolder);
+
+      Set<String> localTemplateVars = new Set<String>();
+      Matcher forItemMatcher = forItemPat.matcher(htmlContent);
+      while (forItemMatcher.find()) {
+        localTemplateVars.add(forItemMatcher.group(1));
+      }
+      Matcher forIndexMatcher = forIndexPat.matcher(htmlContent);
+      while (forIndexMatcher.find()) {
+        localTemplateVars.add(forIndexMatcher.group(1));
+      }
+      Matcher iteratorMatcher = iteratorPat.matcher(htmlContent);
+      while (iteratorMatcher.find()) {
+        localTemplateVars.add(iteratorMatcher.group(1));
+      }
+
+      Set<String> declaredInJs = new Set<String>();
+      Matcher fieldMatcher = fieldDeclPat.matcher(jsContent);
+      while (fieldMatcher.find()) {
+        declaredInJs.add(fieldMatcher.group(1));
+      }
+      Matcher methodMatcher = methodOrGetterPat.matcher(jsContent);
+      while (methodMatcher.find()) {
+        String ident = methodMatcher.group(1);
+        if (!nonDeclarationKeywords.contains(ident)) {
+          declaredInJs.add(ident);
+        }
+      }
+
+      Set<String> missing = new Set<String>();
+      Matcher bindingMatcher = bindingPat.matcher(htmlContent);
+      while (bindingMatcher.find()) {
+        String expr = bindingMatcher.group(1).trim();
+        Boolean isSimpleReference = Pattern.matches(
+          '[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)*',
+          expr
+        );
+        if (!isSimpleReference) {
+          continue; // not a bare identifier/dot-path — skip, not this rule's concern
+        }
+        String root = expr.split('\\.')[0];
+        if (!localTemplateVars.contains(root) && !declaredInJs.contains(root)) {
+          missing.add(root);
+        }
+      }
+
+      if (!missing.isEmpty()) {
+        List<String> sortedMissing = new List<String>(missing);
+        sortedMissing.sort();
+        throw new ApexCodeValidator.ValidationException(
+          '[lwc/' +
+            bundleFolder +
+            '] Template binds to ' +
+            (sortedMissing.size() == 1 ? 'a property' : 'properties') +
+            ' the JS never declares: {' +
+            String.join(sortedMissing, '}, {') +
+            '}. LWC does not error on this — an undeclared binding just ' +
+            'evaluates to undefined (falsy), so any element or ' +
+            '<template if:true=.../lwc:if=...> gated on it silently ' +
+            'never renders, with no deploy-time or runtime signal. Add a ' +
+            'matching field, getter, wired property, or method named ' +
+            'exactly ' +
+            (sortedMissing.size() == 1 ? 'this' : 'each of these') +
+            ' to the JS class — or fix the HTML if it was meant to bind ' +
+            'to a differently-named property that already exists.'
+        );
+      }
+    }
+  }
+
   public static void validate(String fileName, String content) {
     validateNotBlank(fileName, content);
     validateTemplateBindingExpressions(fileName, content);
@@ -306,6 +600,11 @@ public class LwcCodeValidator {
     validateNavigationMixinImported(fileName, content);
     validateWriteActionHasToastFeedback(fileName, content);
     validateSpinnerResetOnError(fileName, content);
+    validateLdsWriteFunctionsImported(fileName, content);
+    validateUpdateRecordHasIdField(fileName, content);
+    validateCreateRecordHasApiName(fileName, content);
+    validateGetRecordWireHasFieldsOrLayoutTypes(fileName, content);
+    validateNoLayoutsAccessOnGetRecordWire(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1344,13 +1643,21 @@ public class LwcCodeValidator {
   // ─────────────────────────────────────────────────────────────
   // RULE: isLoading SPINNER NEVER RESET ON FAILURE
   // catches: isLoading = true set to show a spinner, but no catch or
-  // .finally() block anywhere in the file ever resets it back to false —
+  // finally block anywhere in the file ever resets it back to false —
   // if the operation fails, the spinner spins forever with no way out.
-  // Checks BOTH catch(...) blocks and .finally(...) blocks (not just
-  // catch) since the project's own recommended pattern is
-  // .then().catch().finally(() => { isLoading = false }) — the reset
-  // legitimately lives in finally, not in catch itself, and this rule
-  // must not flag that correct, endorsed pattern as a violation.
+  // Checks BOTH catch(...) blocks and finally blocks (not just catch)
+  // since the project's own recommended patterns legitimately put the
+  // reset in finally, not in catch itself — EITHER as a promise chain
+  // (.then().catch().finally(() => { isLoading = false })) OR as a plain
+  // try/catch/finally statement (async/await style: finally { isLoading
+  // = false }, no leading dot or parens) — this rule must not flag
+  // either correct, endorsed shape as a violation. Confirmed as a real
+  // false-positive incident 2026-08-26 (accountRatingUpdater): the
+  // finally-detection pattern required a leading '.' and '(', so it only
+  // ever matched the promise-chain form and silently never matched a
+  // bare try/catch/finally statement's finally block at all — code that
+  // correctly reset isLoading in that finally block was rejected because
+  // only the (reset-less) catch block was ever actually inspected.
   //
   // Uses a real balanced-brace scan (extractBalancedBlock) rather than a
   // regex over the block body, since catch/finally bodies routinely
@@ -1372,7 +1679,12 @@ public class LwcCodeValidator {
 
     List<Pattern> errorPathAnchors = new List<Pattern>{
       Pattern.compile('\\bcatch\\s*\\([^)]*\\)\\s*'),
-      Pattern.compile('\\.finally\\s*\\(')
+      // Matches BOTH '.finally(' (promise chain) and a bare 'finally'
+      // keyword (try/catch/finally statement) — '\b' is a word boundary
+      // that exists just as validly right after a '.' as after
+      // whitespace, so this single pattern covers both without needing
+      // the dot/paren requirement that caused the false positive above.
+      Pattern.compile('\\bfinally\\b\\s*')
     };
 
     Boolean foundErrorPath = false;
@@ -1390,9 +1702,7 @@ public class LwcCodeValidator {
           continue;
         }
         foundErrorPath = true;
-        if (
-          Pattern.compile('\\bisLoading\\s*=\\s*false\\b').matcher(block).find()
-        ) {
+        if (blockResetsIsLoading(content, block)) {
           resetSomewhere = true;
         }
       }
@@ -1402,13 +1712,406 @@ public class LwcCodeValidator {
       throw new ApexCodeValidator.ValidationException(
         '[' +
           fileName +
-          '] Sets isLoading = true but no catch or .finally() block ever ' +
+          '] Sets isLoading = true but no catch block or finally block ' +
+          '(promise .finally(...) or a try/catch/finally statement) ever ' +
           'resets it back to false — the spinner will spin forever if the ' +
           'operation fails. Reset isLoading = false inside the catch ' +
-          'block, or in a .finally() that runs regardless of success or ' +
+          'block, or in a finally that runs regardless of success or ' +
           'failure.'
       );
     }
+  }
+
+  // Returns true if `block` (a catch or finally body) resets isLoading —
+  // either directly, or ONE level of indirection deep: the block calls a
+  // this.someMethod() whose OWN body (found elsewhere in the same file)
+  // resets isLoading. Delegating cleanup to a small helper method (e.g.
+  // finally { this.finishLoading(); }) is legitimate, common code
+  // structure — checking only the block's own literal text would
+  // false-positive on it. Confirmed as a real incident 2026-08-26
+  // (accountRatingUpdater): a correctly-reset spinner was rejected
+  // because the reset lived inside a helper method the finally block
+  // called, not inline in the finally block itself.
+  private static Boolean blockResetsIsLoading(
+    String fileContent,
+    String block
+  ) {
+    if (
+      Pattern.compile('\\bisLoading\\s*=\\s*false\\b').matcher(block).find()
+    ) {
+      return true;
+    }
+    Matcher callMatcher = Pattern.compile('\\bthis\\.(\\w+)\\s*\\(')
+      .matcher(block);
+    while (callMatcher.find()) {
+      String methodName = callMatcher.group(1);
+      Matcher declMatcher = Pattern.compile(
+          '\\b' + methodName + '\\s*\\([^)]*\\)\\s*\\{'
+        )
+        .matcher(fileContent);
+      while (declMatcher.find()) {
+        Integer methodBraceStart = fileContent.indexOf(
+          '{',
+          declMatcher.start()
+        );
+        if (methodBraceStart < 0) {
+          continue;
+        }
+        String methodBody = extractBalancedBlock(fileContent, methodBraceStart);
+        if (
+          methodBody != null &&
+          Pattern.compile('\\bisLoading\\s*=\\s*false\\b')
+            .matcher(methodBody)
+            .find()
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: LDS RECORD API FUNCTIONS USED WITHOUT BEING IMPORTED
+  // catches: createRecord/updateRecord/deleteRecord/getFieldValue called
+  // without importing them from 'lightning/uiRecordApi' — none of these
+  // are globals, and unlike @wire/@api/@track (LWC1102), Salesforce does
+  // NOT catch a missing import for these at deploy time. An unimported
+  // LDS function call throws "X is not defined" at RUNTIME instead, so
+  // the button/page appears to work until a user actually triggers it.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateLdsWriteFunctionsImported(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Set<String> ldsFunctions = new Set<String>{
+      'createRecord',
+      'updateRecord',
+      'deleteRecord',
+      'getFieldValue'
+    };
+
+    for (String fn : ldsFunctions) {
+      Boolean usesFunction = Pattern.compile('\\b' + fn + '\\s*\\(')
+        .matcher(content)
+        .find();
+      if (!usesFunction) {
+        continue;
+      }
+
+      Boolean importsFunction = Pattern.compile(
+          'import\\s*\\{[^}]*\\b' +
+            fn +
+            '\\b[^}]*\\}\\s*from\\s*[\'"]lightning/uiRecordApi[\'"]'
+        )
+        .matcher(content)
+        .find();
+
+      if (!importsFunction) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] Calls ' +
+            fn +
+            '(...) without importing it. Add \'' +
+            fn +
+            '\' to the import from \'lightning/uiRecordApi\' (e.g. import ' +
+            '{ ' +
+            fn +
+            ' } from \'lightning/uiRecordApi\';) — it is not a global ' +
+            'function, and this fails at RUNTIME (not deploy time) with "' +
+            fn +
+            ' is not defined".'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: updateRecord({ fields: {...} }) MISSING THE REQUIRED Id FIELD
+  // catches: calling updateRecord with a literal fields object that never
+  // sets Id — LDS's updateRecord requires Id inside fields to know which
+  // record to write to; omitting it throws at RUNTIME ("Id is required"),
+  // not a deploy-time error, so this silently ships broken until a user
+  // actually clicks the button that triggers it.
+  //
+  // Literal-only, same precision tradeoff as this validator's other
+  // literal-only checks (e.g. lightning-badge variant): only checked when
+  // updateRecord is called with an inline object literal AND that literal
+  // has a literal fields: { ... } sub-object — a variable passed in
+  // (updateRecord(recordInput), a fields object assembled elsewhere and
+  // referenced by name) can't be statically resolved here and is
+  // intentionally left unchecked.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateUpdateRecordHasIdField(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Pattern callPat = Pattern.compile('\\bupdateRecord\\s*\\(');
+    Matcher m = callPat.matcher(content);
+    while (m.find()) {
+      Integer parenStart = m.end() - 1;
+      String argsBlock = extractBalancedRegion(content, parenStart, '(', ')');
+      if (argsBlock == null) {
+        continue;
+      }
+      String args = argsBlock.substring(1, argsBlock.length() - 1).trim();
+      if (!args.startsWith('{')) {
+        continue; // not an inline object literal — can't verify statically
+      }
+
+      Matcher fieldsMatcher = Pattern.compile('fields\\s*:\\s*\\{')
+        .matcher(args);
+      if (!fieldsMatcher.find()) {
+        continue; // no literal fields: {...} sub-object — can't verify
+      }
+
+      String fieldsBlock = extractBalancedRegion(
+        args,
+        fieldsMatcher.end() - 1,
+        '{',
+        '}'
+      );
+      if (fieldsBlock == null) {
+        continue;
+      }
+
+      Boolean hasId = Pattern.compile('\\bId\\b\\s*(:|,|\\})')
+        .matcher(fieldsBlock)
+        .find();
+      if (!hasId) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] updateRecord(...) is called with a fields object that ' +
+            'never sets Id. LDS requires Id inside fields to know which ' +
+            'record to update — omitting it throws at runtime, not ' +
+            'deploy time. Add Id: this.recordId (or the relevant record ' +
+            'Id) as a key in the fields object.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: createRecord({ fields: {...} }) MISSING THE REQUIRED apiName
+  // catches: calling createRecord with a literal record-input object that
+  // has a fields sub-object but never sets apiName at the top level —
+  // LDS's createRecord requires apiName to know which object to insert
+  // into; omitting it throws at RUNTIME, not deploy time ("Cannot
+  // destructure property 'apiName'" is the typical error shape).
+  //
+  // Literal-only, same precision tradeoff as validateUpdateRecordHasIdField
+  // above — a variable passed to createRecord (e.g. one built via
+  // generateRecordInputForCreate) is intentionally left unchecked.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateCreateRecordHasApiName(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Pattern callPat = Pattern.compile('\\bcreateRecord\\s*\\(');
+    Matcher m = callPat.matcher(content);
+    while (m.find()) {
+      Integer parenStart = m.end() - 1;
+      String argsBlock = extractBalancedRegion(content, parenStart, '(', ')');
+      if (argsBlock == null) {
+        continue;
+      }
+      String args = argsBlock.substring(1, argsBlock.length() - 1).trim();
+      if (!args.startsWith('{')) {
+        continue; // not an inline object literal — can't verify statically
+      }
+
+      // Only checked when the literal also has a fields: {...} sub-object
+      // — the clearest signal this is a real inline record-input literal,
+      // rather than some other unrelated call this regex happened to
+      // match.
+      if (!Pattern.compile('fields\\s*:\\s*\\{').matcher(args).find()) {
+        continue;
+      }
+
+      Boolean hasApiName = Pattern.compile('\\bapiName\\s*:')
+        .matcher(args)
+        .find();
+      if (!hasApiName) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] createRecord(...) is called with a record-input literal ' +
+            'that never sets apiName. LDS requires apiName (the object\'s ' +
+            'API name) at the top level of the object passed to ' +
+            'createRecord — omitting it throws at runtime, not deploy ' +
+            'time. Add apiName: \'ObjectApiName\' alongside fields.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: @wire(getRecord, {...}) MISSING fields/optionalFields/layoutTypes
+  // catches: wiring getRecord with a config object that supplies recordId
+  // but none of fields, optionalFields, or layoutTypes — LDS requires at
+  // least one of these to know what to fetch; omitting all three throws
+  // at RUNTIME ("either fields or layout type must be specified"), not a
+  // deploy-time error, so this silently ships broken.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateGetRecordWireHasFieldsOrLayoutTypes(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Pattern wirePat = Pattern.compile('@wire\\s*\\(\\s*getRecord\\s*,');
+    Matcher m = wirePat.matcher(content);
+    while (m.find()) {
+      Integer wireParenStart = content.indexOf('(', m.start());
+      String wireBlock = extractBalancedRegion(
+        content,
+        wireParenStart,
+        '(',
+        ')'
+      );
+      if (wireBlock == null) {
+        continue;
+      }
+
+      Boolean suppliesShape =
+        Pattern.compile('\\bfields\\s*:').matcher(wireBlock).find() ||
+        Pattern.compile('\\boptionalFields\\s*:').matcher(wireBlock).find() ||
+        Pattern.compile('\\blayoutTypes\\s*:').matcher(wireBlock).find();
+
+      if (!suppliesShape) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] @wire(getRecord, {...}) never supplies fields, ' +
+            'optionalFields, or layoutTypes. LDS requires at least one of ' +
+            'these to know what to fetch — omitting all three throws at ' +
+            'runtime ("either fields or layout type must be specified"), ' +
+            'not deploy time. Add a fields: [...] array (imported field ' +
+            'references from \'@salesforce/schema/...\') to the wire ' +
+            'config.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: .layouts ACCESSED ON A getRecord (NOT getRecordUi) WIRE RESULT
+  // catches: reading record.layouts.Full.sections (or similar) off a
+  // getRecord wire result — getRecord's response is always a plain
+  // RecordRepresentation ({ apiName, fields, id, ... }); it NEVER has a
+  // layouts property, even when layoutTypes is set. layoutTypes on
+  // getRecord only changes which fields are populated inside
+  // record.fields — it does not attach layout/section metadata. That
+  // { records, layouts, objectInfos } shape belongs exclusively to a
+  // DIFFERENT wire adapter, getRecordUi. Confirmed as a real incident
+  // 2026-08-25: caseFullLayoutPanel wired getRecord with
+  // layoutTypes: ['Full'] and read record.layouts.Full.sections — always
+  // undefined, so the component deployed clean and placed on the page,
+  // but rendered a permanently empty card with no data, no spinner, and
+  // no error, since the wire itself never fails.
+  //
+  // Gated on the file using @wire(getRecord, — not merely importing it —
+  // AND never using getRecordUi anywhere in the same file. If both
+  // adapters appear together, this is left unchecked (can't confidently
+  // attribute which wire's result a given .layouts access belongs to) —
+  // same conservative-on-ambiguity approach as this validator's other
+  // literal/heuristic-scoped checks.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateNoLayoutsAccessOnGetRecordWire(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+
+    Boolean usesGetRecordWire = Pattern.compile(
+        '@wire\\s*\\(\\s*getRecord\\s*,'
+      )
+      .matcher(content)
+      .find();
+    if (!usesGetRecordWire) {
+      return;
+    }
+
+    Boolean usesGetRecordUi = Pattern.compile('\\bgetRecordUi\\b')
+      .matcher(content)
+      .find();
+    if (usesGetRecordUi) {
+      return;
+    }
+
+    Boolean accessesLayouts = Pattern.compile('\\.layouts\\b')
+      .matcher(content)
+      .find();
+    if (accessesLayouts) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Accesses ".layouts" on a getRecord wire result. getRecord ' +
+          'NEVER returns a layouts property — even with layoutTypes set, ' +
+          'layoutTypes only filters which fields populate record.fields. ' +
+          'This silently renders empty (no error, no deploy-time signal) ' +
+          'since the property is always undefined. To read actual layout ' +
+          'metadata (sections/rows/fields), use getRecordUi instead — it ' +
+          'genuinely returns { records, layouts, objectInfos }. Or, for ' +
+          'simply DISPLAYING a record\'s full/compact layout, skip custom ' +
+          'wire code entirely and use <lightning-record-form record-id=' +
+          '{recordId} object-api-name="X" layout-type="Full"> instead.'
+      );
+    }
+  }
+
+  // Scans forward from an opening bracket character at openIndex and
+  // returns the substring up to (and including) its matching closing
+  // bracket, counting nesting depth. Generic over the bracket pair so it
+  // works for both '(' + ')' and '{' + '}' call/object-literal scanning.
+  // Returns null if no matching close is found (malformed or truncated
+  // source) — callers must treat null as "could not verify, skip this
+  // occurrence" rather than a violation.
+  private static String extractBalancedRegion(
+    String content,
+    Integer openIndex,
+    String openChar,
+    String closeChar
+  ) {
+    if (
+      openIndex == null ||
+      openIndex < 0 ||
+      openIndex >= content.length() ||
+      content.substring(openIndex, openIndex + 1) != openChar
+    ) {
+      return null;
+    }
+    Integer depth = 0;
+    for (Integer i = openIndex; i < content.length(); i++) {
+      String ch = content.substring(i, i + 1);
+      if (ch == openChar) {
+        depth++;
+      } else if (ch == closeChar) {
+        depth--;
+        if (depth == 0) {
+          return content.substring(openIndex, i + 1);
+        }
+      }
+    }
+    return null;
   }
 
   // Scans forward from an opening '{' at contentIndex and returns the

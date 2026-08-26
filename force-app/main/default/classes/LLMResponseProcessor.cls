@@ -1344,6 +1344,22 @@ public class LLMResponseProcessor {
     // reproducible incident 2026-08-25 (caseEscalationWorkflow).
     LwcCodeValidator.validateLwcBundleMemberNamesMatchFolder(files);
 
+    // ── LDS write + redundant Apex DML detector — cross-file check, same
+    // reasoning as above. WARN-ONLY (System.debug, does not throw) per
+    // the Area 3 (Lightning Data Service) risk decision — flags rather
+    // than blocks until false-positive rate is verified against real
+    // ticket generations.
+    LwcCodeValidator.validateNoRedundantLdsAndApexDml(files);
+
+    // ── Template binding existence detector — cross-file check, same
+    // reasoning as above. Catches a bundle's HTML binding to a property
+    // its OWN paired JS never declares (e.g. <template if:true={record}>
+    // with no `record` field/getter anywhere) BEFORE deploy, instead of
+    // letting it ship as a silently-empty component with zero error
+    // signal at any point. Confirmed as a real incident 2026-08-25
+    // (opportunityStageInlineEdit).
+    LwcCodeValidator.validateTemplateBindingsDeclaredInJs(files);
+
     // ── Scenario B violation detector ─────────────────────────
     LLMLayoutHelper.detectScenarioBViolation(
       nonCustomSettingLayoutFiles,

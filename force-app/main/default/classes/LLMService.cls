@@ -214,6 +214,41 @@ if(!review.approved){
 
     // ── ZIP DEPLOY (async) ─────────────────────────────────────────
     // Flush DML first — enqueue follows immediately, no callout after
+
+    // Guard: never deploy a PARTIAL file set. ZipBuilder can end up with
+    // some files staged (e.g. an LWC bundle's .html, added before a later
+    // file in the SAME response hit a fatal validation error) even when
+    // STAGE 2 ultimately reports failure — every 'Error: ...' return path
+    // in LLMResponseProcessor sets FunctionHelper.hadError = true, but
+    // nothing here previously checked that flag before the
+    // ZipBuilder.hasFiles() gate below, so an incomplete metadata set
+    // could still get deployed and fail at the Metadata API with an
+    // opaque error instead of the real one. Confirmed as a real incident
+    // 2026-08-25 (opportunityStageInlineEdit, MS-138): its .js file
+    // failed validateSpinnerResetOnError on every repair attempt, STAGE 2
+    // exhausted retries and returned an Error result, but the bundle's
+    // .html file — already added to ZipBuilder before .js was even
+    // reached in that response's per-file loop — still got deployed
+    // alone, with no accompanying .js/.js-meta.xml, producing "Cannot
+    // find Lightning Component Bundle opportunityStageInlineEdit" at
+    // deploy time instead of surfacing the REAL, actionable validation
+    // error that actually caused generation to fail.
+    //
+    // Clearing ZipBuilder here drops back to the SYNC RESULT path below,
+    // which already reports 'error' status correctly via
+    // FunctionHelper.hadError and never attempts a deploy — no new
+    // status-posting logic needed, this just stops the wrong branch from
+    // being taken.
+    if (FunctionHelper.hadError && ZipBuilder.hasFiles()) {
+      System.debug(
+        '[DEPLOY-TRACE] STAGE 2 reported a failure but ZipBuilder has ' +
+          'partially-staged file(s) — clearing them to avoid deploying ' +
+          'an incomplete metadata set. result=' +
+          result
+      );
+      ZipBuilder.clear();
+    }
+
     if (ZipBuilder.hasFiles()) {
       flushDmlQueues();
       FunctionHelper.deferErrorLogDml = false;

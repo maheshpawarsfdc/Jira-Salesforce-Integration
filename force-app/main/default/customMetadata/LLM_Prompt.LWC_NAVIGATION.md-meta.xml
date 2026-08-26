@@ -120,7 +120,7 @@ with no feedback looks identical to a write that silently failed:
   .catch((error) => {
       this.dispatchEvent(new ShowToastEvent({
           title: 'Error updating record',
-          message: error.body?.message || 'An unexpected error occurred.',
+          message: getErrorMessage(error),
           variant: 'error'
       }));
   });
@@ -131,9 +131,60 @@ RULES:
   ambiguous).
 - Always import from 'lightning/platformShowToastEvent' — never any other
   path.
-- error.body?.message is the standard shape for both an AuraHandledException
-  message and a raw LDS error — always fall back to a generic message
-  ('An unexpected error occurred.') when it is undefined.
+
+-- ERROR MESSAGE EXTRACTION — GLOBAL RULE, NOT SCOPED TO ANY ONE TICKET --
+error.body?.message is NOT reliably the real reason a write failed. The
+platform's UI API frequently collapses a specific, meaningful failure (a
+validation rule, a required field, or a delete blocked by related records —
+e.g. "could not be completed because it is associated with the following
+cases: ...") down to a generic top-level message such as "An error
+occurred while trying to update the record. Please try again." — while the
+actual, useful reason is nested one level deeper, in
+error.body.output.errors[] or error.body.output.fieldErrors.
+
+Because the specific failure reason is entirely data/config-dependent (a
+permission, a duplicate rule, a related-record restriction, a required
+field — never knowable from the ticket text ahead of time), EVERY
+component with a .catch() on a write MUST route the caught error through
+this extraction helper instead of reading error.body?.message directly.
+Define it once per component, as a plain module-level function (not a
+class method) above the class declaration:
+
+  function getErrorMessage(error) {
+      if (Array.isArray(error?.body?.output?.errors) && error.body.output.errors.length > 0) {
+          return error.body.output.errors.map((e) => e.message).join(' ');
+      }
+      if (error?.body?.output?.fieldErrors) {
+          const fieldErrors = Object.values(error.body.output.fieldErrors).flat();
+          if (fieldErrors.length > 0) {
+              return fieldErrors.map((e) => e.message).join(' ');
+          }
+      }
+      if (Array.isArray(error?.body) && error.body.length > 0) {
+          return error.body.map((e) => e.message).join(' ');
+      }
+      if (typeof error?.body?.message === 'string' && error.body.message) {
+          return error.body.message;
+      }
+      if (typeof error?.message === 'string' && error.message) {
+          return error.message;
+      }
+      return 'An unexpected error occurred. Please try again.';
+  }
+
+RULES:
+- Check output.errors (DML/save errors — this is where a delete-blocked-by-
+  related-records reason actually lives) and output.fieldErrors (field-
+  level validation errors) BEFORE ever falling back to the generic
+  body.message.
+- Every component that catches an LDS or imperative-Apex write error routes
+  the caught error through getErrorMessage(error) — never
+  error.body?.message directly, and never a hardcoded string per ticket.
+- Only the final line is a generic fallback, used solely when the error
+  truly carries no structured detail at all (e.g. a network failure).
+- This is a standing rule, not tied to any specific object or operation —
+  apply it to every write, present or future, regardless of what the
+  failure scenario turns out to be for that particular ticket.
 
 -- LOADING INDICATOR: lightning-spinner + isLoading --
 Gate a spinner on a single reactive isLoading boolean, and ALWAYS reset it

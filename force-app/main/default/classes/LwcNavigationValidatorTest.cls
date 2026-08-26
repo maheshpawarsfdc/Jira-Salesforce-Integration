@@ -205,6 +205,89 @@ private class LwcNavigationValidatorTest {
   }
 
   @IsTest
+  static void spinnerResetInTryCatchFinallyStatementDoesNotThrow() {
+    // Regression test for a real false-positive incident (2026-08-26,
+    // accountRatingUpdater): the finally-detection pattern used to require
+    // a leading '.' and '(', so it only ever matched the promise-chain
+    // .finally(() => {...}) form and silently never matched a bare
+    // try/catch/finally STATEMENT's finally block — correct async/await
+    // code that reset isLoading there was wrongly rejected.
+    String js =
+      'import { LightningElement, track } from \'lwc\';\n' +
+      'import { ShowToastEvent } from \'lightning/platformShowToastEvent\';\n' +
+      'import updateInvoiceStatus from \'@salesforce/apex/InvoiceController.updateInvoiceStatus\';\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '  @track isLoading = false;\n' +
+      '  async handleClick() {\n' +
+      '    this.isLoading = true;\n' +
+      '    try {\n' +
+      '      await updateInvoiceStatus({ id: this.recordId });\n' +
+      '      this.dispatchEvent(new ShowToastEvent({ title: \'Success\', variant: \'success\' }));\n' +
+      '    } catch (error) {\n' +
+      '      this.dispatchEvent(new ShowToastEvent({ title: \'Error\', variant: \'error\' }));\n' +
+      '    } finally {\n' +
+      '      this.isLoading = false;\n' +
+      '    }\n' +
+      '  }\n' +
+      '}';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.js', js);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'isLoading reset inside a try/catch/finally statement\'s finally ' +
+          'block must not throw: ' +
+          e.getMessage()
+      );
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void spinnerResetViaDelegatedHelperMethodDoesNotThrow() {
+    // Regression test for a real false-positive incident (2026-08-26,
+    // accountRatingUpdater): the reset lived inside a helper method the
+    // finally block called (finally { this.finishLoading(); }), not
+    // inline in the finally block's own literal text — legitimate,
+    // common code structure that must not be flagged.
+    String js =
+      'import { LightningElement, track } from \'lwc\';\n' +
+      'import { ShowToastEvent } from \'lightning/platformShowToastEvent\';\n' +
+      'import updateInvoiceStatus from \'@salesforce/apex/InvoiceController.updateInvoiceStatus\';\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '  @track isLoading = false;\n' +
+      '  async handleClick() {\n' +
+      '    this.isLoading = true;\n' +
+      '    try {\n' +
+      '      await updateInvoiceStatus({ id: this.recordId });\n' +
+      '      this.dispatchEvent(new ShowToastEvent({ title: \'Success\', variant: \'success\' }));\n' +
+      '    } catch (error) {\n' +
+      '      this.dispatchEvent(new ShowToastEvent({ title: \'Error\', variant: \'error\' }));\n' +
+      '    } finally {\n' +
+      '      this.finishLoading();\n' +
+      '    }\n' +
+      '  }\n' +
+      '  finishLoading() {\n' +
+      '    this.isLoading = false;\n' +
+      '  }\n' +
+      '}';
+
+    Test.startTest();
+    try {
+      LwcCodeValidator.validate('foo.js', js);
+    } catch (ApexCodeValidator.ValidationException e) {
+      System.assert(
+        false,
+        'isLoading reset via a delegated helper method must not throw: ' +
+        e.getMessage()
+      );
+    }
+    Test.stopTest();
+  }
+
+  @IsTest
   static void spinnerNeverResetOnErrorThrows() {
     String js =
       'import { LightningElement, track } from \'lwc\';\n' +

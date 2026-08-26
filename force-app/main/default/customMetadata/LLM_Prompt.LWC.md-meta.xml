@@ -49,7 +49,56 @@ Target selection rules:
 - "Record page" or "on the account/contact/case record": lightning__RecordPage only
 - "App page" or "home page" or "utility bar": use the matching target
 - "Flow screen": lightning__FlowScreen only
-- NEVER include <targetConfigs> — keep meta simple
+- NEVER include <targetConfigs> UNLESS the component has an @api property
+  that must be configurable by an admin placing it directly on a page via
+  Lightning App Builder (design time) — see the required exception below.
+  For every other component, keep meta simple and omit it.
+
+-- EXCEPTION: <targetConfigs> FOR AN ADMIN-CONFIGURABLE @api PROPERTY --
+A component placed directly on a page (not embedded as a child of another
+LWC that passes it props programmatically) has exactly ONE way for an
+admin to set a non-recordId @api property's value: a design-time property
+declared in <targetConfigs>, which then appears as an input in the App
+Builder properties panel when the component is selected. Skipping
+<targetConfigs> for a ticket that requires this (e.g. "accepts a
+configurable list of field API names as a public property") leaves that
+@api property permanently stuck at its default — there is no other path
+for a value to ever reach it, and any wire/logic gated on it will never
+receive real data.
+
+Design-time properties in <targetConfigs> can ONLY be scalar — String,
+Boolean, or Integer — never an array or object. Represent a list-shaped
+@api property as a comma-separated String design property instead, and
+have the component's @api accessor split it into an array internally:
+
+  <targetConfigs>
+      <targetConfig targets="lightning__RecordPage">
+          <property name="fieldApiNames" type="String"
+              label="Field API Names (comma-separated, object-qualified — e.g. Account.Name,Account.Industry)"
+              default="Account.Name,Account.Industry" />
+      </targetConfig>
+  </targetConfigs>
+
+  // In the .js — accept the CSV string and expose it as an array to the
+  // rest of the component via a getter/setter pair, not a plain field:
+  _fieldApiNames = [];
+
+  @api
+  get fieldApiNames() {
+      return this._fieldApiNames;
+  }
+  set fieldApiNames(value) {
+      this._fieldApiNames = typeof value === 'string'
+          ? value.split(',').map((f) => f.trim()).filter((f) => f)
+          : (Array.isArray(value) ? value : []);
+  }
+
+This accepts BOTH shapes — a CSV string from App Builder's design property,
+and a plain array if the same component is ever also used programmatically
+as a child of another LWC — so it is not locked to one placement style.
+Always give the design property a non-empty `default` so the component
+renders something meaningful immediately after being dropped on a page,
+before an admin has customized it.
 
 == DEPLOYMENT PLAN ==
 LWC-only deploys always use scenario = "single".
@@ -171,7 +220,7 @@ export default class InvoiceList extends LightningElement {
     }
 
     get error() {
-        return this.wiredInvoices.error?.body?.message;
+        return this.wiredInvoices.error ? getErrorMessage(this.wiredInvoices.error) : undefined;
     }
 
     get hasInvoices() {
@@ -255,7 +304,7 @@ export default class InvoiceList extends LightningElement {
                 this.isLoading = false;
             })
             .catch(err => {
-                this.error = err.body?.message || 'An unexpected error occurred.';
+                this.error = getErrorMessage(err);
                 this.isLoading = false;
             });
     }
@@ -279,7 +328,12 @@ TIER 2B RULES:
 - ALWAYS reset error to undefined at the start of loadData()
 - ALWAYS call loadData() from connectedCallback() for initial load
 - Import path: @salesforce/apex/ClassName.methodName
-- Use err.body?.message for error display — never err.message directly
+- Route every caught error through getErrorMessage(err) for display — see
+  the getErrorMessage helper and its rules under LWC_NAVIGATION's
+  "ERROR MESSAGE EXTRACTION" section. Never read err.body?.message or
+  err.message directly; the real failure reason (a validation rule, a
+  delete blocked by related records, etc.) is frequently nested deeper
+  than the top-level message.
 - When a ticket asks for a Refresh/Reload button ON AN IMPERATIVE (Tier 2B) component:
   ALWAYS clear the data property and error to undefined BEFORE calling loadData() — this
   gives visible feedback to the user. Without clearing, the list stays visible during
@@ -349,7 +403,7 @@ export default class InvoiceStatusUpdater extends LightningElement {
             .catch((err) => {
                 this.dispatchEvent(new ShowToastEvent({
                     title: 'Error updating invoice',
-                    message: err.body?.message || 'An unexpected error occurred.',
+                    message: getErrorMessage(err),
                     variant: 'error'
                 }));
             })
