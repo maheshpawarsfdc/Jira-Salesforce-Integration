@@ -62,6 +62,23 @@ public class LwcCodeValidator {
     'yield'
   };
 
+  // Identifiers that CAN appear as the root of a {...} template binding
+  // (they're valid JS syntax, so the "is this a bare identifier" regex in
+  // validateTemplateBindingsDeclaredInJs matches them) but can NEVER
+  // legitimately be a property/getter name the JS "declares" — they are
+  // JS literals/keywords, not property names. Used to give these a
+  // distinct, actually-fixable error instead of the generic "add a
+  // matching field named exactly this" message, which is nonsensical
+  // advice for a reserved word.
+  private static final Set<String> JS_LITERAL_BINDING_ROOTS = new Set<String>{
+    'true',
+    'false',
+    'null',
+    'undefined',
+    'NaN',
+    'this'
+  };
+
   // ─────────────────────────────────────────────────────────────
   // CROSS-FILE RULE: IMPERATIVE CALL TO A cacheable=true APEX METHOD
   // catches a real Salesforce platform gotcha, not a syntax error: a
@@ -540,6 +557,7 @@ public class LwcCodeValidator {
       }
 
       Set<String> missing = new Set<String>();
+      Set<String> literalBindings = new Set<String>();
       Matcher bindingMatcher = bindingPat.matcher(htmlContent);
       while (bindingMatcher.find()) {
         String expr = bindingMatcher.group(1).trim();
@@ -551,9 +569,49 @@ public class LwcCodeValidator {
           continue; // not a bare identifier/dot-path — skip, not this rule's concern
         }
         String root = expr.split('\\.')[0];
+        // A JS literal/reserved keyword used AS the binding root (e.g.
+        // {false}, {true}, {null}) is a COMPLETELY DIFFERENT failure than a
+        // genuinely undeclared property — there is no field/getter that
+        // could ever be "added" named exactly false/true/null (they are
+        // reserved words), so lumping this into `missing` sends the repair
+        // loop an unfixable instruction ("add a property named exactly
+        // false") and burns every repair attempt without ever succeeding.
+        // Confirmed as a real incident 2026-08-26 (opportunityPipelineManager):
+        // generation failed after 2 repair attempts on exactly this
+        // message shape. Handled separately below with actionable guidance.
+        if (JS_LITERAL_BINDING_ROOTS.contains(root)) {
+          literalBindings.add(root);
+          continue;
+        }
         if (!localTemplateVars.contains(root) && !declaredInJs.contains(root)) {
           missing.add(root);
         }
+      }
+
+      if (!literalBindings.isEmpty()) {
+        List<String> sortedLiterals = new List<String>(literalBindings);
+        sortedLiterals.sort();
+        throw new ApexCodeValidator.ValidationException(
+          '[lwc/' +
+            bundleFolder +
+            '] Template uses a JS literal AS a binding — {' +
+            String.join(sortedLiterals, '}, {') +
+            '}. A {...} template binding can ONLY reference a property, ' +
+            'getter, or method on the JS class — it can never be a literal ' +
+            'value like true/false/null/undefined directly (e.g. ' +
+            '<template lwc:if={false}> is invalid LWC; there is no way to ' +
+            '"declare" a property literally named ' +
+            (sortedLiterals.size() == 1
+              ? '"' + sortedLiterals[0] + '"'
+              : 'one of these') +
+            ' since it is a reserved JavaScript keyword, not a property ' +
+            'name). Fix with ONE of: (1) if the element/branch is meant to ' +
+            'be permanently shown or hidden, DELETE the conditional ' +
+            'directive entirely instead of gating it on a hardcoded ' +
+            'literal; or (2) if it is meant to reflect real component ' +
+            'state, replace the literal with a real boolean property or ' +
+            'getter on the JS class and bind to THAT instead.'
+        );
       }
 
       if (!missing.isEmpty()) {
@@ -576,6 +634,158 @@ public class LwcCodeValidator {
             ' to the JS class — or fix the HTML if it was meant to bind ' +
             'to a differently-named property that already exists.'
         );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // CROSS-FILE RULE: type:'action' DATATABLE COLUMN WITHOUT AN onrowaction
+  // HANDLER
+  // catches: a bundle's JS defining a lightning-datatable column with
+  // type: 'action' (a per-row action menu), while the SAME bundle's HTML
+  // never wires an onrowaction handler onto its <lightning-datatable>
+  // element. The platform does not error on this — the action dropdown
+  // renders and opens normally, but selecting any item in it does nothing
+  // at all (no event has anywhere to go), which reads as a silently
+  // broken menu with zero error signal at deploy or runtime.
+  //
+  // Cross-file by nature (columns are typically a JS array literal, the
+  // onrowaction wiring lives in the HTML), same reasoning as
+  // validateTemplateBindingsDeclaredInJs above — cannot run through the
+  // per-file validate() entry point below. Called from
+  // LLMResponseProcessor.processXmlGenerationResponse() alongside that
+  // method's other cross-file checks. Only runs for a bundle whose BOTH
+  // .html AND .js are present in the same response, same precision
+  // tradeoff as the other bundle-pairing cross-file rules in this class.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateDatatableRowActionsHaveHandler(
+    List<Object> files
+  ) {
+    Map<String, String> htmlByBundle = new Map<String, String>();
+    Map<String, String> jsByBundle = new Map<String, String>();
+    populateBundleMaps(files, htmlByBundle, jsByBundle);
+
+    Pattern actionColumnPat = Pattern.compile('type\\s*:\\s*[\'"]action[\'"]');
+    Pattern onRowActionPat = Pattern.compile(
+      '(?is)<lightning-datatable\\b[^>]*\\bonrowaction\\s*='
+    );
+
+    for (String bundleFolder : jsByBundle.keySet()) {
+      if (!htmlByBundle.containsKey(bundleFolder)) {
+        continue; // .html not in this response — can't verify, skip
+      }
+      String jsContent = jsByBundle.get(bundleFolder);
+      String htmlContent = htmlByBundle.get(bundleFolder);
+
+      if (!actionColumnPat.matcher(jsContent).find()) {
+        continue;
+      }
+      if (!onRowActionPat.matcher(htmlContent).find()) {
+        throw new ApexCodeValidator.ValidationException(
+          '[lwc/' +
+            bundleFolder +
+            '] Defines a datatable column with type: \'action\' but its ' +
+            '<lightning-datatable> element has no onrowaction handler. The ' +
+            'action dropdown will render and open normally, but selecting ' +
+            'any item in it does nothing — there is no handler for the ' +
+            'event it dispatches. Add onrowaction={handleRowAction} to the ' +
+            '<lightning-datatable> tag and dispatch on ' +
+            'event.detail.action.name inside it.'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // CROSS-FILE RULE: editable:true DATATABLE COLUMN WITHOUT AN onsave
+  // HANDLER
+  // catches: a bundle's JS defining at least one column with
+  // editable: true, while the SAME bundle's HTML never wires an onsave
+  // handler onto its <lightning-datatable> element. A user can still
+  // click into an editable cell and type a change, and the Save/Cancel
+  // action bar still appears — but clicking Save has nowhere to go, since
+  // onsave is the only event the datatable dispatches with the edited
+  // draftValues. Same silent-failure shape as the row-actions rule above.
+  //
+  // Cross-file by nature and precision tradeoff, same as
+  // validateDatatableRowActionsHaveHandler above.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateDatatableEditableColumnsHaveSaveHandler(
+    List<Object> files
+  ) {
+    Map<String, String> htmlByBundle = new Map<String, String>();
+    Map<String, String> jsByBundle = new Map<String, String>();
+    populateBundleMaps(files, htmlByBundle, jsByBundle);
+
+    Pattern editableColumnPat = Pattern.compile('editable\\s*:\\s*true\\b');
+    Pattern onSavePat = Pattern.compile(
+      '(?is)<lightning-datatable\\b[^>]*\\bonsave\\s*='
+    );
+
+    for (String bundleFolder : jsByBundle.keySet()) {
+      if (!htmlByBundle.containsKey(bundleFolder)) {
+        continue; // .html not in this response — can't verify, skip
+      }
+      String jsContent = jsByBundle.get(bundleFolder);
+      String htmlContent = htmlByBundle.get(bundleFolder);
+
+      if (!editableColumnPat.matcher(jsContent).find()) {
+        continue;
+      }
+      if (!onSavePat.matcher(htmlContent).find()) {
+        throw new ApexCodeValidator.ValidationException(
+          '[lwc/' +
+            bundleFolder +
+            '] Defines a datatable column with editable: true but its ' +
+            '<lightning-datatable> element has no onsave handler. A user ' +
+            'can edit a cell and see the Save/Cancel bar appear, but ' +
+            'clicking Save does nothing — onsave is the only event ' +
+            'carrying the edited draftValues out of the component. Add ' +
+            'onsave={handleSave} to the <lightning-datatable> tag and ' +
+            'process event.detail.draftValues inside it (see LWC_DATATABLE\'s ' +
+            'inline-edit guidance, including resetting draftValues back to ' +
+            '[] once the save completes).'
+        );
+      }
+    }
+  }
+
+  // Shared helper for this class's bundle-pairing cross-file rules
+  // (validateTemplateBindingsDeclaredInJs's own inline version predates
+  // this helper and is left as-is rather than refactored to share it —
+  // this helper exists so the two newer datatable rules above don't each
+  // duplicate the same bundle-folder-grouping loop a third/fourth time).
+  // Populates htmlByBundle/jsByBundle in place from files[], keyed by LWC
+  // bundle folder name (the "lwc/<folder>/..." path segment).
+  private static void populateBundleMaps(
+    List<Object> files,
+    Map<String, String> htmlByBundle,
+    Map<String, String> jsByBundle
+  ) {
+    if (files == null || files.isEmpty()) {
+      return;
+    }
+    for (Object rawFile : files) {
+      Map<String, Object> file = (Map<String, Object>) rawFile;
+      String filePath = (String) file.get('filePath');
+      String xmlContent = (String) file.get('xmlContent');
+      if (
+        String.isBlank(filePath) ||
+        !filePath.toLowerCase().startsWith('lwc/') ||
+        String.isBlank(xmlContent)
+      ) {
+        continue;
+      }
+      List<String> segments = filePath.split('/');
+      if (segments.size() < 3) {
+        continue;
+      }
+      String bundleFolder = segments[1];
+      String lowerPath = filePath.toLowerCase();
+      if (lowerPath.endsWith('.html')) {
+        htmlByBundle.put(bundleFolder, xmlContent);
+      } else if (lowerPath.endsWith('.js') && !lowerPath.endsWith('.test.js')) {
+        jsByBundle.put(bundleFolder, xmlContent);
       }
     }
   }
@@ -605,6 +815,8 @@ public class LwcCodeValidator {
     validateCreateRecordHasApiName(fileName, content);
     validateGetRecordWireHasFieldsOrLayoutTypes(fileName, content);
     validateNoLayoutsAccessOnGetRecordWire(fileName, content);
+    validateDatatableHasKeyField(fileName, content);
+    validateDatatableDraftValuesReset(fileName, content);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -2074,6 +2286,106 @@ public class LwcCodeValidator {
           'simply DISPLAYING a record\'s full/compact layout, skip custom ' +
           'wire code entirely and use <lightning-record-form record-id=' +
           '{recordId} object-api-name="X" layout-type="Full"> instead.'
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: <lightning-datatable> MISSING key-field
+  // catches: <lightning-datatable data={records} columns={columns}> with
+  // no key-field attribute at all. key-field defaults to "id" (lowercase)
+  // when omitted — but a Salesforce record's real unique identifier field
+  // is "Id" (capital I), as returned by Apex/SOQL/getRecord alike, so the
+  // default value never matches real data. The component still renders
+  // rows (rendering doesn't depend on key-field), so this ships with no
+  // deploy-time signal and only surfaces later as flaky row
+  // selection/inline-edit draft tracking/row-action targeting.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateDatatableHasKeyField(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.html')) {
+      return;
+    }
+
+    Pattern tagPat = Pattern.compile('(?is)<lightning-datatable\\b([^>]*)>');
+    Matcher m = tagPat.matcher(content);
+    while (m.find()) {
+      String attrs = m.group(1);
+      Boolean hasKeyField = Pattern.compile('\\bkey-field\\s*=')
+        .matcher(attrs)
+        .find();
+      if (!hasKeyField) {
+        throw new ApexCodeValidator.ValidationException(
+          '[' +
+            fileName +
+            '] <lightning-datatable> is missing a key-field attribute. ' +
+            'key-field defaults to "id" (lowercase) when omitted, but a ' +
+            'Salesforce record\'s real unique identifier field is "Id" ' +
+            '(capital I) — the default never matches real data, so row ' +
+            'selection, inline-edit draft tracking, and row actions can ' +
+            'all misbehave with no deploy-time error. Add ' +
+            'key-field="Id" (or whichever field genuinely holds each ' +
+            'row\'s unique identifier).'
+        );
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RULE: draftValues NEVER RESET BACK TO AN EMPTY ARRAY
+  // catches: a component that uses draftValues (lightning-datatable
+  // inline edit) but never resets it to [] anywhere in the file. Without
+  // the reset, the datatable stays permanently in its "editing" state
+  // after a save — the edited cells remain visually highlighted and the
+  // Save/Cancel action bar never disappears, even though the underlying
+  // write succeeded. A real, well-documented lightning-datatable footgun,
+  // not a hypothetical one — the reset is easy to forget because the save
+  // itself (e.g. updateRecord) succeeding gives no indication the UI-side
+  // draftValues state also needs clearing.
+  //
+  // Presence-only, same precision tradeoff as validateSpinnerResetOnError
+  // above: only checks that draftValues = [] appears SOMEWHERE in the
+  // file, not that it specifically runs on both the success and failure
+  // path of the same handler — a false negative here (a reset gated only
+  // on success) is accepted as consistent with how the rest of this
+  // validator scopes presence-only checks.
+  // ─────────────────────────────────────────────────────────────
+  private static void validateDatatableDraftValuesReset(
+    String fileName,
+    String content
+  ) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.js')) {
+      return;
+    }
+    if (!Pattern.compile('\\bdraftValues\\b').matcher(content).find()) {
+      return;
+    }
+
+    // "this." is deliberately required — a bare "draftValues = [];" with no
+    // "this." is the class FIELD DECLARATION every draftValues-using
+    // component starts with (draftValues = [];), not a reset performed
+    // after a save. Without requiring "this.", a component that declares
+    // the field but never actually resets it after saving would incorrectly
+    // pass this check on its declaration alone.
+    Boolean resetsDraftValues = Pattern.compile(
+        '\\bthis\\.draftValues\\s*=\\s*\\[\\s*\\]'
+      )
+      .matcher(content)
+      .find();
+    if (!resetsDraftValues) {
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          fileName +
+          '] Uses draftValues (lightning-datatable inline edit) but ' +
+          'never resets it back to an empty array anywhere in the file. ' +
+          'Without resetting draftValues after a save completes, the ' +
+          'datatable stays stuck in its "editing" state — edited cells ' +
+          'stay highlighted and the Save/Cancel bar never goes away, even ' +
+          'though the write succeeded. Add this.draftValues = []; in the ' +
+          'onsave handler after the write completes (ideally in a path ' +
+          'that runs on both success and failure, e.g. a finally block).'
       );
     }
   }

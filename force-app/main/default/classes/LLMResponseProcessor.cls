@@ -1360,6 +1360,20 @@ public class LLMResponseProcessor {
     // (opportunityStageInlineEdit).
     LwcCodeValidator.validateTemplateBindingsDeclaredInJs(files);
 
+    // ── Datatable row-action-without-handler detector — cross-file check,
+    // same reasoning as above. Catches a bundle's JS defining a
+    // type: 'action' datatable column with no onrowaction handler wired
+    // on the paired HTML's <lightning-datatable> element — the action
+    // menu renders and opens normally, but selecting an item does nothing.
+    LwcCodeValidator.validateDatatableRowActionsHaveHandler(files);
+
+    // ── Datatable editable-column-without-save-handler detector —
+    // cross-file check, same reasoning as above. Catches an editable:
+    // true column with no onsave handler wired on the paired HTML's
+    // <lightning-datatable> element — a user can edit a cell and see the
+    // Save bar appear, but clicking Save has nowhere to go.
+    LwcCodeValidator.validateDatatableEditableColumnsHaveSaveHandler(files);
+
     // ── Scenario B violation detector ─────────────────────────
     LLMLayoutHelper.detectScenarioBViolation(
       nonCustomSettingLayoutFiles,
