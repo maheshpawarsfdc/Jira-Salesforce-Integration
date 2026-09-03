@@ -2079,11 +2079,21 @@ public class LLMResponseProcessor {
                 ']: ' +
                 validationError
             );
-            FunctionHelper.hadError = true;
-            return 'Error: Invalid XML generated for ' +
-              filePath +
-              ': ' +
-              validationError;
+            // THROW, don't return — a plain `return 'Error: ...'` here used
+            // to skip the repair-retry loop in runXmlGenerationStage()
+            // entirely (that loop only catches a THROWN
+            // ApexCodeValidator.ValidationException, which is exactly what
+            // Apex/LWC code validation failures already do). A malformed-
+            // XML mistake — e.g. a mismatched <scale>/<precision> closing
+            // tag — is exactly the kind of single, well-described mistake
+            // the LLM can usually fix on one retry, the same as an Apex
+            // syntax error, but was instead failing the whole ticket
+            // outright with zero chance to self-correct. Confirmed as a
+            // real incident 2026-09-03 on a 46-field Opportunity+Bid__c
+            // ticket.
+            throw new ApexCodeValidator.ValidationException(
+              'Invalid XML generated for ' + filePath + ': ' + validationError
+            );
           }
         } else {
           if (isApexCode) {
@@ -2194,14 +2204,29 @@ public class LLMResponseProcessor {
 
         if (
           metadataType == 'Layout' &&
-          LLMXmlSanitizer.isStandardObjectLayout(memberName)
+          LLMXmlSanitizer.isExistingStandardObjectLayout(memberName, orgState)
         ) {
           System.debug(
             '[DEPLOY-TRACE] SKIPPED standard-object Layout file [' +
               filePath +
-              '] — standard layouts must not be deployed.'
+              '] — this layout already exists in the org; regenerating an ' +
+              'existing standard-object layout from scratch is blocked. ' +
+              '(A brand-new, distinctly-named layout for this object is ' +
+              'still allowed through — see isExistingStandardObjectLayout.)'
           );
           continue;
+        }
+
+        if (metadataType == 'Layout') {
+          // Structural safety net — see ensureLayoutSectionStyle() for why
+          // this can't be left to prompt instructions alone.
+          xmlContent = LLMXmlSanitizer.ensureLayoutSectionStyle(xmlContent);
+          if (memberName != null && memberName.contains('-')) {
+            xmlContent = LLMXmlSanitizer.enforceRequiredFieldBehavior(
+              xmlContent,
+              memberName.substringBefore('-')
+            );
+          }
         }
 
         if (metadataType == 'Profile') {

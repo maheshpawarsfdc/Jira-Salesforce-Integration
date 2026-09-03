@@ -2938,6 +2938,236 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // LAYOUT SECTION STYLE GUARD
+  //
+  // <layoutSections> requires a <style> child element — Salesforce rejects
+  // deploy with "Required field is missing: style" if it's absent. The
+  // LAYOUT prompt documents this correctly ("style is always
+  // TwoColumnsTopToBottom"), but the model occasionally omits it anyway —
+  // and nothing downstream checks raw LLM-authored Layout XML for
+  // structural completeness before deploy. Backstop-synthesized layouts
+  // (LLMLayoutHelper, PageLayoutHelper) always set <style> themselves, but
+  // a layout the LLM writes directly goes straight through unchecked.
+  // Confirmed as a real incident 2026-09-03 on Lead-US Direct Lead Layout:
+  // all 9 sections were missing <style>, and re-sending the ticket kept
+  // reproducing the identical gap since the cause was never in the ticket
+  // wording — only a code-level structural check catches this.
+  //
+  // Default: TwoColumnsTopToBottom, matching every other section-builder
+  // in this codebase.
+  // ─────────────────────────────────────────────────────────────
+  public static String ensureLayoutSectionStyle(String xml) {
+    if (String.isBlank(xml) || !xml.contains('<layoutSections>')) {
+      return xml;
+    }
+    Pattern blockPat = Pattern.compile(
+      '(?s)<layoutSections>.*?</layoutSections>'
+    );
+    Matcher bm = blockPat.matcher(xml);
+    List<String> origBlocks = new List<String>();
+    List<String> fixedBlocks = new List<String>();
+    while (bm.find()) {
+      String block = bm.group(0);
+      if (block.contains('<style>')) {
+        continue;
+      }
+      String fixed = block.replace(
+        '</layoutSections>',
+        '<style>TwoColumnsTopToBottom</style></layoutSections>'
+      );
+      origBlocks.add(block);
+      fixedBlocks.add(fixed);
+    }
+    for (Integer i = 0; i < origBlocks.size(); i++) {
+      xml = xml.replace(origBlocks[i], fixedBlocks[i]);
+    }
+    if (!fixedBlocks.isEmpty()) {
+      System.debug(
+        '[DEPLOY-TRACE] ensureLayoutSectionStyle: injected <style> into ' +
+          fixedBlocks.size() +
+          ' layoutSections block(s) missing it'
+      );
+    }
+    return xml;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // REQUIRED FIELD BEHAVIOR GUARD
+  //
+  // Salesforce rejects a Layout deploy with "Field:X must be Required" if
+  // a genuinely-required field (non-nillable, e.g. Lead.Company/Status)
+  // appears on the layout with any behavior other than Required. The
+  // LAYOUT prompt already documents this rule ("Required for fields
+  // marked required"), but the model doesn't reliably apply it for a
+  // STANDARD object's OWN required fields when the ticket just lists them
+  // as ordinary fields to add — nothing downstream corrected it. Confirmed
+  // as a real incident 2026-09-03 on Lead-US Direct Lead Layout, in two
+  // rounds: Company first (behavior=Edit, failed deploy), then Status on
+  // the very next attempt — see collectHardRequiredFields() for what
+  // actually distinguishes a field that needs this from one that doesn't.
+  // ─────────────────────────────────────────────────────────────
+  public static String enforceRequiredFieldBehavior(
+    String xml,
+    String objectApiName
+  ) {
+    if (String.isBlank(xml) || String.isBlank(objectApiName)) {
+      return xml;
+    }
+    Set<String> requiredFields = collectHardRequiredFields(objectApiName);
+    if (requiredFields.isEmpty()) {
+      return xml;
+    }
+
+    Pattern itemPat = Pattern.compile('(?s)<layoutItems>.*?</layoutItems>');
+    Matcher m = itemPat.matcher(xml);
+    List<String> origBlocks = new List<String>();
+    List<String> fixedBlocks = new List<String>();
+    while (m.find()) {
+      String block = m.group(0);
+      Matcher fm = Pattern.compile('<field>([^<]+)</field>').matcher(block);
+      if (!fm.find()) {
+        continue;
+      }
+      String fieldName = fm.group(1).trim();
+      if (
+        !requiredFields.contains(fieldName) ||
+        block.contains('<behavior>Required</behavior>')
+      ) {
+        continue;
+      }
+      String fixed = block.replaceFirst(
+        '<behavior>[^<]*</behavior>',
+        '<behavior>Required</behavior>'
+      );
+      origBlocks.add(block);
+      fixedBlocks.add(fixed);
+    }
+    for (Integer i = 0; i < origBlocks.size(); i++) {
+      xml = xml.replace(origBlocks[i], fixedBlocks[i]);
+    }
+    if (!fixedBlocks.isEmpty()) {
+      System.debug(
+        '[DEPLOY-TRACE] enforceRequiredFieldBehavior: forced Required on ' +
+          fixedBlocks.size() +
+          ' field(s) for [' +
+          objectApiName +
+          ']'
+      );
+    }
+    return xml;
+  }
+
+  // Fields Salesforce will reject a layout for if they're not Required:
+  // non-nillable, user-createable, not an Id.
+  //
+  // First cut of this excluded anything defaultedOnCreate (e.g. Status),
+  // reasoning that a field Salesforce auto-populates doesn't need to be
+  // Required on the layout — WRONG, and disproven by data already in
+  // hand at the time: the org's own live "Lead-Lead Layout", pulled
+  // earlier the same day, already showed Status as behavior=Required,
+  // and the very next deploy attempt confirmed it with "Field:Status must
+  // be Required". defaultedOnCreate is not the right signal.
+  //
+  // What actually separates Company/Name/Status (must be Required) from
+  // OwnerId and every boolean field (never flagged, confirmed across many
+  // deploy attempts) is TYPE: Reference and Boolean fields resolve
+  // themselves (current user, or false) without needing an explicit
+  // layout entry; Picklist/Text/etc. do not. So: non-nillable,
+  // createable, and NOT Id/Reference/Boolean. Maps LastName -> Name for
+  // compound-name objects (Lead, Contact) since the layout item field is
+  // "Name", not "LastName".
+  private static Set<String> collectHardRequiredFields(String objectApiName) {
+    Set<String> result = new Set<String>();
+    try {
+      Schema.SObjectType objType = Schema.getGlobalDescribe()
+        .get(objectApiName);
+      if (objType == null) {
+        return result;
+      }
+      Set<Schema.DisplayType> selfResolvingTypes = new Set<Schema.DisplayType>{
+        Schema.DisplayType.ID,
+        Schema.DisplayType.REFERENCE,
+        Schema.DisplayType.BOOLEAN
+      };
+      for (
+        Schema.SObjectField f : objType.getDescribe().fields.getMap().values()
+      ) {
+        Schema.DescribeFieldResult d = f.getDescribe();
+        if (
+          !d.isNillable() &&
+          d.isCreateable() &&
+          !selfResolvingTypes.contains(d.getType())
+        ) {
+          result.add(d.getName());
+        }
+      }
+      if (result.contains('LastName')) {
+        result.add('Name');
+      }
+    } catch (Exception e) {
+      System.debug(
+        '[DEPLOY-TRACE] collectHardRequiredFields failed for [' +
+          objectApiName +
+          ']: ' +
+          e.getMessage()
+      );
+    }
+    return result;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // EXISTING STANDARD OBJECT LAYOUT GUARD
+  //
+  // isStandardObjectLayout() alone used to be treated as "always skip this
+  // Layout file" at the call site — that blanket rule was meant to stop the
+  // LLM from regenerating an object's own EXISTING layout (e.g. blowing away
+  // "Account-Account Layout"'s real sections/fields with a guessed one), but
+  // it also silently dropped a brand-new, distinctly-named layout for a new
+  // Record Type on a standard object (e.g. "Account-Partner Account
+  // Layout") — a completely normal, supported pattern. The Profile update
+  // assigning that new layout still went out, so the deploy failed with
+  // "no Layout named X found" every time, no matter what the LAYOUT prompt
+  // said to generate. Confirmed as a real incident 2026-09-02 on
+  // Account-Partner Account Layout: 3 consecutive deploy attempts all
+  // failed the same way because this guard stripped the Layout file before
+  // it ever reached the zip.
+  //
+  // Fix: only skip when the exact memberName already exists in
+  // orgState.existingLayouts for that object — i.e. the LLM is regenerating
+  // something real from scratch. A name orgState has never seen is a new
+  // layout and must be allowed through.
+  // ─────────────────────────────────────────────────────────────
+  public static Boolean isExistingStandardObjectLayout(
+    String memberName,
+    Map<String, Object> orgState
+  ) {
+    if (!isStandardObjectLayout(memberName) || orgState == null) {
+      return false;
+    }
+    Object rawExistingLayouts = orgState.get('existingLayouts');
+    if (!(rawExistingLayouts instanceof Map<String, Object>)) {
+      return false;
+    }
+    Map<String, Object> existingLayouts = (Map<String, Object>) rawExistingLayouts;
+    String objPart = memberName.substringBefore('-');
+    Object rawLayouts = existingLayouts.get(objPart);
+    if (!(rawLayouts instanceof List<Object>)) {
+      return false;
+    }
+    for (Object rawLayout : (List<Object>) rawLayouts) {
+      if (!(rawLayout instanceof Map<String, Object>)) {
+        continue;
+      }
+      String fullName = (String) ((Map<String, Object>) rawLayout)
+        .get('fullName');
+      if (memberName.equalsIgnoreCase(fullName)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // NAME FIELD BEHAVIOR FIX FOR LAYOUTS
   // Salesforce enforces different Name behavior per nameField type:
   //   AutoNumber  → Readonly  (system-generated, cannot be edited)
