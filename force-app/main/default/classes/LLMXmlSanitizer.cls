@@ -3956,6 +3956,13 @@ public class LLMXmlSanitizer {
       '([A-Za-z_][A-Za-z0-9_]*__c)\\s*[<>]=?\\s*(TODAY|NOW)\\s*\\(\\s*\\)' +
       '|(TODAY|NOW)\\s*\\(\\s*\\)\\s*[<>]=?\\s*([A-Za-z_][A-Za-z0-9_]*__c)'
     );
+    Pattern blankFuncPat = Pattern.compile(
+      '(?i)(ISBLANK|ISNULL)\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*__c)\\s*\\)'
+    );
+    Pattern directCmpPat = Pattern.compile(
+      '([A-Za-z_][A-Za-z0-9_]*__c)\\s*(?:=|<>|!=)\\s*"' +
+      '|"[^"]*"\\s*(?:=|<>|!=)\\s*([A-Za-z_][A-Za-z0-9_]*__c)'
+    );
 
     while (ruleMatcher.find()) {
       String formula = ruleMatcher.group(1)
@@ -4010,6 +4017,74 @@ public class LLMXmlSanitizer {
               fieldName +
               '" (actual type: Date) with NOW() (Date/Time). ' +
               'Use TODAY() instead.'
+          );
+        }
+      }
+
+      // ── Picklist misuse: ISBLANK()/ISNULL() passed a picklist directly ──
+      // Salesforce only allows picklist fields inside ISPICKVAL(), TEXT(),
+      // CASE(), or INCLUDES() (multi-select) — ISBLANK(Field__c) on a
+      // picklist fails deploy with "Picklist fields are only supported in
+      // certain functions." Catch it here so the repair loop fixes it
+      // before it ever reaches a real deploy.
+      Matcher blankMatcher = blankFuncPat.matcher(formula);
+      while (blankMatcher.find()) {
+        String blankFunc = blankMatcher.group(1);
+        String blankField = blankMatcher.group(2);
+        String blankFieldType = SchemaFieldValidator.getFieldType(
+          objectApiName,
+          blankField
+        );
+        if (blankFieldType == 'PICKLIST' || blankFieldType == 'MULTIPICKLIST') {
+          throw new ApexCodeValidator.ValidationException(
+            '[' +
+              objectApiName +
+              '] Formula calls ' +
+              blankFunc +
+              '(' +
+              blankField +
+              '), but "' +
+              blankField +
+              '" is a ' +
+              (blankFieldType == 'MULTIPICKLIST' ? 'multi-select ' : '') +
+              'picklist field — picklists cannot be passed directly to ' +
+              blankFunc +
+              '(). Wrap it instead: ' +
+              blankFunc +
+              '(TEXT(' +
+              blankField +
+              ')).'
+          );
+        }
+      }
+
+      // ── Picklist misuse: direct = / <> comparison with a string literal ──
+      // e.g. Field__c = "Value" instead of ISPICKVAL(Field__c, "Value").
+      Matcher directCmpMatcher = directCmpPat.matcher(formula);
+      while (directCmpMatcher.find()) {
+        String cmpField = directCmpMatcher.group(1) != null
+          ? directCmpMatcher.group(1)
+          : directCmpMatcher.group(2);
+        String cmpFieldType = SchemaFieldValidator.getFieldType(
+          objectApiName,
+          cmpField
+        );
+        if (cmpFieldType == 'PICKLIST' || cmpFieldType == 'MULTIPICKLIST') {
+          throw new ApexCodeValidator.ValidationException(
+            '[' +
+              objectApiName +
+              '] Formula compares "' +
+              cmpField +
+              '" directly to a string literal, but it is a ' +
+              (cmpFieldType == 'MULTIPICKLIST'
+                ? 'multi-select picklist'
+                : 'picklist') +
+              ' field — direct =/<> comparison is not allowed. Use ISPICKVAL(' +
+              cmpField +
+              ', "value") instead' +
+              (cmpFieldType == 'MULTIPICKLIST'
+                ? ', or INCLUDES(' + cmpField + ', "value") for multi-select.'
+                : '.')
           );
         }
       }
