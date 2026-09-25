@@ -244,10 +244,24 @@ public class LLMResponseProcessor {
           // unconfirmable claim: never let it stand. Costs at most an
           // unnecessary redeploy (idempotent, cheap); the alternative is
           // silently never applying a real file update.
+          // LAYOUT is a FOURTH special case, same shape as StaticResource:
+          // verifyItemExists('Layout', ...) can only check whether a layout
+          // with this NAME exists — org state has no record of its full
+          // section/field CONTENT, so it can never confirm "already has the
+          // detailed section/field spec this ticket asks for". Confirmed as
+          // a real incident 2026-09-04: a ticket to update the existing
+          // "Opportunity-Opportunity Layout" with a large BRD field/section
+          // spec got marked allSatisfied and skipped, with the gate's own
+          // summary saying "cannot verify if its sections and fields already
+          // match the detailed specification" — same disagreement between
+          // the boolean this loop enforces and the model's own prose as
+          // every other incident documented above. Treat a claimed "true"
+          // for Layout the same as unconfirmable: never let it stand.
           Boolean isUnverifiableContentType =
             'StaticResource'.equalsIgnoreCase(itype) ||
             'LWC'.equalsIgnoreCase(itype) ||
             'LightningComponentBundle'.equalsIgnoreCase(itype) ||
+            'Layout'.equalsIgnoreCase(itype) ||
             (isLwcTicket && 'ApexClass'.equalsIgnoreCase(itype));
           Boolean verifiedExists;
           if (!claimedExists) {
@@ -2204,15 +2218,27 @@ public class LLMResponseProcessor {
 
         if (
           metadataType == 'Layout' &&
-          LLMXmlSanitizer.isExistingStandardObjectLayout(memberName, orgState)
+          LLMXmlSanitizer.isExistingStandardObjectLayout(
+            memberName,
+            orgState
+          ) &&
+          !ticketExplicitlyTargetsLayout(
+            ticketSummary,
+            ticketDescription,
+            memberName
+          )
         ) {
           System.debug(
             '[DEPLOY-TRACE] SKIPPED standard-object Layout file [' +
               filePath +
-              '] — this layout already exists in the org; regenerating an ' +
-              'existing standard-object layout from scratch is blocked. ' +
-              '(A brand-new, distinctly-named layout for this object is ' +
-              'still allowed through — see isExistingStandardObjectLayout.)'
+              '] — this layout already exists in the org and the ticket ' +
+              'did not explicitly name it; regenerating an existing ' +
+              'standard-object layout from scratch without being asked is ' +
+              'blocked. (A brand-new, distinctly-named layout for this ' +
+              'object is still allowed through — see ' +
+              'isExistingStandardObjectLayout — and so is a ticket that ' +
+              'explicitly asks to update this exact layout — see ' +
+              'ticketExplicitlyTargetsLayout.)'
           );
           continue;
         }
@@ -2719,16 +2745,31 @@ public class LLMResponseProcessor {
     // Jira as a plain success (a green checkmark implies the ticket's
     // request was fulfilled, which it wasn't) — flag it so LLMService posts
     // it as 'error' instead.
+    //
+    // `files` here is the RAW list the LLM returned, before routing —
+    // it stays non-empty even when every single entry in it got `continue`'d
+    // out of the loop above (e.g. the standard-object-Layout skip guard).
+    // So a non-empty `files` alone doesn't prove anything actually reached
+    // the deploy artifacts. Treat "every provided file was filtered out"
+    // the same as "no files were provided" by also checking what actually
+    // landed in ZipBuilder / zip2Files.
+    Boolean rawFilesProvided = files != null && !files.isEmpty();
+    Boolean anyFileActuallyStaged =
+      ZipBuilder.hasFiles() || !zip2Files.isEmpty();
+    Boolean allProvidedFilesWereFiltered =
+      rawFilesProvided && !anyFileActuallyStaged;
     Boolean nothingWasDone =
-      (files == null || files.isEmpty()) &&
+      ((files == null || files.isEmpty()) || allProvidedFilesWereFiltered) &&
       (destructiveFiles == null || destructiveFiles.isEmpty()) &&
       (nonCloneOps == null || nonCloneOps.isEmpty());
     if (nothingWasDone) {
       FunctionHelper.hadError = true;
       System.debug(
         '[DEPLOY-TRACE] processXmlGenerationResponse: no files/destructiveFiles/' +
-          'dmlOperations generated — flagging hadError so this reports as ' +
-          'incomplete, not success. Summary: ' +
+          'dmlOperations generated (or every provided file was filtered out ' +
+          'during routing, e.g. the standard-object-Layout skip guard) — ' +
+          'flagging hadError so this reports as incomplete, not success. ' +
+          'Summary: ' +
           summary
       );
     }
@@ -3395,6 +3436,41 @@ public class LLMResponseProcessor {
     }
 
     return memberGroups[0].Id;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Returns true when the ticket text explicitly names the layout that
+  // memberName refers to (e.g. ticket says "update the existing
+  // Opportunity Layout" and memberName = "Opportunity-Opportunity Layout").
+  //
+  // isExistingStandardObjectLayout() only tells us the name collides with
+  // something already in the org — that's equally true whether (a) the
+  // LLM incidentally regenerated a standard object's default layout as an
+  // unprompted side effect (e.g. the MANDATORY PRE-FLIGHT backstop that
+  // fires whenever a new CustomField is added to an object with existing
+  // layouts), or (b) the ticket explicitly asked to update that exact
+  // layout as its master/baseline (SCENARIO G / "update the existing
+  // layout" tickets). Case (a) must still be blocked from silently
+  // replacing the org's default layout; case (b) must be allowed through.
+  // This check is what tells the two apart.
+  private static Boolean ticketExplicitlyTargetsLayout(
+    String ticketSummary,
+    String ticketDescription,
+    String memberName
+  ) {
+    if (String.isBlank(memberName)) {
+      return false;
+    }
+    String layoutLabel = memberName.contains('-')
+      ? memberName.substringAfter('-')
+      : memberName;
+    if (String.isBlank(layoutLabel)) {
+      return false;
+    }
+    String text =
+      (String.isBlank(ticketSummary) ? '' : ticketSummary + ' ') +
+      (String.isBlank(ticketDescription) ? '' : ticketDescription);
+    return text.toLowerCase().contains(layoutLabel.toLowerCase());
   }
 
   private static void injectPublicGroupMemberOpFromTicket(
