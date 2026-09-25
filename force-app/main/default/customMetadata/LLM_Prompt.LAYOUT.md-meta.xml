@@ -78,6 +78,12 @@ When creating a new object OR when ticket asks to assign a layout:
 RULES:
 - NEVER emit two file entries with the same filePath — merge layoutAssignments into existing Profile entry
 - One Profile file can contain multiple <layoutAssignments> and multiple <tabVisibilities>
+- *** CRITICAL — DANGLING REFERENCE GUARD ***: NEVER emit a <layoutAssignments><layout>X</layout></layoutAssignments>
+  entry unless layout X is EITHER (a) also being emitted as a Layout file in THIS SAME response, OR (b) already
+  present in orgState.existingLayouts. A Profile that assigns a layout which doesn't exist yet fails the ENTIRE
+  deploy with "no Layout named X found" and rolls back every other component in the same transaction — including
+  unrelated RecordType/CustomField changes bundled alongside it. If a ticket names a layout that doesn't exist yet,
+  you MUST also emit that Layout's XML in the same response (see SCENARIO G below for standard objects).
 
 == LAYOUT SCENARIOS ==
 *** MANDATORY PRE-FLIGHT ***
@@ -108,8 +114,22 @@ Action: Reconstruct full Layout XML applying the requested change.
 -- SCENARIO F: Delete a layout --
 Use destructiveFiles: type=Layout, member={ObjectName}-{LayoutName}
 
-NEVER GENERATE A LAYOUT XML FILE FOR STANDARD OBJECTS (Account, Case, Contact, Lead, Opportunity).
-Standard object layouts already exist — only reference them in Profile <layoutAssignments>.]]></value>
+-- SCENARIO G: New dedicated layout on a STANDARD object (Account, Case, Contact, Lead, Opportunity) --
+Use when: the ticket names a NEW, distinctly-named Layout (e.g. "Partner Account Layout") for a NEW or existing
+Record Type on a standard object — this is a normal, common, fully-supported Salesforce pattern and is NOT the
+same as the object's single default layout (e.g. "Account Layout").
+You MUST emit a complete Layout XML for it, exactly like SCENARIO A, using the exact Page Layout Name given in
+the ticket. fullName/memberName = {ObjectName}-{LayoutName} (e.g. Account-Partner Account Layout).
+Sections: build from the fields the ticket lists, grouped into the section labels the ticket specifies (or
+"Information" / "Additional Information" if none given).
+Then assign it via Profile <layoutAssignments> for the relevant Record Type, per PROFILE LAYOUT ASSIGNMENT above.
+
+== STANDARD OBJECT DEFAULT LAYOUT — DO NOT REGENERATE ==
+NEVER regenerate or emit a Layout XML for a standard object's own EXISTING/default layout (the one already listed
+in orgState.existingLayouts, e.g. "Account-Account Layout") — reference it as-is in Profile <layoutAssignments>
+only, or use SCENARIO B to append new fields to it. This restriction applies ONLY to that object's existing
+layout(s) — it does NOT apply to a brand-new, distinctly-named layout, which is SCENARIO G above and must always
+be emitted in full.]]></value>
     </values>
     <values>
         <field>Sort_Order__c</field>
@@ -131,6 +151,6 @@ Standard object layouts already exist — only reference them in Profile <layout
         <field>Description__c</field>
         <value
       xsi:type="xsd:string"
-    >Page Layout XML format, rules, and all scenarios (A-F)</value>
+    >Page Layout XML format, rules, and all scenarios (A-G)</value>
     </values>
 </CustomMetadata>

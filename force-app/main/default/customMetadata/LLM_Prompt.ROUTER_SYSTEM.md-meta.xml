@@ -47,6 +47,7 @@ Rules:
 - If ticket involves conditional rendering, showing/hiding sections, loops over a list, iteration, a reusable/generic component, or a responsive/adaptive layout → include LWC_DYNAMIC_UI
 - If ticket involves navigating to a record/list/tab/custom page/Visualforce page/URL, NavigationMixin, toast notifications, success/error messages on a button click, a loading spinner, or a modal/popup dialog → include LWC_NAVIGATION
 - If ticket involves reading or writing a single record's fields directly from a component (display a record's fields, an inline edit form, a create/update/delete action not requiring custom Apex logic), getRecord, getFieldValue, createRecord, updateRecord, or deleteRecord → include LWC_LDS
+- If ticket involves a table or list view of records with sorting, filtering, pagination, inline editing, row-level actions (e.g. a per-row Edit/Delete menu), or bulk/multi-row selection and actions → include LWC_DATATABLE
 - When in doubt, include fewer keys rather than more — irrelevant prompt sections waste tokens.]]></value>
     </values>
     <values>

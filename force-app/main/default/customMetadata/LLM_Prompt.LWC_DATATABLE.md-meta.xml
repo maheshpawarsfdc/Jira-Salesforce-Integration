@@ -1,0 +1,419 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CustomMetadata
+  xmlns="http://soap.sforce.com/2006/04/metadata"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+>
+    <label>LWC Datatable</label>
+    <protected>false</protected>
+    <values>
+        <field>Feature_Key__c</field>
+        <value xsi:type="xsd:string">LWC_DATATABLE</value>
+    </values>
+    <values>
+        <field>Prompt_Content__c</field>
+        <value
+      xsi:type="xsd:string"
+    ><![CDATA[
+== DATATABLE & LIST VIEW GENERATION ==
+Use when: the ticket needs a tabular list of records with any of sorting,
+filtering, pagination, inline editing, row-level actions, or bulk
+(multi-row) actions. Built on <lightning-datatable> — never hand-roll a
+<table> for this; the base component already implements accessible
+sorting/selection/inline-edit affordances the platform expects.
+
+-- BASE SHAPE: columns array + data array + key-field --
+  Template:
+    <lightning-datatable
+        key-field="Id"
+        data={records}
+        columns={columns}>
+    </lightning-datatable>
+
+  JS:
+    columns = [
+        { label: 'Name', fieldName: 'Name', type: 'text' },
+        { label: 'Amount', fieldName: 'Amount', type: 'currency' },
+        { label: 'Close Date', fieldName: 'CloseDate', type: 'date' }
+    ];
+
+CRITICAL RULE: key-field MUST be set, and MUST be set to the field that
+ACTUALLY holds each row's unique identifier — almost always "Id" (capital
+I), because that is the real API name of a Salesforce record's Id field as
+it comes back from Apex/SOQL/getRecord. lightning-datatable's key-field
+attribute defaults to "id" (lowercase) when omitted. Salesforce data never
+has a lowercase "id" property, so omitting key-field (or leaving it
+defaulted) means the datatable cannot reliably match rows to their key —
+row selection, inline-edit draft tracking, and row actions all silently
+misbehave with no deploy-time error, since the component still renders
+rows and merely gets their identity tracking wrong.
+
+RULES:
+- fieldName in each column MUST be the record's flat field API name as it
+  appears on the data array's row objects — not a relationship path like
+  Account.Name (flatten relationship fields onto the row object yourself,
+  e.g. row.AccountName, before handing the array to the datatable).
+- type drives BOTH rendering and, for editable columns, the edit widget —
+  common values: 'text', 'number', 'currency', 'date', 'email', 'phone',
+  'url', 'boolean', 'action'. Never invent a type value not in this list.
+
+-- SORTING --
+lightning-datatable does NOT sort its own data automatically — setting
+sortable: true on a column only makes the column HEADER clickable and
+fires onsort; the component's data array must be re-sorted by YOUR code
+and passed back in, and sorted-by/sorted-direction must be bound back so
+the arrow indicator reflects the current state:
+
+  Template:
+    <lightning-datatable
+        key-field="Id"
+        data={records}
+        columns={columns}
+        sorted-by={sortedBy}
+        sorted-direction={sortedDirection}
+        onsort={handleSort}>
+    </lightning-datatable>
+
+  JS:
+    sortedBy;
+    sortedDirection;
+
+    handleSort(event) {
+        const { fieldName: sortedBy, sortDirection } = event.detail;
+        const cloneData = [...this.records];
+        cloneData.sort((a, b) => {
+            const valueA = a[sortedBy] ?? '';
+            const valueB = b[sortedBy] ?? '';
+            return sortDirection === 'asc'
+                ? (valueA > valueB ? 1 : -1)
+                : (valueA > valueB ? -1 : 1);
+        });
+        this.records = cloneData;
+        this.sortedBy = sortedBy;
+        this.sortedDirection = sortDirection;
+    }
+
+RULES:
+- Every column meant to be sortable needs sortable: true in its column
+  definition — onsort never fires for a column missing this flag.
+- handleSort MUST update BOTH this.records (the reordered data) AND
+  this.sortedBy/this.sortedDirection (bound to sorted-by/sorted-direction)
+  — updating only the data reorders the rows but leaves the header's sort
+  arrow stuck pointing at the wrong column/direction, which reads as a
+  half-broken sort to the user even though the rows did reorder correctly.
+
+-- FILTERING --
+lightning-datatable has no built-in filter UI. Pair it with a
+lightning-input (search) or lightning-combobox (picklist filter) elsewhere
+on the component, and filter the SOURCE data array in JS — never filter by
+mutating the array bound to the datatable's own data attribute in place;
+reassign a new filtered array so the framework's reactivity picks it up:
+
+  handleSearchChange(event) {
+      const searchTerm = event.target.value.toLowerCase();
+      this.filteredRecords = this.allRecords.filter((record) =>
+          record.Name?.toLowerCase().includes(searchTerm)
+      );
+  }
+
+RULE: keep the FULL unfiltered list in one property (e.g. allRecords,
+populated once from @wire/Apex) and bind the datatable to a SEPARATE
+filtered property (e.g. filteredRecords) — filtering the same array the
+wire populated means the original data is lost the moment a filter is
+applied, so clearing the filter can no longer restore the full list.
+
+-- PAGINATION --
+lightning-datatable has no automatic page-by-page pagination either.
+Two supported approaches — pick based on what the ticket implies:
+
+  (1) CLIENT-SIDE (all records already loaded, e.g. from one Apex/SOQL
+      call): slice the full array in JS and drive it off Previous/Next
+      buttons.
+        get pagedRecords() {
+            const start = this.pageNumber * this.pageSize;
+            return this.filteredRecords.slice(start, start + this.pageSize);
+        }
+        get isLastPage() {
+            return (this.pageNumber + 1) * this.pageSize >= this.filteredRecords.length;
+        }
+        handleNext() {
+            if (!this.isLastPage) { this.pageNumber += 1; }
+        }
+        handlePrevious() {
+            if (this.pageNumber > 0) { this.pageNumber -= 1; }
+        }
+
+      To show a human-readable "Page X of Y" indicator, ALWAYS expose it
+      as a GETTER — never write the arithmetic directly inside a {...}
+      template binding (e.g. {pageNumber + 1} is INVALID LWC: a binding
+      may only be a bare property/getter reference, never an inline
+      expression). This is a real, confirmed failure mode — 2026-08-26,
+      opportunityPipelineManager — generation failed static validation
+      twice in a row because the LLM wrote {pageNumber + 1} directly in
+      the template with no getter to fall back on:
+        get currentPageDisplay() {
+            return this.pageNumber + 1; // convert 0-indexed to 1-indexed for display
+        }
+        get totalPages() {
+            return Math.ceil(this.filteredRecords.length / this.pageSize) || 1;
+        }
+      Template: <p>Page {currentPageDisplay} of {totalPages}</p>
+
+  (2) INFINITE SCROLL / SERVER-DRIVEN PAGING (a large or unbounded record
+      set, fetched a page at a time): use enable-infinite-loading +
+      onloadmore, and set is-loading to reflect an in-flight fetch:
+        <lightning-datatable
+            key-field="Id"
+            data={records}
+            columns={columns}
+            enable-infinite-loading
+            onloadmore={handleLoadMore}
+            is-loading={isLoading}>
+        </lightning-datatable>
+
+        async handleLoadMore(event) {
+            event.target.isLoading = true;
+            const newRecords = await fetchNextPage({ offset: this.records.length });
+            this.records = [...this.records, ...newRecords];
+            event.target.isLoading = false;
+            if (newRecords.length === 0) {
+                event.target.enableInfiniteLoading = false;
+            }
+        }
+
+RULE: never invent a "page-size"/"current-page" attribute on
+<lightning-datatable> itself — it does not exist; pagination is always
+built in your OWN component state using one of the two approaches above.
+
+-- INLINE EDIT --
+A column becomes editable with editable: true in its definition; the
+datatable itself needs an onsave handler to receive the user's edits and a
+draft-values attribute bound back to a reactive property:
+
+  Template:
+    <lightning-datatable
+        key-field="Id"
+        data={records}
+        columns={columns}
+        draft-values={draftValues}
+        onsave={handleSave}>
+    </lightning-datatable>
+
+  JS:
+    columns = [
+        { label: 'Name', fieldName: 'Name', type: 'text', editable: true },
+        { label: 'Amount', fieldName: 'Amount', type: 'currency', editable: true }
+    ];
+    draftValues = [];
+
+    async handleSave(event) {
+        const updates = event.detail.draftValues.map((draft) =>
+            updateRecord({ fields: { ...draft } })
+        );
+        try {
+            await Promise.all(updates);
+            this.dispatchEvent(new ShowToastEvent({
+                title: 'Success',
+                message: 'Records updated.',
+                variant: 'success'
+            }));
+            await refreshApex(this.wiredRecordsResult);
+        } catch (error) {
+            this.dispatchEvent(new ShowToastEvent({
+                title: 'Error updating records',
+                message: getErrorMessage(error),
+                variant: 'error'
+            }));
+        } finally {
+            // MANDATORY — see CRITICAL RULE below.
+            this.draftValues = [];
+        }
+    }
+
+CRITICAL RULE: draftValues MUST be reset back to an empty array
+(this.draftValues = [];) once the save completes — in the finally
+block/branch so it resets on BOTH success and failure. Skipping this
+leaves the datatable permanently in its "editing" state: the edited
+cells stay visually highlighted and the Save/Cancel action bar never
+disappears, even though the write itself succeeded — a real, well-known
+lightning-datatable footgun, not a hypothetical one.
+
+RULES:
+- event.detail.draftValues is an array of PARTIAL row objects — each one
+  contains ONLY the fields the user actually changed, PLUS the row's
+  key-field value (Id) so updateRecord knows which record to write. Never
+  assume every column's field is present in a given draft entry.
+- Prefer Promise.all over a sequential loop when saving multiple
+  draftValues — each row is an independent LDS write, so there is no
+  ordering dependency between them.
+- Combine with LWC_LDS's guidance on updateRecord (fields must include Id
+  — already guaranteed here since draftValues always carries the row's
+  key-field value) and LWC_NAVIGATION's ShowToastEvent/getErrorMessage
+  conventions for the success/error feedback.
+- If the ticket's save action is a custom Apex method instead of LDS
+  updateRecord (e.g. the edit needs validation logic beyond a plain field
+  write), the same draftValues-reset-in-finally requirement still applies
+  — it is a datatable-UI-state rule, independent of which write mechanism
+  the onsave handler ultimately calls.
+
+-- ROW ACTIONS (per-row menu: Edit / Delete / View / custom actions) --
+Add a column with type: 'action', and handle the single onrowaction event
+the datatable dispatches for ANY row's action menu selection — never wire
+a separate handler per action, there is exactly one event for all of them,
+disambiguated by event.detail.action.name:
+
+  Template:
+    <lightning-datatable
+        key-field="Id"
+        data={records}
+        columns={columns}
+        onrowaction={handleRowAction}>
+    </lightning-datatable>
+
+  JS:
+    columns = [
+        { label: 'Name', fieldName: 'Name', type: 'text' },
+        {
+            type: 'action',
+            typeAttributes: {
+                rowActions: [
+                    { label: 'View', name: 'view' },
+                    { label: 'Edit', name: 'edit' },
+                    { label: 'Delete', name: 'delete' }
+                ]
+            }
+        }
+    ];
+
+    handleRowAction(event) {
+        const actionName = event.detail.action.name;
+        const row = event.detail.row;
+        switch (actionName) {
+            case 'view':
+                this.handleView(row);
+                break;
+            case 'edit':
+                this.handleEdit(row);
+                break;
+            case 'delete':
+                this.handleDelete(row);
+                break;
+            default:
+                break;
+        }
+    }
+
+CRITICAL RULE: a column with type: 'action' with NO onrowaction handler on
+the <lightning-datatable> element renders a perfectly normal-looking
+action dropdown that does absolutely nothing when a user picks an item —
+no error, no console warning, the menu just closes. Every action column
+MUST be paired with an onrowaction handler on the same element.
+
+RULES:
+- event.detail.action.name matches the name you gave that action in
+  rowActions — never event.detail.action.label (the label is display text
+  only, and can be changed independently of the name used for dispatch
+  logic).
+- event.detail.row is the FULL row data object for the row the action was
+  taken on — use it directly rather than re-deriving the row from a
+  separately-tracked "selected row" property.
+- A destructive action (delete) taken from a row action MUST still show
+  ShowToastEvent feedback per LWC_NAVIGATION's mandatory-feedback rule —
+  row actions are user-triggered writes exactly like a standalone button.
+
+-- BULK / MULTI-ROW SELECTION AND ACTIONS --
+Enable checkboxes with show-row-number-column or (more commonly for bulk
+actions) leaving selection on by default, read the current selection via
+onrowselection, and drive any bulk-action buttons off that array's length:
+
+  Template:
+    <lightning-datatable
+        key-field="Id"
+        data={records}
+        columns={columns}
+        onrowselection={handleRowSelection}>
+    </lightning-datatable>
+    <lightning-button
+        label="Delete Selected"
+        disabled={noRowsSelected}
+        onclick={handleBulkDelete}>
+    </lightning-button>
+
+  JS:
+    selectedRows = [];
+
+    get noRowsSelected() {
+        return this.selectedRows.length === 0;
+    }
+
+    handleRowSelection(event) {
+        this.selectedRows = event.detail.selectedRows;
+    }
+
+    async handleBulkDelete() {
+        this.isLoading = true;
+        try {
+            await Promise.all(
+                this.selectedRows.map((row) => deleteRecord(row.Id))
+            );
+            // ... toast success, refreshApex ...
+        } catch (error) {
+            // ... toast error via getErrorMessage(error) ...
+        } finally {
+            this.isLoading = false;
+        }
+    }
+
+RULES:
+- Bulk-action buttons are disabled (or hidden) whenever selectedRows is
+  empty — never let a user click "Delete Selected" with nothing selected.
+- A bulk write is still ONE user-triggered action for feedback purposes —
+  ONE ShowToastEvent summarizing the whole batch's outcome, not one toast
+  per row.
+- max-row-selection={n} on <lightning-datatable> caps how many rows can be
+  checked at once — use it only when the ticket explicitly limits bulk
+  selection size; omit it for an uncapped bulk action.
+
+== NEVER ==
+- Never omit key-field on <lightning-datatable> — it defaults to "id"
+  (lowercase), which never matches a real Salesforce record's "Id" field.
+- Never assume lightning-datatable sorts its own data — sortable: true only
+  fires onsort; your code must re-sort the array and rebind sorted-by/
+  sorted-direction yourself.
+- Never invent a page-size/current-page attribute on lightning-datatable —
+  pagination is always custom component state (client-side slicing or
+  enable-infinite-loading + onloadmore), never a built-in prop.
+- Never write pagination arithmetic directly inside a template binding
+  (e.g. {pageNumber + 1}) — a {...} binding may only be a bare property or
+  getter reference. Expose a currentPageDisplay-style getter instead.
+- Never leave draftValues unreset after onsave completes — always reset it
+  to [] in a path that runs on both success and failure (a finally block).
+- Never add a type: 'action' column without an onrowaction handler on the
+  same <lightning-datatable> element.
+- Never filter a datatable's bound data array by mutating it in place —
+  keep the full source list separate from the filtered/displayed list.
+]]></value>
+    </values>
+    <values>
+        <field>Sort_Order__c</field>
+        <value xsi:type="xsd:double">171.0</value>
+    </values>
+    <values>
+        <field>Is_Always_Included__c</field>
+        <value xsi:type="xsd:boolean">false</value>
+    </values>
+    <values>
+        <field>Is_Active__c</field>
+        <value xsi:type="xsd:boolean">true</value>
+    </values>
+    <values>
+        <field>Depends_On__c</field>
+        <value xsi:type="xsd:string">LWC</value>
+    </values>
+    <values>
+        <field>Description__c</field>
+        <value
+      xsi:type="xsd:string"
+    >Datatable &amp; List View Generation: lightning-datatable key-field/columns, sorting, filtering, client and infinite-scroll pagination, inline edit with draftValues reset discipline, row actions via onrowaction, bulk multi-row selection and actions</value>
+    </values>
+</CustomMetadata>

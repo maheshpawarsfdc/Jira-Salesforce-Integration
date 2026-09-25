@@ -3,6 +3,7 @@
 	<types>
 		<members>App_Config__c</members>
 		<members>Error_Log__c</members>
+		<members>Jira_Developer_Config__c</members>
 		<name>CustomObject</name>
 	</types>
 	<types>

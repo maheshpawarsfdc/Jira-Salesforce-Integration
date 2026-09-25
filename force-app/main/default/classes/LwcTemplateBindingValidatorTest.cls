@@ -204,4 +204,80 @@ private class LwcTemplateBindingValidatorTest {
     }
     Test.stopTest();
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // Literal-binding-root handling (e.g. {false}) — reproduces the real
+  // 2026-08-26 opportunityPipelineManager incident: generation failed
+  // after 2 repair attempts because the OLD error message told the LLM to
+  // "add a matching field... named exactly false", which is impossible
+  // (false is a reserved word, not a valid property name).
+  // ─────────────────────────────────────────────────────────────
+  @IsTest
+  static void literalFalseBindingThrowsActionableError() {
+    Map<String, Object> htmlFile = new Map<String, Object>{
+      'filePath' => 'lwc/opportunityPipelineManager/opportunityPipelineManager.html',
+      'xmlContent' => '<template>\n' +
+      '  <template lwc:if={false}>\n' +
+      '    <p>Never shown</p>\n' +
+      '  </template>\n' +
+      '</template>'
+    };
+    Map<String, Object> jsFile = new Map<String, Object>{
+      'filePath' => 'lwc/opportunityPipelineManager/opportunityPipelineManager.js',
+      'xmlContent' => 'import { LightningElement } from \'lwc\';\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '}'
+    };
+    List<Object> files = new List<Object>{ htmlFile, jsFile };
+
+    Boolean threw = false;
+    Test.startTest();
+    try {
+      LwcCodeValidator.validateTemplateBindingsDeclaredInJs(files);
+    } catch (ApexCodeValidator.ValidationException e) {
+      threw = true;
+      System.assert(
+        e.getMessage().contains('literal') &&
+        !e.getMessage().contains('add a matching field'),
+        'Error must explain the literal-binding fix, NOT tell the LLM to ' +
+          'add a property named exactly "false": ' +
+          e.getMessage()
+      );
+    }
+    Test.stopTest();
+    System.assert(
+      threw,
+      'A template binding to a bare literal like {false} must throw'
+    );
+  }
+
+  @IsTest
+  static void literalNullAndUndefinedBindingsThrow() {
+    Map<String, Object> htmlFile = new Map<String, Object>{
+      'filePath' => 'lwc/dealCard/dealCard.html',
+      'xmlContent' => '<template>\n' +
+      '  <div class={null}>{undefined}</div>\n' +
+      '</template>'
+    };
+    Map<String, Object> jsFile = new Map<String, Object>{
+      'filePath' => 'lwc/dealCard/dealCard.js',
+      'xmlContent' => 'import { LightningElement } from \'lwc\';\n' +
+      'export default class Foo extends LightningElement {\n' +
+      '}'
+    };
+    List<Object> files = new List<Object>{ htmlFile, jsFile };
+
+    Boolean threw = false;
+    Test.startTest();
+    try {
+      LwcCodeValidator.validateTemplateBindingsDeclaredInJs(files);
+    } catch (ApexCodeValidator.ValidationException e) {
+      threw = true;
+    }
+    Test.stopTest();
+    System.assert(
+      threw,
+      'Template bindings to {null}/{undefined} literals must throw'
+    );
+  }
 }
