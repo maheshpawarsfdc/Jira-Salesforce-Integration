@@ -35,6 +35,8 @@ public class DeployService {
           API_VERSION;
         port.SessionHeader = new MetadataService.SessionHeader_element();
         port.SessionHeader.sessionId = UserInfo.getSessionId();
+        // See CustomMetadataHelper.port for why this is set explicitly.
+        port.timeout_x = 120000;
         System.debug('DeployService: MetadataPort ready.');
       }
       return port;
@@ -99,6 +101,26 @@ public class DeployService {
     String deploySummaryNote,
     String postDeployActionsJson
   ) {
+    return deploy(
+      base64Zip,
+      issueKey,
+      pendingZip2DataJson,
+      apexTestContextJson,
+      deploySummaryNote,
+      postDeployActionsJson,
+      null
+    );
+  }
+
+  public static String deploy(
+    String base64Zip,
+    String issueKey,
+    String pendingZip2DataJson,
+    String apexTestContextJson,
+    String deploySummaryNote,
+    String postDeployActionsJson,
+    String groupMemberOpsJson
+  ) {
     System.debug('DeployService.deploy() called for issue: ' + issueKey);
 
     // Build deploy options
@@ -135,6 +157,7 @@ public class DeployService {
     poller.apexTestContextJson = apexTestContextJson;
     poller.deploySummaryNote = deploySummaryNote;
     poller.postDeployActionsJson = postDeployActionsJson;
+    poller.groupMemberOpsJson = groupMemberOpsJson;
     System.enqueueJob(poller);
     System.debug('DeployService: DeployPoller enqueued for jobId = ' + jobId);
 

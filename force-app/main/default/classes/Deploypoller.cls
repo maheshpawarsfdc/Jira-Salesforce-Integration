@@ -41,6 +41,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   public String apexTestContextJson;
   public String deploySummaryNote;
   public String postDeployActionsJson;
+  public String groupMemberOpsJson;
   public Integer queueableHops = 0;
 
   // ─────────────────────────────────────────────────────────────
@@ -68,6 +69,8 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
       API_VERSION;
     p.SessionHeader = new MetadataService.SessionHeader_element();
     p.SessionHeader.sessionId = UserInfo.getSessionId();
+    // See CustomMetadataHelper.port for why this is set explicitly.
+    p.timeout_x = 120000;
     return p;
   }
 
@@ -76,6 +79,11 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
   // ─────────────────────────────────────────────────────────────
   public void execute(QueueableContext ctx) {
     FunctionHelper.deferErrorLogDml = true;
+    // So the deploy-failure ErrorLogger.logMessage() calls below (which rely
+    // on this ambient key, unlike ErrorLogger.log(e, issueKey) elsewhere in
+    // this class) get tagged correctly — this is a fresh Queueable
+    // transaction, so nothing has set it yet.
+    ErrorLogger.currentJiraKey = issueKey;
     System.debug('');
     System.debug(
       'DeployPoller.execute(): attempt ' +
@@ -146,6 +154,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
             );
             zip2Job.deploySummaryNote = deploySummaryNote;
             zip2Job.postDeployActionsJson = postDeployActionsJson;
+            zip2Job.groupMemberOpsJson = groupMemberOpsJson;
             System.enqueueJob(zip2Job);
           } else {
             String successMsg =
@@ -182,6 +191,17 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
             if (String.isNotBlank(postDeployResult)) {
               successMsg += '\n\nPost-deploy actions:\n' + postDeployResult;
             }
+            // Retry any Public Group member assignments that couldn't
+            // resolve earlier because their target group was being
+            // created by this SAME ticket (see
+            // LLMResponseProcessor.retryDeferredGroupMemberOps() doc
+            // comment). The group is guaranteed to exist now.
+            String groupMemberResult = LLMResponseProcessor.retryDeferredGroupMemberOps(
+              groupMemberOpsJson
+            );
+            if (String.isNotBlank(groupMemberResult)) {
+              successMsg += '\n\n' + groupMemberResult;
+            }
             // ── END VERIFICATION ──────────────────────────────────
 
             postStatusToJira(issueKey, 'success', successMsg, jobId);
@@ -192,6 +212,19 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
         } else {
           // ── Deploy failed — extract error details ─────
           String errorMsg = parseFailureResult(result);
+          // Real Metadata API component failures (the "field X couldn't be
+          // created because Y" kind of error) were previously never
+          // persisted anywhere — only posted to a single Jira comment that
+          // the next status update overwrites. Once that comment was
+          // overwritten, the actual reason a metadata deploy failed was
+          // gone for good, with no way to review or track it afterward.
+          ErrorLogger.logMessage(
+            'Deploypoller',
+            'execute',
+            null,
+            'MetadataDeployFailure',
+            errorMsg
+          );
           System.debug(
             'DeployPoller: deploy FAILED. Posting to Jira: ' + errorMsg
           );
@@ -217,6 +250,13 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           result.status +
           '. Check Salesforce deployment status manually.';
 
+        ErrorLogger.logMessage(
+          'Deploypoller',
+          'execute',
+          null,
+          'MetadataDeployTimeout',
+          timeoutMsg
+        );
         postStatusToJira(issueKey, 'error', timeoutMsg, jobId);
         abortPollerJobsForThisDeploy();
       } else {
@@ -245,6 +285,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           nextPoller.apexTestContextJson = apexTestContextJson;
           nextPoller.deploySummaryNote = deploySummaryNote;
           nextPoller.postDeployActionsJson = postDeployActionsJson;
+          nextPoller.groupMemberOpsJson = groupMemberOpsJson;
           nextPoller.queueableHops = nextHops;
           System.enqueueJob(nextPoller);
         } else {
@@ -266,6 +307,7 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
           sched.apexTestContextJson = apexTestContextJson;
           sched.deploySummaryNote = deploySummaryNote;
           sched.postDeployActionsJson = postDeployActionsJson;
+          sched.groupMemberOpsJson = groupMemberOpsJson;
           System.schedule(jobName, cronExp, sched);
         }
       }
@@ -280,6 +322,18 @@ public class Deploypoller implements Queueable, Database.AllowsCallouts {
       postStatusToJira(issueKey, 'error', exceptionMsg, jobId);
       abortPollerJobsForThisDeploy();
       ErrorLogger.log(e, issueKey);
+    } finally {
+      // deferErrorLogDml was turned on at the top of this method so
+      // ErrorLogger.log() calls above queue instead of inserting mid-poll
+      // (avoids DML-before-callout, same reasoning as LLMService). Every
+      // callout this method makes (checkDeployStatus, postStatusToJira,
+      // PostDeployApexExecutor's Tooling calls) has already happened by the
+      // time we reach here on every path, so flushing now is safe — and
+      // required, since nothing else in this queueable ever flushes it.
+      // Without this, every error this poller hits was silently dropped
+      // instead of reaching Error_Log__c.
+      FunctionHelper.flushNonMetadataDmlQueues();
+      FunctionHelper.deferErrorLogDml = false;
     }
   }
 

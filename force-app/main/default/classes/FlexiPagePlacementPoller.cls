@@ -116,6 +116,16 @@ public class FlexiPagePlacementPoller implements Queueable, Database.AllowsCallo
       ErrorLogger.log(e, issueKey);
       postGap('Placement poller error: ' + e.getMessage());
       abortStaleJobs();
+    } finally {
+      // Mirrors Deploypoller's fix for the same gap: deferErrorLogDml is
+      // turned on above but nothing here ever flushed it, so every error
+      // this poller hit (including postStatusToJira failures logged inside
+      // postGap/postSuccessNote) was silently dropped instead of reaching
+      // Error_Log__c. All of this method's callouts (checkFlexiPageRetrieveStatus,
+      // and any nested postStatusToJira via postGap/postSuccessNote) have
+      // already completed by the time we reach here on every path.
+      FunctionHelper.flushNonMetadataDmlQueues();
+      FunctionHelper.deferErrorLogDml = false;
     }
   }
 

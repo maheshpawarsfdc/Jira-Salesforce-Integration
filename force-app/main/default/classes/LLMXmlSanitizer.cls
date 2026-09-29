@@ -4092,6 +4092,104 @@ public class LLMXmlSanitizer {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // RECORD TYPE PICKLIST FIELD DECLARATION CHECK
+  // Confirmed (see phase1-stabilize memory / real-ticket testing): when a
+  // <recordTypes><picklistValues> block restricts an EXISTING field's
+  // picklist values, Salesforce's Metadata API validates the referenced
+  // value against what's declared IN THIS SAME DEPLOY PACKAGE — not
+  // against the field's already-committed live definition — and fails
+  // with a misleading "Picklist value: X in picklist: Y not found" even
+  // though the value genuinely exists in the org today. Reproduced with a
+  // minimal, LLM-free deploy to confirm this is a real platform behavior,
+  // not a generation mistake. The field must be redeclared with its full
+  // <valueSet> in the SAME CustomObject XML as the RecordType that
+  // restricts it. Catch it here — with the field's REAL current values
+  // spelled out — so the repair loop fixes it before a real deploy.
+  // ─────────────────────────────────────────────────────────────
+  public static void validateRecordTypePicklistFieldsDeclared(
+    String objectApiName,
+    String xmlContent
+  ) {
+    if (
+      String.isBlank(xmlContent) ||
+      !xmlContent.contains('<recordTypes>') ||
+      !xmlContent.contains('<picklistValues>')
+    ) {
+      return;
+    }
+
+    Pattern picklistRefPat = Pattern.compile(
+      '(?is)<picklistValues>\\s*<picklist>([^<]+)</picklist>'
+    );
+    Matcher m = picklistRefPat.matcher(xmlContent);
+    Set<String> referencedFields = new Set<String>();
+    while (m.find()) {
+      String fieldName = m.group(1).trim();
+      if (String.isNotBlank(fieldName)) {
+        referencedFields.add(fieldName);
+      }
+    }
+
+    for (String fieldName : referencedFields) {
+      if (isFieldDeclaredWithValueSetInXml(xmlContent, fieldName)) {
+        continue; // already redeclared in this same XML — nothing to fix
+      }
+      List<String> liveValues = SchemaFieldValidator.getPicklistValues(
+        objectApiName,
+        fieldName
+      );
+      if (liveValues.isEmpty()) {
+        // Not a live picklist field (doesn't exist, or a different type) —
+        // that's SchemaFieldValidator's/validateValidationRuleFieldTypes's
+        // job to catch, not this one's.
+        continue;
+      }
+      String valueFragments = '';
+      for (String v : liveValues) {
+        valueFragments +=
+          '<value><fullName>' +
+          escapeXmlValue(v) +
+          '</fullName><default>false</default></value>';
+      }
+      throw new ApexCodeValidator.ValidationException(
+        '[' +
+          objectApiName +
+          '] A RecordType restricts picklist values on "' +
+          fieldName +
+          '", but that field is not ALSO declared with its full <valueSet> ' +
+          'in this SAME CustomObject XML. Salesforce validates a RecordType\'s ' +
+          '<picklistValues> only against value sets included in the SAME deploy ' +
+          'package — not against the field\'s already-existing definition in the ' +
+          'org — so this fails with "Picklist value not found" even though the ' +
+          'value genuinely exists today. Add this exact <fields> block for "' +
+          fieldName +
+          '" alongside the <recordTypes> block in the SAME CustomObject XML: ' +
+          '<fields><fullName>' +
+          fieldName +
+          '</fullName><label>' +
+          escapeXmlValue(
+            SchemaFieldValidator.getFieldLabel(objectApiName, fieldName)
+          ) +
+          '</label><type>Picklist</type><valueSet><valueSetDefinition><sorted>false</sorted>' +
+          valueFragments +
+          '</valueSetDefinition></valueSet></fields>'
+      );
+    }
+  }
+
+  private static Boolean isFieldDeclaredWithValueSetInXml(
+    String xmlContent,
+    String fieldName
+  ) {
+    Pattern p = Pattern.compile(
+      '(?is)<fields>\\s*<fullName>' +
+        Pattern.quote(fieldName) +
+        '</fullName>.*?<valueSet>.*?</fields>'
+    );
+    return p.matcher(xmlContent).find();
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // SOQL FIELD EXISTENCE CHECK (Apex/trigger source)
   // Only checks simple, single-object, non-relationship SOQL field lists —
   // deliberately skips anything with a subquery, relationship traversal

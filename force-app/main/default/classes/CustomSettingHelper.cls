@@ -33,6 +33,8 @@ public class CustomSettingHelper {
           '/services/Soap/m/61.0';
         port.SessionHeader = new MetadataService.SessionHeader_element();
         port.SessionHeader.sessionId = UserInfo.getSessionId();
+        // See CustomMetadataHelper.port for why this is set explicitly.
+        port.timeout_x = 120000;
         System.debug('CustomSettingHelper: MetadataPort ready.');
       }
       return port;

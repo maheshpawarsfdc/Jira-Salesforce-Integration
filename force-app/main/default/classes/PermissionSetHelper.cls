@@ -17,10 +17,19 @@
 public class PermissionSetHelper {
   // NOTE:
   // In the LLMService XML-generation flow, this helper is clone-only:
-  // - clonePermissionSet(...) is used for permission set cloning.
+  // - The clone flow (resolveSourcePermissionSetApiName/startCloneRetrieve
+  //   + PermissionSetClonePoller) is used for permission set cloning.
   // - Create/update/delete are generated as PermissionSet XML in files[]
   //   and deployed via ZipBuilder/metadata deploy.
   // Existing non-clone methods remain for legacy/manual tool paths.
+
+  // Same gating pattern as StaticResourceHelper.pendingToolingOps: a
+  // PermissionSetClonePoller enqueue is genuinely async — it hasn't run
+  // yet by the time LLMService reaches its sync-result Jira post, so that
+  // post must not claim success/error for a clone that's still in
+  // progress. Reset per ticket in LLMService.processJiraTicket, same as
+  // StaticResourceHelper.pendingToolingOps.
+  public static Integer pendingCloneOps = 0;
 
   // ─────────────────────────────────────────────────────────────
   // PORT — same MetadataPort the rest of the system uses
@@ -36,6 +45,8 @@ public class PermissionSetHelper {
           '/services/Soap/m/61.0';
         port.SessionHeader = new MetadataService.SessionHeader_element();
         port.SessionHeader.sessionId = UserInfo.getSessionId();
+        // See CustomMetadataHelper.port for why this is set explicitly.
+        port.timeout_x = 120000;
         System.debug('PermissionSetHelper: MetadataPort ready.');
       }
       return port;
@@ -54,34 +65,49 @@ public class PermissionSetHelper {
   // for permission sets deployed via ZIP. port.retrieve() returns the
   // actual deployed XML file with all permissions intact.
   // ─────────────────────────────────────────────────────────────
-  public static void clonePermissionSet(Map<String, Object> args) {
-    String sourceName = getRequired(args, 'sourcePermissionSetName');
-    String newApiName = getRequired(args, 'newApiName');
-    String newLabel = getRequired(args, 'newLabel');
-    String description = getOptional(args, 'description', null);
+  // ASYNC REWRITE (2026-09-28): this used to run the whole clone —
+  // resolve, retrieve, POLL SYNCHRONOUSLY, extract, patch — inline during
+  // STAGE 2, staging straight into ZIP1. The synchronous poll was a tight
+  // loop with no real delay between attempts (Apex has no sleep); even
+  // raised to 30 attempts it still timed out under real load (confirmed:
+  // QATEST-PS2 and a direct isolated retry both timed out). This is the
+  // exact same class of problem FlexiPagePlacementPoller's doc comment
+  // already documents for page-placement retrieves, and it needs the same
+  // fix: start the retrieve with one quick callout, then hand off waiting
+  // for it to an async poller (PermissionSetClonePoller) that gets real
+  // elapsed time across enqueueJob/System.schedule hops. The clone now
+  // deploys as its OWN small follow-up ZIP once the poller's retrieve
+  // actually completes — mirroring exactly how FlexiPagePlacementPoller
+  // hands its own finished retrieve off to ZipDeployQueueable.forZip2().
+  //
+  // Call sequence for a caller (see LLMResponseProcessor's
+  // 'permissionSetClone' dmlOperation handling):
+  //   1. resolveSourcePermissionSetApiName(sourceName) — fails fast,
+  //      synchronously, before spending an async round-trip on a typo'd
+  //      source name.
+  //   2. startCloneRetrieve(sourceApiName) — one quick callout, returns
+  //      asyncId.
+  //   3. Enqueue a PermissionSetClonePoller with that asyncId and the
+  //      clone's target params (newApiName/newLabel/description/
+  //      objectPermissionOverrides).
 
-    System.debug('PermissionSetHelper.clonePermissionSet() called');
-    System.debug('source=' + sourceName + ', newApiName=' + newApiName);
+  // ── STEP 1: Resolve + verify the source PS exists, via SOQL ──
+  public static String resolveSourcePermissionSetApiName(String sourceName) {
+    // Salesforce Permission Set API names never have spaces — the label
+    // might have spaces but the API name passed here should already be
+    // the API name (e.g. Car_Manager).
+    String candidateApiName = sourceName.replace(' ', '_');
 
-    // Normalize sourceName to API name format (spaces → underscores, no __c suffix needed)
-    // Salesforce Permission Set API names never have spaces — the label might have spaces
-    // but the API name passed here should already be the API name (e.g. Car_Manager)
-    String sourceApiName = sourceName.replace(' ', '_');
-    System.debug(
-      'PermissionSetHelper.clonePermissionSet(): sourceApiName=' + sourceApiName
-    );
-
-    // ── STEP 1: Verify source PS exists and get its label via SOQL ──
     List<PermissionSet> sourcePsList = [
-      SELECT Id, Name, Label, Description
+      SELECT Id, Name, Label
       FROM PermissionSet
-      WHERE Name = :sourceApiName AND IsOwnedByProfile = FALSE
+      WHERE Name = :candidateApiName AND IsOwnedByProfile = FALSE
       LIMIT 1
     ];
     if (sourcePsList.isEmpty()) {
       // Try original name too in case caller passed label
       sourcePsList = [
-        SELECT Id, Name, Label, Description
+        SELECT Id, Name, Label
         FROM PermissionSet
         WHERE Label = :sourceName AND IsOwnedByProfile = FALSE
         LIMIT 1
@@ -92,17 +118,20 @@ public class PermissionSetHelper {
         'Source permission set not found: ' + sourceName
       );
     }
-    PermissionSet sourcePs = sourcePsList[0];
     // Always use the actual API Name for retrieve — never the label
-    sourceApiName = sourcePs.Name;
+    String resolvedApiName = sourcePsList[0].Name;
     System.debug(
-      'PermissionSetHelper.clonePermissionSet(): resolved sourceApiName=' +
-        sourceApiName +
-        ', label=' +
-        sourcePs.Label
+      'PermissionSetHelper.resolveSourcePermissionSetApiName(): [' +
+        sourceName +
+        '] -> [' +
+        resolvedApiName +
+        ']'
     );
+    return resolvedApiName;
+  }
 
-    // ── STEP 2: Start SOAP retrieve using the correct API name ──
+  // ── STEP 2: Start the async retrieve — one quick callout, no polling ──
+  public static String startCloneRetrieve(String sourceApiName) {
     MetadataService.RetrieveRequest retrieveRequest = new MetadataService.RetrieveRequest();
     retrieveRequest.apiVersion = 61.0;
     retrieveRequest.singlePackage = true;
@@ -115,49 +144,35 @@ public class PermissionSetHelper {
     retrieveRequest.unpackaged = pkg;
 
     MetadataService.AsyncResult asyncResult = port.retrieve(retrieveRequest);
-    String asyncId = asyncResult.id;
     System.debug(
-      'PermissionSetHelper.clonePermissionSet(): retrieve started, asyncId=' +
-      asyncId
+      'PermissionSetHelper.startCloneRetrieve(): [' +
+        sourceApiName +
+        '] retrieve started, asyncId=' +
+        asyncResult.id
     );
+    return asyncResult.id;
+  }
 
-    // ── STEP 3: Poll until retrieve is done ──
-    String zipBase64 = null;
-    for (Integer attempt = 0; attempt < 10; attempt++) {
-      MetadataService.RetrieveResult retrieveResult = port.checkRetrieveStatus(
-        asyncId,
-        true
-      );
-      System.debug(
-        'PermissionSetHelper.clonePermissionSet(): poll attempt=' +
-          attempt +
-          ', done=' +
-          retrieveResult.done +
-          ', status=' +
-          retrieveResult.status
-      );
+  // ── STEP 3 (poller's job, not this class's) — thin status-check wrapper
+  // so PermissionSetClonePoller doesn't need direct access to `port`. ──
+  public static MetadataService.RetrieveResult checkCloneRetrieveStatus(
+    String asyncId
+  ) {
+    return port.checkRetrieveStatus(asyncId, true);
+  }
 
-      if (retrieveResult.done) {
-        if (retrieveResult.status == 'Failed') {
-          throw new PermissionSetException(
-            'Retrieve failed for ' +
-              sourceApiName +
-              ': ' +
-              retrieveResult.errorMessage
-          );
-        }
-        zipBase64 = retrieveResult.zipFile;
-        break;
-      }
-    }
-
-    if (String.isBlank(zipBase64)) {
-      throw new PermissionSetException(
-        'Retrieve timed out for source permission set: ' + sourceApiName
-      );
-    }
-
-    // ── STEP 4: Extract the permission set XML from the ZIP ──
+  // ── STEP 4 + 5 + 5b: extract, swap label/description, sanitize, apply
+  // overrides — called by PermissionSetClonePoller once its retrieve is
+  // actually done. Returns the final XML; does NOT touch ZipBuilder —
+  // the caller decides how/when to stage and deploy it. ──
+  public static String buildClonedPermissionSetXml(
+    String sourceApiName,
+    String zipBase64,
+    String newApiName,
+    String newLabel,
+    String description,
+    List<Object> objectPermissionOverrides
+  ) {
     Blob zipBlob = EncodingUtil.base64Decode(zipBase64);
 
     // SOAP retrieve returns old-style format: Car_Manager.permissionset (no -meta.xml suffix)
@@ -182,15 +197,10 @@ public class PermissionSetHelper {
       );
     }
     System.debug(
-      'PermissionSetHelper.clonePermissionSet(): source XML extracted, length=' +
+      'PermissionSetHelper.buildClonedPermissionSetXml(): source XML extracted, length=' +
       sourceXml.length()
     );
-    System.debug(
-      'PermissionSetHelper.clonePermissionSet(): source XML preview: ' +
-      sourceXml.left(500)
-    );
 
-    // ── STEP 5: Build new PS XML — swap label/description, keep all permissions ──
     String effectiveDesc = String.isNotBlank(description)
       ? description
       : 'Cloned from ' + sourceApiName + '.';
@@ -232,16 +242,125 @@ public class PermissionSetHelper {
     // rejects them with "Invalid field permission field name".
     xml = LLMXmlSanitizer.stripNonDeployableCompoundFieldPermissions(xml);
 
-    String filePath =
-      'permissionsets/' +
-      newApiName +
-      '.permissionset-meta.xml';
-    ZipBuilder.addFile('PermissionSet', newApiName, filePath, xml);
-    System.debug(
-      'PermissionSetHelper.clonePermissionSet(): [' +
-        newApiName +
-        '] queued with full source permissions'
-    );
+    // Confirmed real gap (QATEST-PS4): a "clone X but make it read-only"
+    // ticket has nowhere to express that — permissionSetClone's args used
+    // to be only name/label/description, so the model stuffed the
+    // restriction into the unused description text and the clone silently
+    // kept every permission exactly as copied from the source. A separate
+    // files[] entry for the same PermissionSet can't fix this either: it
+    // would land at the SAME ZipBuilder path as this clone and completely
+    // overwrite it (ZipBuilder.files is a flat path->content map, not a
+    // merge), losing everything else the clone copied. Patching the
+    // already-cloned XML in place, in this same method, is the only safe
+    // way to apply both at once.
+    xml = applyObjectPermissionOverrides(xml, objectPermissionOverrides);
+
+    return xml;
+  }
+
+  // Applies optional per-object CRUD overrides to an already-cloned
+  // PermissionSet XML. Op shape (all fields under each override optional
+  // except "object" — an omitted allow* flag leaves that permission
+  // exactly as cloned from the source):
+  //   "objectPermissionOverrides": [
+  //     { "object": "Equipment_Asset__c", "allowRead": true,
+  //       "allowCreate": false, "allowEdit": false, "allowDelete": false }
+  //   ]
+  // No-op (returns xml unchanged) when the op didn't provide any —
+  // the common "plain clone, no changes" case is untouched.
+  @TestVisible
+  private static String applyObjectPermissionOverrides(
+    String xml,
+    List<Object> overrides
+  ) {
+    if (overrides == null || overrides.isEmpty()) {
+      return xml;
+    }
+
+    for (Object rawOverrideEntry : overrides) {
+      if (!(rawOverrideEntry instanceof Map<String, Object>)) {
+        continue;
+      }
+      Map<String, Object> overrideEntry = (Map<String, Object>) rawOverrideEntry;
+      String objectApiName = (String) overrideEntry.get('object');
+      if (String.isBlank(objectApiName)) {
+        continue;
+      }
+
+      // Confirmed real bug (QATEST-PS7): plain non-greedy .*? here has no
+      // boundary stopping it from skipping PAST other complete
+      // <objectPermissions>...</objectPermissions> blocks to reach a LATER
+      // block's <object> tag — a PermissionSet with objectPermissions for
+      // Account, DandBCompany, Equipment_Asset__c (in that order) matched
+      // from Account's opening tag all the way through to
+      // Equipment_Asset__c's closing tag, and the allow* patches below
+      // then hit the FIRST <allowCreate>/etc. in that huge span — i.e.
+      // Account's, not Equipment_Asset__c's. (?:(?!</objectPermissions>).)*?
+      // is the same "any char not starting the closing tag" idiom used to
+      // stay within a single tag's content elsewhere — it makes crossing a
+      // block boundary impossible, so a non-matching starting block just
+      // fails to match and find() advances to the next real
+      // <objectPermissions> occurrence instead of overshooting.
+      Pattern blockPat = Pattern.compile(
+        '(?is)<objectPermissions>(?:(?!</objectPermissions>).)*?<object>\\s*' +
+          Pattern.quote(objectApiName) +
+          '\\s*</object>(?:(?!</objectPermissions>).)*?</objectPermissions>'
+      );
+      Matcher m = blockPat.matcher(xml);
+      if (!m.find()) {
+        System.debug(
+          'applyObjectPermissionOverrides: no objectPermissions block found for [' +
+            objectApiName +
+            '] — override skipped (was it actually cloned from the source?)'
+        );
+        continue;
+      }
+      String block = m.group(0);
+      String patchedBlock = block;
+      patchedBlock = applyAllowFlag(
+        patchedBlock,
+        'allowCreate',
+        overrideEntry.get('allowCreate')
+      );
+      patchedBlock = applyAllowFlag(
+        patchedBlock,
+        'allowDelete',
+        overrideEntry.get('allowDelete')
+      );
+      patchedBlock = applyAllowFlag(
+        patchedBlock,
+        'allowEdit',
+        overrideEntry.get('allowEdit')
+      );
+      patchedBlock = applyAllowFlag(
+        patchedBlock,
+        'allowRead',
+        overrideEntry.get('allowRead')
+      );
+      if (patchedBlock != block) {
+        xml = xml.replace(block, patchedBlock);
+        System.debug(
+          'applyObjectPermissionOverrides: patched objectPermissions for [' +
+            objectApiName +
+            ']'
+        );
+      }
+    }
+    return xml;
+  }
+
+  private static String applyAllowFlag(
+    String block,
+    String tagName,
+    Object rawValue
+  ) {
+    if (!(rawValue instanceof Boolean)) {
+      return block; // not specified — leave exactly as cloned
+    }
+    String newValue = String.valueOf((Boolean) rawValue);
+    return Pattern.compile('(?is)<' + tagName + '>[^<]*</' + tagName + '>')
+      .matcher(block)
+      .replaceFirst('<' + tagName + '>' + newValue + '</' + tagName + '>');
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -646,7 +765,9 @@ public class PermissionSetHelper {
     ];
     if (!existing.isEmpty()) {
       throw new PermissionSetException(
-        resolvedPermSet.Name + ' is already assigned to ' + resolvedUser.Username
+        resolvedPermSet.Name +
+          ' is already assigned to ' +
+          resolvedUser.Username
       );
     }
 
@@ -686,11 +807,9 @@ public class PermissionSetHelper {
       FROM PermissionSetAssignment
       WHERE
         PermissionSetId = :resolvedPermSet.Id
-        AND (
-          Assignee.Username = :normalizedUserIdentifier
-          OR Assignee.Alias = :normalizedUserIdentifier
-          OR Assignee.Name = :normalizedUserIdentifier
-        )
+        AND (Assignee.Username = :normalizedUserIdentifier
+        OR Assignee.Alias = :normalizedUserIdentifier
+        OR Assignee.Name = :normalizedUserIdentifier)
       LIMIT 5
     ];
     if (assignments.isEmpty()) {
@@ -719,7 +838,9 @@ public class PermissionSetHelper {
     return assignments[0];
   }
 
-  private static PermissionSet resolvePermissionSet(String permissionSetIdentifier) {
+  private static PermissionSet resolvePermissionSet(
+    String permissionSetIdentifier
+  ) {
     String normalized = normalizeIdentifier(permissionSetIdentifier);
     Set<String> apiCandidates = new Set<String>{ normalized };
     if (normalized.contains(' ')) {
@@ -731,7 +852,8 @@ public class PermissionSetHelper {
       FROM PermissionSet
       WHERE
         IsOwnedByProfile = FALSE
-        AND (Name IN :apiCandidates OR Label = :normalized)
+        AND (Name IN :apiCandidates
+        OR Label = :normalized)
       LIMIT 5
     ];
 
@@ -793,7 +915,9 @@ public class PermissionSetHelper {
       LIMIT 2
     ];
     if (usersByName.isEmpty()) {
-      throw new PermissionSetException('Active user not found: ' + userIdentifier);
+      throw new PermissionSetException(
+        'Active user not found: ' + userIdentifier
+      );
     }
     if (usersByName.size() > 1) {
       throw new PermissionSetException(
@@ -857,8 +981,7 @@ public class PermissionSetHelper {
   }
 
   private static Boolean isWrappingQuote(String ch) {
-    return
-      ch == '\'' ||
+    return ch == '\'' ||
       ch == '"' ||
       ch == '`' ||
       ch == '‘' ||

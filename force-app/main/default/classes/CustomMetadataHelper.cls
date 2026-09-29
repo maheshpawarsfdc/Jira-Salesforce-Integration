@@ -34,6 +34,11 @@ public class CustomMetadataHelper {
           '/services/Soap/m/61.0';
         port.SessionHeader = new MetadataService.SessionHeader_element();
         port.SessionHeader.sessionId = UserInfo.getSessionId();
+        // Unset timeout_x falls back to the platform's short SOAP default,
+        // which was intermittently too short for Metadata API calls under
+        // load. 120000ms matches the platform's hard per-callout ceiling
+        // and the same convention already used for Bedrock/Jira callouts.
+        port.timeout_x = 120000;
         System.debug('CustomMetadataHelper: MetadataPort ready.');
       }
       return port;

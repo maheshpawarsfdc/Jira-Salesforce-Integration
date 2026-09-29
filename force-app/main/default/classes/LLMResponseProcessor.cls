@@ -7,6 +7,10 @@ public class LLMResponseProcessor {
   public static List<String> pendingTestClassNames;
   public static List<String> pendingTestClassContents;
   public static String pendingPostDeployActionsJson;
+  // ── Deferred Public Group member assignments — see
+  // retryDeferredGroupMemberOps() doc comment for why this exists. ──
+  public static String pendingDeferredGroupMemberOpsJson;
+  private static List<Object> deferredGroupMemberOps = new List<Object>();
   // ── What-was-created summary — one line per metadata type actually
   // staged this deploy (object, field, record type, permission set, LWC,
   // etc.) plus LWC page-placement outcome — appended to whichever Jira
@@ -1126,6 +1130,24 @@ public class LLMResponseProcessor {
         messages.add(
           new Map<String, Object>{ 'role' => 'assistant', 'content' => content }
         );
+        // A repair round asking the model to fix ONE flagged problem on a
+        // CustomObject file (e.g. add a RecordType's missing picklist
+        // <fields> block) has repeatedly been observed dropping a
+        // DIFFERENT required top-level element in the same response
+        // (<pluralLabel>, then <nameField> on the next attempt) — burning
+        // both repair attempts on a moving target instead of converging.
+        // Confirmed real (QATEST-RT2/RT3, not a one-off): the generic
+        // "fix only the identified issue" instruction alone isn't enough
+        // for this file type. Spell out the full required-element set
+        // whenever a CustomObject file is present in what's being repaired.
+        String customObjectReminder = content.contains('CustomObject')
+          ? '\n- A <CustomObject> XML file must ALWAYS include ALL of its ' +
+            'other required top-level elements — <label>, <pluralLabel>, ' +
+            '<nameField>, <deploymentStatus>, <sharingModel> — even when ' +
+            'this fix only touches a <recordTypes> or <fields> block. Keep ' +
+            'every element that was already correct; add only what this ' +
+            'error asks for.\n'
+          : '';
         messages.add(
           new Map<String, Object>{
             'role' => 'user',
@@ -1134,7 +1156,8 @@ public class LLMResponseProcessor {
             '\n\nReturn the COMPLETE corrected JSON. Fix ONLY the identified issue — do not change other files. ' +
             'Key rules to remember:\n' +
             '- In Apex: use && for logical AND and || for logical OR (not AND/OR — those are SOQL-only). Every opening brace { must have a matching closing brace }.\n' +
-            '- In LWC HTML: a {...} template binding may ONLY be a single property or getter reference (e.g. {isLoading}, {contact.name}) — never an operator, comparison, or inline expression (||, &&, ===, +, function calls). Expose any computed value as a no-argument getter in the JS class and bind to that getter instead — and check the WHOLE file for other bindings with the same problem, not just the one called out above.\n' +
+            '- In LWC HTML: a {...} template binding may ONLY be a single property or getter reference (e.g. {isLoading}, {contact.name}) — never an operator, comparison, or inline expression (||, &&, ===, +, function calls). Expose any computed value as a no-argument getter in the JS class and bind to that getter instead — and check the WHOLE file for other bindings with the same problem, not just the one called out above.' +
+            customObjectReminder +
             'Return ONLY valid JSON with no markdown fences.'
           }
         );
@@ -1185,6 +1208,9 @@ public class LLMResponseProcessor {
     String ticketDescription
   ) {
     String cleaned = LLMGroqClient.cleanJsonResponse(llmResponse);
+    // Cleared per attempt — this method is re-entered on every repair retry,
+    // and a deferred op from an earlier attempt must not double up here.
+    deferredGroupMemberOps.clear();
 
     System.debug('=== XML GENERATION RESPONSE START ===');
     System.debug(cleaned);
@@ -1572,6 +1598,24 @@ public class LLMResponseProcessor {
           }
         }
 
+        // ── VALIDATE RECORD TYPE PICKLIST FIELDS ARE CO-DECLARED ────────
+        if (metadataType == 'CustomObject' && String.isNotBlank(memberName)) {
+          try {
+            LLMXmlSanitizer.validateRecordTypePicklistFieldsDeclared(
+              memberName,
+              xmlContent
+            );
+          } catch (ApexCodeValidator.ValidationException e) {
+            System.debug(
+              'processXmlGenerationResponse: record type picklist field check FAILED for [' +
+                filePath +
+                ']: ' +
+                e.getMessage()
+            );
+            throw e; // re-throw so runXmlGenerationStage() retry can catch, repair, and re-process
+          }
+        }
+
         if (metadataType == 'Layout') {
           if (
             memberName != null &&
@@ -1919,6 +1963,13 @@ public class LLMResponseProcessor {
           // which are invalid in Group metadata and cause parser failures.
           // Normalize to canonical Group XML instead of trying to salvage
           // arbitrary mixed content.
+          // The model's membership INTENT in those invalid fragments must
+          // not just be discarded — convert it to the same deferred
+          // groupMemberAssign shape the dmlOperations path uses, so it
+          // still gets applied via retryDeferredGroupMemberOps() once this
+          // group's own deploy actually succeeds. Must run BEFORE
+          // sanitizeGroupXmlForDeploy() strips the fragments out below.
+          extractInlineGroupMembersAsDeferredOps(memberName, xmlContent);
           xmlContent = sanitizeGroupXmlForDeploy(memberName, xmlContent);
           if (beforeGroupSanitize != xmlContent) {
             System.debug(
@@ -2753,15 +2804,26 @@ public class LLMResponseProcessor {
     // the deploy artifacts. Treat "every provided file was filtered out"
     // the same as "no files were provided" by also checking what actually
     // landed in ZipBuilder / zip2Files.
-    Boolean rawFilesProvided = files != null && !files.isEmpty();
     Boolean anyFileActuallyStaged =
       ZipBuilder.hasFiles() || !zip2Files.isEmpty();
-    Boolean allProvidedFilesWereFiltered =
-      rawFilesProvided && !anyFileActuallyStaged;
+    // Confirmed real (QATEST-PS3): a ticket whose ENTIRE deliverable is a
+    // permissionSetClone/profileClone op has an empty raw `files` list.
+    // profileClone still stages synchronously (ProfileHelper.cloneProfile
+    // has no retrieve-poll step), so it shows up via anyFileActuallyStaged.
+    // permissionSetClone no longer stages anything synchronously at all
+    // (see the async rewrite above) — it only starts a retrieve and
+    // enqueues PermissionSetClonePoller, which stages+deploys the clone
+    // later as its OWN follow-up ZIP. A non-empty cloneOps here means a
+    // clone was at least successfully STARTED (if it had failed to
+    // resolve/start, that would have thrown and we'd never reach this
+    // line at all) — treat that the same as "something was done", exactly
+    // like FlexiPage placement is never mistaken for "nothing happened"
+    // just because its own async follow-up hasn't landed yet either.
     Boolean nothingWasDone =
-      ((files == null || files.isEmpty()) || allProvidedFilesWereFiltered) &&
+      !anyFileActuallyStaged &&
       (destructiveFiles == null || destructiveFiles.isEmpty()) &&
-      (nonCloneOps == null || nonCloneOps.isEmpty());
+      (nonCloneOps == null || nonCloneOps.isEmpty()) &&
+      (cloneOps == null || cloneOps.isEmpty());
     if (nothingWasDone) {
       FunctionHelper.hadError = true;
       System.debug(
@@ -2774,9 +2836,101 @@ public class LLMResponseProcessor {
       );
     }
 
+    pendingDeferredGroupMemberOpsJson = deferredGroupMemberOps.isEmpty()
+      ? null
+      : JSON.serialize(deferredGroupMemberOps);
+
     return String.isNotBlank(summary)
       ? summary
       : 'Changes staged for deployment.';
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // RETRY DEFERRED GROUP MEMBER ASSIGNMENTS
+  // Called by Deploypoller once a deploy has actually succeeded — by then
+  // any Public Group created in the same ticket is guaranteed to exist, so
+  // buildGroupMemberAssignment() can resolve it correctly. Reuses the same
+  // resolution/dedup logic as the synchronous path so behavior (username
+  // vs email, nested group, duplicate-membership skip, etc.) stays
+  // identical either way. Returns a summary/warning string to append to
+  // the ticket's success message, or null if there was nothing to do.
+  // ─────────────────────────────────────────────────────────────
+  public static String retryDeferredGroupMemberOps(String opsJson) {
+    if (String.isBlank(opsJson)) {
+      return null;
+    }
+    List<Object> ops;
+    try {
+      ops = (List<Object>) JSON.deserializeUntyped(opsJson);
+    } catch (Exception e) {
+      System.debug(
+        'retryDeferredGroupMemberOps: failed to parse ops JSON: ' +
+        e.getMessage()
+      );
+      return null;
+    }
+    if (ops == null || ops.isEmpty()) {
+      return null;
+    }
+
+    List<GroupMember> toInsert = new List<GroupMember>();
+    List<String> failures = new List<String>();
+
+    for (Object rawOp : ops) {
+      Map<String, Object> op = (Map<String, Object>) rawOp;
+      try {
+        GroupMember assignment = buildGroupMemberAssignment(op);
+        List<GroupMember> existingMembers = [
+          SELECT Id
+          FROM GroupMember
+          WHERE
+            GroupId = :assignment.GroupId
+            AND UserOrGroupId = :assignment.UserOrGroupId
+          LIMIT 1
+        ];
+        if (existingMembers.isEmpty()) {
+          toInsert.add(assignment);
+        }
+      } catch (LLMService.LLMException le) {
+        failures.add(le.getMessage());
+      } catch (Exception e) {
+        failures.add(e.getMessage());
+      }
+    }
+
+    String summary = '';
+    if (!toInsert.isEmpty()) {
+      List<Database.SaveResult> results = Database.insert(toInsert, false);
+      Integer okCount = 0;
+      for (Integer i = 0; i < results.size(); i++) {
+        if (results[i].isSuccess()) {
+          okCount++;
+        } else {
+          for (Database.Error err : results[i].getErrors()) {
+            failures.add(err.getMessage());
+          }
+        }
+      }
+      if (okCount > 0) {
+        summary = okCount + ' group membership assignment(s) added.';
+      }
+    }
+    if (!failures.isEmpty()) {
+      String failMsg =
+        '⚠️ ' +
+        failures.size() +
+        ' group membership assignment(s) could not be applied: ' +
+        String.join(failures, '; ');
+      ErrorLogger.logMessage(
+        'LLMResponseProcessor',
+        'retryDeferredGroupMemberOps',
+        null,
+        'GroupMemberAssignmentFailure',
+        failMsg
+      );
+      summary += (String.isBlank(summary) ? '' : '\n') + failMsg;
+    }
+    return String.isBlank(summary) ? null : summary;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -3077,21 +3231,68 @@ public class LLMResponseProcessor {
         String newApiName = (String) op.get('newApiName');
         String newLabel = (String) op.get('newLabel');
         String description = (String) op.get('description');
-        PermissionSetHelper.clonePermissionSet(
-          new Map<String, Object>{
-            'sourcePermissionSetName' => sourcePermissionSetName,
-            'newApiName' => newApiName,
-            'newLabel' => newLabel,
-            'description' => description
-          }
-        );
-        System.debug(
-          'processDmlOperations: PS clone staged [' +
-            sourcePermissionSetName +
-            '] → [' +
-            newApiName +
-            ']'
-        );
+        Object rawOverrides = op.get('objectPermissionOverrides');
+        try {
+          // ASYNC REWRITE (2026-09-28): only the fast, synchronous part
+          // happens here now — resolve the source name and start the
+          // retrieve (one quick callout). Waiting for it, patching the
+          // XML, and deploying the clone are handed off to
+          // PermissionSetClonePoller, which gets real elapsed time across
+          // async hops instead of the old synchronous tight poll loop
+          // that kept timing out under load even at 30 attempts (see
+          // permissionset-clone-reliability-and-override-gap memory).
+          // Same pattern FlexiPageHelper already uses for placement
+          // retrieves — enqueueing an independent poller mid-STAGE-2,
+          // ahead of and separate from this ticket's own ZIP1 enqueue.
+          String sourceApiName = PermissionSetHelper.resolveSourcePermissionSetApiName(
+            sourcePermissionSetName
+          );
+          String asyncId = PermissionSetHelper.startCloneRetrieve(
+            sourceApiName
+          );
+
+          PermissionSetClonePoller poller = new PermissionSetClonePoller();
+          poller.asyncId = asyncId;
+          poller.sourceApiName = sourceApiName;
+          poller.newApiName = newApiName;
+          poller.newLabel = newLabel;
+          poller.description = description;
+          poller.objectPermissionOverridesJson = (rawOverrides instanceof List<Object>)
+            ? JSON.serialize(rawOverrides)
+            : null;
+          poller.issueKey = ErrorLogger.currentJiraKey;
+          poller.attempt = 1;
+          System.enqueueJob(poller);
+          PermissionSetHelper.pendingCloneOps++;
+
+          System.debug(
+            'processDmlOperations: PS clone retrieve started, handed off to PermissionSetClonePoller [' +
+              sourcePermissionSetName +
+              '] → [' +
+              newApiName +
+              ']'
+          );
+        } catch (Exception e) {
+          // Previously uncaught — propagated past every validator/repair
+          // layer as a raw exception, only ever caught (and only correctly
+          // reported) by JiraInboundController's top-level catch. Log it
+          // here with the same categorized-failure convention the rest of
+          // the pipeline uses (see Deploypoller's MetadataDeployFailure)
+          // before letting it continue propagating to that same safety net.
+          ErrorLogger.logMessage(
+            'LLMResponseProcessor',
+            'processDmlOperations',
+            null,
+            'CloneOperationFailure',
+            'permissionSetClone [' +
+              sourcePermissionSetName +
+              '] -> [' +
+              newApiName +
+              ']: ' +
+              e.getMessage()
+          );
+          throw e;
+        }
       } else if (
         String.isNotBlank(opType) &&
         opType.startsWith('permissionSet') &&
@@ -3120,19 +3321,37 @@ public class LLMResponseProcessor {
       } else if (opType == 'profileClone') {
         String sourceProfileName = (String) op.get('sourceProfileName');
         String newProfileName = (String) op.get('newProfileName');
-        ProfileHelper.cloneProfile(
-          new Map<String, Object>{
-            'sourceProfileName' => sourceProfileName,
-            'newProfileName' => newProfileName
-          }
-        );
-        System.debug(
-          'processDmlOperations: Profile clone staged [' +
-            sourceProfileName +
-            '] → [' +
-            newProfileName +
-            ']'
-        );
+        try {
+          ProfileHelper.cloneProfile(
+            new Map<String, Object>{
+              'sourceProfileName' => sourceProfileName,
+              'newProfileName' => newProfileName
+            }
+          );
+          System.debug(
+            'processDmlOperations: Profile clone staged [' +
+              sourceProfileName +
+              '] → [' +
+              newProfileName +
+              ']'
+          );
+        } catch (Exception e) {
+          // Same reasoning as permissionSetClone's catch above — was
+          // previously uncaught here.
+          ErrorLogger.logMessage(
+            'LLMResponseProcessor',
+            'processDmlOperations',
+            null,
+            'CloneOperationFailure',
+            'profileClone [' +
+              sourceProfileName +
+              '] -> [' +
+              newProfileName +
+              ']: ' +
+              e.getMessage()
+          );
+          throw e;
+        }
       } else if (opType == 'customSettingRecordUpsert') {
         SObject record = buildCustomSettingRecordForUpsert(op);
         if (record.get('Id') != null) {
@@ -3184,10 +3403,23 @@ public class LLMResponseProcessor {
             );
           }
         } catch (LLMService.LLMException le) {
+          // Most common cause: the target group is being CREATED by this
+          // SAME ticket. Group metadata (unlike Queue, which supports
+          // inline <queueMembers>) has no way to declare membership in its
+          // own XML — the group must actually exist before a GroupMember
+          // row can reference it. Its Metadata API deploy hasn't run yet
+          // at this point (this runs synchronously, before the deploy is
+          // even enqueued), so buildGroupMemberAssignment() can't resolve
+          // it yet. Previously this was silently dropped here — the
+          // ticket's success message would claim the member was added
+          // when nobody was, with zero trace anywhere. Defer it instead
+          // and retry once the deploy actually completes (see
+          // retryDeferredGroupMemberOps(), called from Deploypoller).
           System.debug(
-            'processDmlOperations: SKIPPED groupMemberAssign - ' +
+            'processDmlOperations: deferring groupMemberAssign to post-deploy retry - ' +
             le.getMessage()
           );
+          deferredGroupMemberOps.add(op);
         }
       } else if (opType == 'csvProcess') {
         String fileName = (String) op.get('fileName');
@@ -3416,6 +3648,7 @@ public class LLMResponseProcessor {
         OR Name = :memberReference)
         AND Type IN (
           'Regular',
+          'Queue',
           'Role',
           'RoleAndSubordinates',
           'RoleAndSubordinatesInternal'
@@ -3432,6 +3665,23 @@ public class LLMResponseProcessor {
         'Multiple group or role members match [' +
           memberReference +
           ']. Use the exact Developer Name.'
+      );
+    }
+    // Queue is included in the WHERE above so this reports precisely
+    // ("is a Queue, not supported") instead of a misleading "not found"
+    // — but Salesforce itself rejects a Queue as a GroupMember.UserOrGroupId
+    // target with an opaque "field integrity exception: unknown (invalid
+    // user or group)" at DML time. Public Groups can only nest Regular
+    // groups, roles, and role-and-subordinates — not Queues. This is a
+    // real platform restriction, not a resolution bug, so fail clearly
+    // here rather than let the DML fail cryptically downstream.
+    if (memberGroups[0].Type == 'Queue') {
+      throw new LLMService.LLMException(
+        '"' +
+          memberReference +
+          '" is a Queue — Salesforce does not support adding a Queue as a ' +
+          'member of a Public Group. Only regular public groups, roles, ' +
+          'and users can be nested members.'
       );
     }
 
@@ -3656,6 +3906,52 @@ public class LLMResponseProcessor {
       )
       .matcher(text);
     return m.find() ? m.group(1) : null;
+  }
+
+  // The model sometimes emits member fragments directly inside Group XML
+  // (<members><members>identifier</members><type>Type</type></members>) —
+  // invalid, since Salesforce's Group metadata type has no <members> field
+  // at all (sanitizeGroupXmlForDeploy() strips these before deploy, and
+  // previously that meant the model's membership intent was thrown away
+  // with no trace). Extract each fragment here and queue it as a deferred
+  // groupMemberAssign op instead, reusing the exact same resolution path
+  // (buildGroupMemberAssignment / resolveGroupMemberId) that the
+  // dmlOperations-based path already uses.
+  private static void extractInlineGroupMembersAsDeferredOps(
+    String groupDeveloperName,
+    String xmlContent
+  ) {
+    if (String.isBlank(xmlContent) || String.isBlank(groupDeveloperName)) {
+      return;
+    }
+    Pattern p = Pattern.compile(
+      '(?is)<members>\\s*<members>([^<]*)</members>\\s*<type>([^<]*)</type>\\s*</members>'
+    );
+    Matcher m = p.matcher(xmlContent);
+    while (m.find()) {
+      String identifier = m.group(1) == null ? '' : m.group(1).trim();
+      String rawType = m.group(2) == null ? '' : m.group(2).trim();
+      if (String.isBlank(identifier)) {
+        continue;
+      }
+      deferredGroupMemberOps.add(
+        new Map<String, Object>{
+          'type' => 'groupMemberAssign',
+          'groupDeveloperName' => groupDeveloperName,
+          'memberType' => rawType.toLowerCase(),
+          'memberIdentifier' => identifier
+        }
+      );
+      System.debug(
+        'extractInlineGroupMembersAsDeferredOps: deferred inline member [' +
+          identifier +
+          '] (type=' +
+          rawType +
+          ') for group [' +
+          groupDeveloperName +
+          ']'
+      );
+    }
   }
 
   private static String sanitizeGroupXmlForDeploy(

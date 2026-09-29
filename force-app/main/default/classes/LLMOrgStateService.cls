@@ -11,6 +11,12 @@ public class LLMOrgStateService {
           '/services/Soap/m/61.0';
         metaPort.SessionHeader = new MetadataService.SessionHeader_element();
         metaPort.SessionHeader.sessionId = getMetadataSessionId();
+        // Unset timeout_x falls back to the platform's short SOAP default,
+        // which is what produced the "IO Exception: Read timed out" errors
+        // on getAssignmentRulesState's readMetadata call (MS-16, MS-36).
+        // 120000ms matches the platform's hard per-callout ceiling and the
+        // same convention already used for Bedrock/Jira callouts.
+        metaPort.timeout_x = 120000;
         System.debug('LLMOrgStateService: MetadataPort ready.');
       }
       return metaPort;

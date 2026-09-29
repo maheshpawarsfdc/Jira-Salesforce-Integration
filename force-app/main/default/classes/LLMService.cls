@@ -17,8 +17,10 @@ public class LLMService {
     LLMResponseProcessor.pendingTestClassNames = null;
     LLMResponseProcessor.pendingTestClassContents = null;
     LLMResponseProcessor.pendingPostDeployActionsJson = null;
+    LLMResponseProcessor.pendingDeferredGroupMemberOpsJson = null;
     ZipBuilder.clear();
     StaticResourceHelper.pendingToolingOps = 0;
+    PermissionSetHelper.pendingCloneOps = 0;
     FunctionHelper.clearQueues();
 
     // Ambient ticket context so any ErrorLogger.log() in deep helpers tags this key.
@@ -258,6 +260,7 @@ if(!review.approved){
       List<String> tstNames = LLMResponseProcessor.pendingTestClassNames;
       List<String> tstCont = LLMResponseProcessor.pendingTestClassContents;
       String postDeployActionsJson = LLMResponseProcessor.pendingPostDeployActionsJson;
+      String groupMemberOpsJson = LLMResponseProcessor.pendingDeferredGroupMemberOpsJson;
       String deploySummary = LLMResponseProcessor.pendingDeploySummary;
 
       System.debug(
@@ -302,6 +305,12 @@ if(!review.approved){
           postDeployActionsJson
         );
         zdq.deploySummaryNote = deploySummary;
+        // Apex-first tickets don't carry this through ApexTestRunQueueable
+        // yet — a ticket creating both a Public Group (with new members)
+        // and Apex+tests in the same response is not a realistic pattern
+        // this pipeline generates, so that gap is left undocumented-safe
+        // rather than adding more plumbing for it.
+        zdq.groupMemberOpsJson = groupMemberOpsJson;
         System.enqueueJob(zdq);
       }
 
@@ -311,6 +320,7 @@ if(!review.approved){
       LLMResponseProcessor.pendingTestClassNames = null;
       LLMResponseProcessor.pendingTestClassContents = null;
       LLMResponseProcessor.pendingPostDeployActionsJson = null;
+      LLMResponseProcessor.pendingDeferredGroupMemberOpsJson = null;
       LLMResponseProcessor.pendingDeploySummary = null;
       ZipBuilder.clear();
       LLMGroqClient.logTokenSummary();
@@ -323,15 +333,18 @@ if(!review.approved){
     // Salesforce forbids callouts after DML in the same transaction,
     // so the callout MUST happen before flushDmlQueues().
     //
-    // Skip this immediate post if a StaticResourceToolingQueueable is
-    // pending — that queueable hasn't actually run yet (Queueable
-    // execution is genuinely async, not "later in this same
-    // transaction"), so posting "success" here would tell Jira the
-    // static resource op finished before the real Tooling API callout
-    // even happened. The queueable posts its own status once it
-    // actually completes; let that be the one true answer instead of
-    // racing it with a premature — and possibly wrong — one here.
-    if (StaticResourceHelper.pendingToolingOps == 0) {
+    // Skip this immediate post if a StaticResourceToolingQueueable or a
+    // PermissionSetClonePoller is pending — neither has actually run yet
+    // (Queueable execution is genuinely async, not "later in this same
+    // transaction"), so posting "success" here would tell Jira the op
+    // finished before the real callout even happened. Each posts its own
+    // status once it actually completes; let that be the one true answer
+    // instead of racing it with a premature — and possibly wrong — one
+    // here.
+    if (
+      StaticResourceHelper.pendingToolingOps == 0 &&
+      PermissionSetHelper.pendingCloneOps == 0
+    ) {
       try {
         JiraCallbackService.storeDeploymentStatus(
           issueKey,
@@ -349,7 +362,9 @@ if(!review.approved){
       System.debug(
         'LLMService: skipping sync storeDeploymentStatus — ' +
           StaticResourceHelper.pendingToolingOps +
-          ' StaticResourceToolingQueueable job(s) pending; they will ' +
+          ' StaticResourceToolingQueueable job(s) + ' +
+          PermissionSetHelper.pendingCloneOps +
+          ' PermissionSetClonePoller job(s) pending; they will ' +
           'post the real status once they actually run'
       );
     }

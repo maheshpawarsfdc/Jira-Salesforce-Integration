@@ -83,7 +83,8 @@ public class SchemaFieldValidator {
             : '';
           Boolean required =
             requiredMatcher.find() && requiredMatcher.group(1) == 'true';
-          Boolean layoutReadOnly = block.contains('<formula>') ||
+          Boolean layoutReadOnly =
+            block.contains('<formula>') ||
             declaredType == 'SUMMARY' ||
             declaredType == 'AUTONUMBER';
           registerPendingField(
@@ -106,7 +107,8 @@ public class SchemaFieldValidator {
           : '';
         Boolean required =
           requiredMatcher.find() && requiredMatcher.group(1) == 'true';
-        Boolean layoutReadOnly = xmlContent.contains('<formula>') ||
+        Boolean layoutReadOnly =
+          xmlContent.contains('<formula>') ||
           declaredType == 'SUMMARY' ||
           declaredType == 'AUTONUMBER';
         registerPendingField(
@@ -174,18 +176,22 @@ public class SchemaFieldValidator {
       return null;
     }
     Map<String, Schema.SObjectType> globalDescribe = getGlobalDescribeMap();
-    if (globalDescribe.containsKey(objectApiName)) {
-      return objectApiName;
+    // globalDescribe.get() is case-insensitive on this particular map type
+    // (a platform quirk of Schema.getGlobalDescribe()), so a hit here does
+    // NOT mean objectApiName is already correctly cased. Ask the resolved
+    // SObjectType for its own real API name instead of echoing back
+    // whatever casing the caller passed — the old "return objectApiName"
+    // fast path made normalizeReferenceToTargets() think a wrongly-cased
+    // <referenceTo>account</referenceTo> needed no fix (resolved == val),
+    // leaving it uncorrected for a real deploy that requires exact casing.
+    Schema.SObjectType t = globalDescribe.get(objectApiName);
+    if (t != null) {
+      return t.getDescribe().getName();
     }
 
-    String targetLower = objectApiName.toLowerCase();
-    for (String gdKey : globalDescribe.keySet()) {
-      if (gdKey != null && gdKey.toLowerCase() == targetLower) {
-        return gdKey;
-      }
-    }
-
-    // Last-pass fuzzy canonicalization for common underscore/case drift.
+    // Last-pass fuzzy canonicalization for common underscore/case drift
+    // that doesn't even case-insensitively match (e.g. a missing
+    // underscore before __c).
     String normTarget = normalizeObjectToken(objectApiName);
     String resolved = null;
     Integer hits = 0;
@@ -332,7 +338,10 @@ public class SchemaFieldValidator {
     String normalizedField = fieldApiName.contains('.')
       ? fieldApiName.substringAfter('.')
       : fieldApiName;
-    String key = objectApiName.toLowerCase() + '.' + normalizedField.toLowerCase();
+    String key =
+      objectApiName.toLowerCase() +
+      '.' +
+      normalizedField.toLowerCase();
     if (pendingFieldApiNames.containsKey(key)) {
       return pendingFieldApiNames.get(key);
     }
@@ -405,7 +414,10 @@ public class SchemaFieldValidator {
     String normalizedField = fieldApiName.contains('.')
       ? fieldApiName.substringAfter('.')
       : fieldApiName;
-    String key = objectApiName.toLowerCase() + '.' + normalizedField.toLowerCase();
+    String key =
+      objectApiName.toLowerCase() +
+      '.' +
+      normalizedField.toLowerCase();
     if (pendingFieldLayoutReadOnly.containsKey(key)) {
       return pendingFieldLayoutReadOnly.get(key);
     }
@@ -417,6 +429,39 @@ public class SchemaFieldValidator {
     return d.isCalculated() ||
       d.isAutoNumber() ||
       d.getType() == Schema.DisplayType.ID;
+  }
+
+  // Real field label — used so a synthesized <fields> XML fragment (see
+  // LLMXmlSanitizer.validateRecordTypePicklistFieldsDeclared) is complete
+  // enough to deploy on its own instead of failing on a missing <label>.
+  public static String getFieldLabel(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    Schema.SObjectField f = getFieldDescribe(objectApiName, fieldApiName);
+    return f == null ? fieldApiName : f.getDescribe().getLabel();
+  }
+
+  // Live, active picklist values for a field — used to tell the LLM
+  // exactly what a RecordType's <picklistValues> restriction must line up
+  // with (see LLMXmlSanitizer.validateRecordTypePicklistFieldsDeclared).
+  // Returns an empty list for a non-picklist or unresolvable field —
+  // callers treat that as "not applicable", not an error.
+  public static List<String> getPicklistValues(
+    String objectApiName,
+    String fieldApiName
+  ) {
+    List<String> values = new List<String>();
+    Schema.SObjectField f = getFieldDescribe(objectApiName, fieldApiName);
+    if (f == null) {
+      return values;
+    }
+    for (Schema.PicklistEntry pe : f.getDescribe().getPicklistValues()) {
+      if (pe.isActive()) {
+        values.add(pe.getValue());
+      }
+    }
+    return values;
   }
 
   // Comma-separated list of the object's actual field API names, for

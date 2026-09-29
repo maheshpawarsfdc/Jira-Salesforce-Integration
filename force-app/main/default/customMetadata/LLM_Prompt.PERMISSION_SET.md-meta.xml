@@ -29,7 +29,68 @@ Use for: "clone permission set", "copy permission set", "duplicate permission se
 }
 RULES for clone:
 - newApiName: API name of the new PS (no __c suffix)
-- Do NOT generate any files[] entry for this — Apex handles everything
+- Do NOT generate any files[] entry for this — Apex handles everything. A
+  files[] entry at the SAME PermissionSet path as a clone REPLACES the
+  clone's full XML outright instead of merging with it — it does not layer
+  changes on top, so it would silently destroy everything else the clone
+  copied. Never do this, even to try to adjust one permission afterward.
+
+-- CLONE + CHANGE PERMISSIONS AT THE SAME TIME (read this even if you
+already think you know the plain-clone shape above — this is the single
+most commonly missed rule in this whole prompt) --
+The moment a ticket clones a permission set AND also says ANYTHING about
+what access the NEW one should have that differs from the source —
+"read only", "remove delete access", "no edit", "view only", "take away
+create/edit" — you MUST add "objectPermissionOverrides" to the SAME
+permissionSetClone op. Do NOT just describe the restriction in
+"description" — that field is never read by anything; a restriction
+mentioned only there is silently ignored and the clone keeps 100% of the
+source's original permissions.
+
+WORKED EXAMPLE — ticket text:
+  "Clone the existing 'Sales Manager' permission set into a new
+  permission set called 'Sales Viewer' (API name Sales_Viewer), but
+  remove Create, Edit, and Delete access to Opportunity — it should be
+  Read only."
+Correct dmlOperations entry for that exact ticket:
+{
+  "type": "permissionSetClone",
+  "sourcePermissionSetName": "Sales_Manager",
+  "newApiName": "Sales_Viewer",
+  "newLabel": "Sales Viewer",
+  "description": "Cloned from Sales Manager with read-only access to Opportunity",
+  "objectPermissionOverrides": [
+    { "object": "Opportunity", "allowRead": true, "allowCreate": false,
+      "allowEdit": false, "allowDelete": false }
+  ]
+}
+Notice objectPermissionOverrides is required here — this ticket's request
+("read only") would be COMPLETELY LOST without it, even though the
+description text mentions it. The description text is cosmetic only.
+
+General shape (same field, any combination of objects/flags):
+{
+  "type": "permissionSetClone",
+  "sourcePermissionSetName": "Existing_PS_API_Name",
+  "newApiName": "New_PS_API_Name",
+  "newLabel": "New PS Label",
+  "description": "Optional description",
+  "objectPermissionOverrides": [
+    { "object": "Object__c", "allowRead": true, "allowCreate": false,
+      "allowEdit": false, "allowDelete": false }
+  ]
+}
+RULES for objectPermissionOverrides:
+- object: the object's API name — must already have an objectPermissions
+  block on the SOURCE permission set (i.e. the source already grants some
+  access to it); this only ADJUSTS an existing grant, it cannot add access
+  to an object the source never touched.
+- Only include the allowRead/allowCreate/allowEdit/allowDelete flags the
+  ticket actually asked to change — an omitted flag keeps the source's
+  original value for that flag, unchanged.
+- Field-level permission changes on a clone are NOT supported by this
+  mechanism yet — if the ticket also asks to change field-level access,
+  mention that limitation in the summary rather than silently dropping it.
 
 -- PATH 2: ALL OTHER OPERATIONS (generate XML in files[]) --
 For create, grant/revoke object access, grant/revoke field access, delete:

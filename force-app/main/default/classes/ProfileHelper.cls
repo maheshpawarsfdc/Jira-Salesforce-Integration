@@ -23,6 +23,8 @@ public class ProfileHelper {
           '/services/Soap/m/61.0';
         port.SessionHeader = new MetadataService.SessionHeader_element();
         port.SessionHeader.sessionId = getSessionId();
+        // See CustomMetadataHelper.port for why this is set explicitly.
+        port.timeout_x = 120000;
         System.debug('ProfileHelper: MetadataPort ready.');
       }
       return port;
